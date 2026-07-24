@@ -17,6 +17,9 @@
  *
  */
 
+#include <cmath>
+#include <string>
+
 #include "log.h"
 #include "nextpnr.h"
 #include "timing.h"
@@ -184,6 +187,152 @@ struct MistralBitgen
             cv->bmux_r_set(CycloneV::M10K, pos, CycloneV::RAM, bi, permute_init(init.extract(bi * 40, 40).as_int64()));
     }
 
+    // Parse a frequency string like "50.0 MHz" / "100.0 MHz" into MHz.
+    // A period string ("0 ps") or an unrecognised unit yields 0 (== unused).
+    static double parse_freq_mhz(const std::string &s)
+    {
+        try {
+            size_t idx = 0;
+            double val = std::stod(s, &idx);
+            std::string unit = s.substr(idx);
+            while (!unit.empty() && (unit.front() == ' ' || unit.front() == '\t'))
+                unit.erase(unit.begin());
+            if (unit.rfind("GHz", 0) == 0)
+                return val * 1000.0;
+            if (unit.rfind("MHz", 0) == 0)
+                return val;
+            if (unit.rfind("kHz", 0) == 0 || unit.rfind("KHz", 0) == 0)
+                return val / 1000.0;
+            if (unit.rfind("Hz", 0) == 0)
+                return val / 1.0e6;
+            // ps/ns are periods, not frequencies -> treat as "unset"
+            return 0.0;
+        } catch (...) {
+            return 0.0;
+        }
+    }
+
+    void write_fpll_cell(CellInfo *ci, int x, int y, int bi)
+    {
+        (void)bi; // FPLL has a single instance per tile
+        auto pos = CycloneV::xy2pos(x, y);
+
+        // ---- parse the altera_pll parameters (fall back to fabi386 defaults) ----
+        double f_ref = 50.0;
+        if (ci->params.count(id_reference_clock_frequency)) {
+            double f = parse_freq_mhz(ci->params.at(id_reference_clock_frequency).as_string());
+            if (f > 0)
+                f_ref = f;
+        }
+        int nclk = ci->params.count(id_number_of_clocks) ? int(ci->params.at(id_number_of_clocks).as_int64()) : 1;
+        if (nclk < 1)
+            nclk = 1;
+        if (nclk > 9)
+            nclk = 9; // FPLL has 9 C-counters (C0..C8)
+
+        std::vector<double> fout;
+        for (int i = 0; i < nclk; i++) {
+            double f = 0;
+            IdString p = ctx->idf("output_clock_frequency%d", i);
+            if (ci->params.count(p))
+                f = parse_freq_mhz(ci->params.at(p).as_string());
+            if (f <= 0)
+                f = f_ref; // reasonable fall-back for an unspecified output
+            fout.push_back(f);
+        }
+
+        // ---- freq -> N/M/C solver ----
+        // VCO = f_ref * M / N, kept in [600, 1600] MHz. N is bypassed (N=1).
+        // For each output C = VCO / f_out must be an (ideally even) integer.
+        // Among valid VCOs we prefer even C's (50% duty from HI==LO) and the
+        // one closest to a 1000 MHz mid-band target. For the fabi386 case
+        // (50 MHz -> 10/25/100 MHz) this yields M=20, VCO=1000, C={100,40,10}.
+        const int N = 1;
+        const double target = 1000.0;
+        int bestM = 0;
+        double bestScore = 0, bestVco = 0;
+        for (int M = 1; M <= 512; M++) {
+            double vco = f_ref * double(M) / double(N);
+            if (vco < 600.0 || vco > 1600.0)
+                continue;
+            bool ok = true, all_even = true;
+            for (double f : fout) {
+                double c = vco / f;
+                double cr = std::round(c);
+                if (cr < 1 || cr > 512 || std::abs(c - cr) > 1e-6) {
+                    ok = false;
+                    break;
+                }
+                if (int(cr) % 2 != 0)
+                    all_even = false;
+            }
+            if (!ok)
+                continue;
+            double score = std::abs(vco - target) + (all_even ? 0.0 : 1.0e6);
+            if (bestM == 0 || score < bestScore) {
+                bestM = M;
+                bestScore = score;
+                bestVco = vco;
+            }
+        }
+        int M = bestM ? bestM : 20;
+        double vco = bestM ? bestVco : (f_ref * 20.0);
+        int m_hi = M / 2;
+        int m_lo = M - m_hi;
+
+        log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz\n", ctx->nameOf(ci), f_ref, N, M, vco);
+
+        // ---- program the block ----
+        // Reference divider N is bypassed.
+        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::N_CNT_BYPASS_EN, 0, true);
+        // Feedback divider M (M = HI + LO).
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_HI_DIV_SETTING, 0, m_hi);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_LO_DIV_SETTING, 0, m_lo);
+
+        static const CycloneV::bmux_type_t cout_en[9] = {
+                CycloneV::C0_COUT_EN, CycloneV::C1_COUT_EN, CycloneV::C2_COUT_EN,
+                CycloneV::C3_COUT_EN, CycloneV::C4_COUT_EN, CycloneV::C5_COUT_EN,
+                CycloneV::C6_COUT_EN, CycloneV::C7_COUT_EN, CycloneV::C8_COUT_EN};
+
+        for (int c = 0; c < int(fout.size()) && c < 9; c++) {
+            int C = int(std::round(vco / fout[c]));
+            if (C < 1)
+                C = 1;
+            int c_hi = C / 2;
+            int c_lo = C - c_hi;
+            // Per-counter output divider (midx = counter index 0..8).
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_HI_DIV, c, c_hi);
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_LO_DIV, c, c_lo);
+            // Odd divides need the odd/even-duty enable bit.
+            if (C % 2)
+                cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, c, true);
+            // Enable this counter's clock output.
+            cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[c], 0, true);
+        }
+
+        // Integer mode: no delta-sigma / fractional division.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DSM_OUT_SEL, 0, 0);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 0);
+
+        // Verbatim analog/config constants required to reach lock (see the
+        // off-silicon-verified FPLL field model).
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::BWCTRL, 0, 0x07);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x1900);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, 0x04);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_1_SRC, 0, 0x04);
+
+        // Enables.
+        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);
+        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::VCO0PH_EN, 0, true);
+        static const CycloneV::bmux_type_t vco_ph_en[8] = {
+                CycloneV::VCO_PH0_EN, CycloneV::VCO_PH1_EN, CycloneV::VCO_PH2_EN, CycloneV::VCO_PH3_EN,
+                CycloneV::VCO_PH4_EN, CycloneV::VCO_PH5_EN, CycloneV::VCO_PH6_EN, CycloneV::VCO_PH7_EN};
+        for (int i = 0; i < 8; i++)
+            cv->bmux_b_set(CycloneV::FPLL, pos, vco_ph_en[i], 0, true);
+    }
+
     void write_cells()
     {
         for (auto &cell : ctx->cells) {
@@ -196,6 +345,8 @@ struct MistralBitgen
                 write_clkbuf_cell(ci, loc.x, loc.y, bi);
             else if (ci->type == id_MISTRAL_M10K)
                 write_m10k_cell(ci, loc.x, loc.y, bi);
+            else if (ctx->is_pll_cell(ci->type))
+                write_fpll_cell(ci, loc.x, loc.y, bi);
         }
     }
 

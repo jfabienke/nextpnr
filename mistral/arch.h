@@ -481,6 +481,7 @@ struct Arch : BaseArch<ArchRanges>
     void create_clkbuf(int x, int y);                  // globals.cc
     void create_control(int x, int y);                 // globals.cc
     void create_hps_mpu_general_purpose(int x, int y); // globals.cc
+    void create_fpll(int x, int y);                    // pll.cc
 
     // -------------------------------------------------
 
@@ -513,6 +514,10 @@ struct Arch : BaseArch<ArchRanges>
 
     bool is_clkbuf_cell(IdString cell_type) const; // globals.cc
     void route_globals();                          // globals.cc
+
+    // -------------------------------------------------
+
+    bool is_pll_cell(IdString cell_type) const; // pll.cc
 
     // -------------------------------------------------
 

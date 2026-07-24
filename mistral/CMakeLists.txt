@@ -12,6 +12,7 @@ set(SOURCES
     io.cc
     lab.cc
     m10k.cc
+    pll.cc
     pack.cc
     pins.cc
     qsf.cc

@@ -419,7 +419,7 @@ struct MistralPacker
 
             // One could remove the std::max here and the `- bit_offset`s here,
             // because they would cancel out, but I think this way is less confusing.
-            int addr_offset = std::max(12 - std::max(abits, dbits == 40 ? 8L : 9L), 0L);
+            int addr_offset = std::max<int64_t>(12 - std::max<int64_t>(abits, dbits == 40 ? 8 : 9), 0);
             int bit_offset = (abits == 13);
             if (abits == 13) {
                 ci->pin_data[ctx->id("A1ADDR[0]")].bel_pins = {ctx->id("DATAAIN[4]")};
@@ -472,7 +472,7 @@ struct MistralPacker
             bit_offset = dbits == 40 ? 20 : 0;
 
             // Write port
-            for (int bit = 0; bit < std::min(dbits, 20L); bit++)
+            for (int bit = 0; bit < std::min<int64_t>(dbits, 20); bit++)
                 for (int offset : offsets)
                     ci->pin_data[ctx->idf("A1DATA[%d]", bit)].bel_pins.push_back(ctx->idf("DATAAIN[%d]", bit + offset));
 
@@ -491,6 +491,74 @@ struct MistralPacker
         }
     }
 
+    void setup_fplls()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_altera_pll)
+                continue;
+
+            // getBelPinsForCellPin() does pin_data.at(pin); make sure *every*
+            // port has an entry so it can never throw. Ports we don't map keep
+            // an empty bel_pins list (they simply have no physical sink/driver).
+            for (auto &port : ci->ports)
+                ci->pin_data[port.first];
+
+            // Map the logical PLL ports onto the physical FPLL bel pins that the
+            // Mistral routing model actually exposes (see create_fpll()).
+            if (ci->ports.count(id_refclk))
+                ci->pin_data[id_refclk].bel_pins = {id_REFCLK};
+            if (ci->ports.count(id_locked))
+                ci->pin_data[id_locked].bel_pins = {id_LOCKED};
+            if (ci->ports.count(id_fbclk))
+                ci->pin_data[id_fbclk].bel_pins = {id_FBCLK};
+
+            int nclk = ci->params.count(id_number_of_clocks) ? int(ci->params.at(id_number_of_clocks).as_int64()) : 1;
+            for (int i = 0; i < nclk; i++) {
+                // A 1-bit output bus comes through as "outclk"; wider ones as "outclk[i]".
+                IdString cellport =
+                        (nclk == 1 && ci->ports.count(id_outclk)) ? id_outclk : ctx->idf("outclk[%d]", i);
+                if (!ci->ports.count(cellport))
+                    continue;
+                if (i == 0) {
+                    ci->pin_data[cellport].bel_pins = {ctx->idf("OUTCLK[%d]", 0)};
+                } else {
+                    // Only coreclk0 is currently modelled; extra outputs cannot
+                    // be routed through general resources yet.
+                    log_warning("altera_pll '%s' output '%s' cannot be routed yet "
+                                "(only outclk[0]/coreclk0 is modelled)\n",
+                                ctx->nameOf(ci), cellport.c_str(ctx));
+                }
+            }
+
+            // The only *input* pins we model on the FPLL bel are refclk and
+            // fbclk. Every other input the altera_pll cell carries (reset
+            // tie-offs, unused reconfig/phase pins, ...) has no routable bel
+            // pin; assign_default_pinmap would give it an identity mapping onto
+            // a nonexistent bel pin and routing would then fail on it. The PLL
+            // reset in particular is configured through SLF_RST in the
+            // bitstream rather than routed, so we clear the mapping and
+            // disconnect those inputs. refclk is deliberately kept mapped so
+            // the still-unmodelled refclk -> PLL dedicated clock route surfaces
+            // as a clear, explicit routing failure rather than being silently
+            // dropped.
+            const pool<IdString> kept_inputs = {id_refclk, id_fbclk};
+            std::vector<IdString> to_disconnect;
+            for (auto &pd : ci->ports) {
+                if (pd.second.type != PORT_IN)
+                    continue;
+                if (kept_inputs.count(pd.first))
+                    continue;
+                ci->pin_data[pd.first].bel_pins.clear();
+                to_disconnect.push_back(pd.first);
+            }
+            for (IdString p : to_disconnect)
+                ci->disconnectPort(p);
+
+            log_info("Set up altera_pll '%s' (%d output clock%s).\n", ctx->nameOf(ci), nclk, nclk == 1 ? "" : "s");
+        }
+    }
+
     void run()
     {
         init_constant_nets();
@@ -499,6 +567,7 @@ struct MistralPacker
         constrain_carries();
         constrain_lutram();
         setup_m10ks();
+        setup_fplls();
     }
 };
 }; // namespace
