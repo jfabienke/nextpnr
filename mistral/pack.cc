@@ -513,23 +513,34 @@ struct MistralPacker
             if (ci->ports.count(id_fbclk))
                 ci->pin_data[id_fbclk].bel_pins = {id_FBCLK};
 
+            // PLL output clocks. NONE of the altera_pll output clocks can be
+            // routed: the Mistral e50f model exposes no FPLL routing port for a
+            // PLL output (verified by enumerating every port type at every FPLL
+            // position). Physically the C-counter outputs reach the clock tree
+            // only through the clock control block via the dedicated CMUX_PLLIN
+            // selection, which libmistral represents as a bitstream mux and not
+            // as routing-graph edges - and the clock network is only ever driven
+            // by clock-type nodes, never by the PLL. So there is no bel pin to
+            // map an output onto. Leave the mapping empty; if an output is
+            // actually used, routing will fail with a clear "No wire found for
+            // port outclk" naming the unmodelled resource.
             int nclk = ci->params.count(id_number_of_clocks) ? int(ci->params.at(id_number_of_clocks).as_int64()) : 1;
+            bool outclk_used = false;
             for (int i = 0; i < nclk; i++) {
-                // A 1-bit output bus comes through as "outclk"; wider ones as "outclk[i]".
                 IdString cellport =
                         (nclk == 1 && ci->ports.count(id_outclk)) ? id_outclk : ctx->idf("outclk[%d]", i);
                 if (!ci->ports.count(cellport))
                     continue;
-                if (i == 0) {
-                    ci->pin_data[cellport].bel_pins = {ctx->idf("OUTCLK[%d]", 0)};
-                } else {
-                    // Only coreclk0 is currently modelled; extra outputs cannot
-                    // be routed through general resources yet.
-                    log_warning("altera_pll '%s' output '%s' cannot be routed yet "
-                                "(only outclk[0]/coreclk0 is modelled)\n",
-                                ctx->nameOf(ci), cellport.c_str(ctx));
-                }
+                ci->pin_data[cellport].bel_pins.clear();
+                NetInfo *on = ci->getPort(cellport);
+                if (on != nullptr && !on->users.empty())
+                    outclk_used = true;
             }
+            if (outclk_used)
+                log_warning("altera_pll '%s': PLL output clock(s) are used but cannot be routed - the Cyclone V "
+                            "PLL->clock-network path (CMUX_PLLIN) is not modelled as routing in the Mistral e50f "
+                            "graph; routing will fail on 'outclk'.\n",
+                            ctx->nameOf(ci));
 
             // The only *input* pins we model on the FPLL bel are refclk and
             // fbclk. Every other input the altera_pll cell carries (reset
@@ -554,6 +565,32 @@ struct MistralPacker
             }
             for (IdString p : to_disconnect)
                 ci->disconnectPort(p);
+
+            // Reference-clock delivery. The PLL reference input is the PMUX node
+            // (mapped to id_REFCLK); it is fed only by the sector-clock (SCLK)
+            // network, i.e. it is reachable only over a global clock spine whose
+            // roots (GCLK/RCLK) are injected by a clock buffer (CMUX). A plain
+            // fabric net from an input pin cannot reach it. So splice a
+            // MISTRAL_CLKBUF onto the refclk: the reference clock is buffered
+            // onto a global clock line (input pin -> CLKBUF -> GCLK -> SCLK ->
+            // PMUX) and route_globals() then delivers it to the PLL. (Verified:
+            // both create_clkbuf CMUXHG outputs reach the e50f PLL PMUX nodes.)
+            NetInfo *refnet = ci->getPort(id_refclk);
+            if (refnet != nullptr && refnet->driver.cell != nullptr &&
+                !ctx->is_clkbuf_cell(refnet->driver.cell->type)) {
+                CellInfo *cbuf =
+                        ctx->createCell(ctx->idf("%s$refclk_clkbuf", ci->name.c_str(ctx)), id_MISTRAL_CLKBUF);
+                cbuf->addInput(id_A);
+                cbuf->addOutput(id_Q);
+                // input-pin net -> CLKBUF.A
+                ci->movePortTo(id_refclk, cbuf, id_A);
+                // CLKBUF.Q -> buffered net -> PLL.refclk
+                NetInfo *bufnet = ctx->createNet(ctx->idf("%s$refclk_buf", ci->name.c_str(ctx)));
+                cbuf->connectPort(id_Q, bufnet);
+                ci->connectPort(id_refclk, bufnet);
+                log_info("  inserted refclk clock buffer '%s' for altera_pll '%s'\n", ctx->nameOf(cbuf),
+                         ctx->nameOf(ci));
+            }
 
             log_info("Set up altera_pll '%s' (%d output clock%s).\n", ctx->nameOf(ci), nclk, nclk == 1 ? "" : "s");
         }
