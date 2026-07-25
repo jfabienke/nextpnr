@@ -54,6 +54,14 @@ struct Router2Cfg
     // of choosing a less congestion/delay-optimal route
     float estimate_weight;
 
+    // Minimum criticality weight applied to congestion cost. The default (0.05)
+    // lets highly-critical arcs almost ignore congestion; raising it forces even
+    // critical arcs to respect present/historical congestion (up to 1.0 = full).
+    float crit_weight_floor;
+
+    // Maximum number of congestion iterations before giving up (0 = unlimited).
+    int max_iter;
+
     // Print additional performance profiling information
     bool perf_profile = false;
 

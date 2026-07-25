@@ -806,7 +806,7 @@ struct Router2
         int dst_wire_idx = wire_to_idx.at(dst_wire);
         // Calculate a timing weight based on criticality
         float crit = get_arc_crit(net, i);
-        float crit_weight = std::max<float>(0.05f, (1.0f - std::pow(crit, 2)));
+        float crit_weight = std::max<float>(cfg.crit_weight_floor, (1.0f - std::pow(crit, 2)));
         ROUTE_LOG_DBG("     crit=%.3f crit_weight=%.3f\n", crit, crit_weight);
         // Check if arc was already done _in this iteration_
         if (t.processed_sinks.count(dst_wire))
@@ -1792,6 +1792,11 @@ struct Router2
                          overused_wires, total_wire_overuse, resource_str.c_str(),
                          (overused_wires > 0 || tmgfail > 0) ? "NA" : std::to_string(arch_fail).c_str());
             ++iter;
+            if (cfg.max_iter > 0 && iter > cfg.max_iter) {
+                log_warning("router2: giving up after %d iterations, %d overused wires remain.\n", iter - 1,
+                            overused_wires);
+                break;
+            }
             if (curr_cong_weight < 1e9)
                 curr_cong_weight += cfg.curr_cong_mult;
         } while (!failed_nets.empty());
@@ -1846,6 +1851,8 @@ Router2Cfg::Router2Cfg(Context *ctx)
         curr_cong_mult = ctx->setting<float>("router2/currCongWeightMult", 2.0f);
         estimate_weight = ctx->setting<float>("router2/estimateWeight", 1.25f);
     }
+    crit_weight_floor = ctx->setting<float>("router2/critWeightFloor", 0.05f);
+    max_iter = ctx->setting<int>("router2/maxIter", 0);
     perf_profile = ctx->setting<bool>("router2/perfProfile", false);
     if (ctx->settings.count(ctx->id("router2/heatmap")))
         heatmap = ctx->settings.at(ctx->id("router2/heatmap")).as_string();

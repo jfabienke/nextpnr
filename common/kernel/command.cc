@@ -392,6 +392,19 @@ po::options_description CommandHandler::getGeneralOptions()
 
     general.add_options()("router2-alt-weights", "use alternate router2 weights");
 
+    general.add_options()("router2-init-curr-cong", po::value<float>(),
+                          "router2 initial present-congestion weight (float, default: 0.5)");
+    general.add_options()("router2-hist-cong", po::value<float>(),
+                          "router2 history-congestion accumulation weight (float, default: 1.0)");
+    general.add_options()("router2-curr-cong-mult", po::value<float>(),
+                          "router2 per-iteration present-congestion weight increment (float, default: 2.0)");
+    general.add_options()("router2-estimate-weight", po::value<float>(),
+                          "router2 A* delay estimate weight (float, default: 1.25)");
+    general.add_options()("router2-crit-weight-floor", po::value<float>(),
+                          "router2 minimum criticality weight applied to congestion cost (float, default: 0.05)");
+    general.add_options()("router2-max-iter", po::value<int>(),
+                          "router2 maximum congestion iterations before giving up (int, default: 0 = unlimited)");
+
     general.add_options()("report", po::value<std::string>(),
                           "write timing and utilization report in JSON format to file");
     general.add_options()("detailed-timing-report", "Append detailed net timing data to the JSON report");
@@ -524,6 +537,22 @@ void CommandHandler::setupContext(Context *ctx)
 
     if (vm.count("router2-alt-weights"))
         ctx->settings[ctx->id("router2/alt-weights")] = true;
+
+    if (vm.count("router2-init-curr-cong"))
+        ctx->settings[ctx->id("router2/initCurrCongWeight")] =
+                std::to_string(vm["router2-init-curr-cong"].as<float>());
+    if (vm.count("router2-hist-cong"))
+        ctx->settings[ctx->id("router2/histCongWeight")] = std::to_string(vm["router2-hist-cong"].as<float>());
+    if (vm.count("router2-curr-cong-mult"))
+        ctx->settings[ctx->id("router2/currCongWeightMult")] =
+                std::to_string(vm["router2-curr-cong-mult"].as<float>());
+    if (vm.count("router2-estimate-weight"))
+        ctx->settings[ctx->id("router2/estimateWeight")] = std::to_string(vm["router2-estimate-weight"].as<float>());
+    if (vm.count("router2-crit-weight-floor"))
+        ctx->settings[ctx->id("router2/critWeightFloor")] =
+                std::to_string(vm["router2-crit-weight-floor"].as<float>());
+    if (vm.count("router2-max-iter"))
+        ctx->settings[ctx->id("router2/maxIter")] = std::to_string(vm["router2-max-iter"].as<int>());
 
     if (vm.count("static-dump-density"))
         ctx->settings[ctx->id("static/dump_density")] = true;

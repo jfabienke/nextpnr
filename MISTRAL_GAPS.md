@@ -1,0 +1,119 @@
+# nextpnr-mistral: the gaps blocking a real Cyclone V core
+
+Scoped from measurements taken 2026-07-24/25 building the fabi386 i386 core (47,789 ALUTs) for the
+DE10-Nano (5CSEBA6U23I7). Synthesis is solved; every remaining blocker is in this repo or libmistral.
+Each item below states what was measured, why it blocks, and the entry point — not a wishlist.
+
+---
+
+## G1 — Timing-driven placement is ineffective: `criticalityExponent = 7`
+
+**Status: root-caused, cheap fix candidate, under test.**
+
+**Measured.** `--freq 50` changes the placement *not at all*: post-placement Fmax is **10.40 MHz with and
+without it**, byte-identical. The plumbing is fine — `--freq` → `target_freq` (`common/kernel/command.cc:502`,
+default `12e6` at `:562`) → `timing.cc:324`; `timing_driven` defaults true; `timingWeight` defaults 10.
+
+**Cause.** `common/place/placer_heap.cc:947`:
+
+```cpp
+weight *= (1.0 + cfg.timingWeight * std::pow(tmg.get_criticality(...), cfg.criticalityExponent));
+```
+
+and `mistral/arch.cc:482` sets `cfg.criticalityExponent = 7`. Criticality (`timing.cc:782`) is normalized
+to the *achieved* worst slack, so it spans [0,1] across the design. At exponent 7 a net at criticality
+0.57 contributes `0.57^7 ≈ 0.02` — indistinguishable from zero. **Only paths within a hair of the very
+worst get any weight**, so on a design failing timing by ~8× there is no gradient to optimize along.
+
+nextpnr's global default is **2** (`command.cc:581`); ecp5 and machxo2 use **4**; mistral inherited **7**
+from nexus, where it was presumably tuned on designs that nearly meet timing.
+
+**Fix.** Lower `criticalityExponent` for mistral (2–4) and consider raising `timingWeight`. Testable with
+existing flags before touching source: `--placer-heap-critexp 2 --placer-heap-timingweight 30`.
+
+**Why it blocks.** The routed core hits **6.22 MHz** where the critical path is **94% wire** (19.77 ns
+routing vs 0.60 ns logic; one 1×3-tile hop costs 11.52 ns — a congestion detour, not distance). Logic depth
+is ~4 LUT levels. The design is not slow; the placement and routing are timing-agnostic.
+
+---
+
+## G2 — `--tmg-ripup` churns without reducing timing failures
+
+**Status: measured broken; needs work in router2.**
+
+**Measured.** With `--tmg-ripup`, congestion resolves far faster (overuse 46,009 → 48 by iter 41, → 3 by
+iter 161, versus needing 1,312 iterations without it) — but the `tmgfail` counter is **flat across 163
+iterations** (109,750 → 115,053 → 114,276 → 114,723 → 114,260) while overuse oscillates 3–9 and **never
+reaches 0**. All three beta variants timed out at 2,900 s with no bitstream. Enabling it traded a
+*completed* legal route for an *incomplete* one with no timing gain.
+
+nextpnr's own `--help` calls it "enable **experimental** timing-driven ripup", which matches.
+
+**Entry point.** `common/route/router2.cc` — the criticality term in the cost function and the ripup
+selection. The observable to drive against is `tmgfail`: any change must make it monotonically decrease.
+
+**Note.** G1 likely feeds G2 — a timing-agnostic placement leaves the router trying to fix timing with
+routing alone, which it cannot do when the wires are long by construction. Fix G1 first and re-measure.
+
+---
+
+## G3 — HPS hard-IP interfaces: only `mpu_general_purpose` exists
+
+**Status: hard blocker on deployment; the largest item.**
+
+**Measured.** The real core (`emu`) **cannot be P&R'd standalone at all**: it needs **436 IO bits** against
+~314 user pins on this device. `emu` is not the board top — `sys_top` maps `HPS_BUS` (49 b), `DDRAM_*` and
+`SDRAM_*` onto HPS hard IP that consumes no user pins. Device utilisation confirms exactly one HPS bel is
+modelled: `cyclonev_hps_interface_mpu_general_purpose: 0/1`.
+
+That one interface is silicon-proven end-to-end (rung-1: 32-bit `mpu_gp` round-trip verified on the DE10 via
+`devmem`, 4/4 vectors, gpi == ~gpo). What is missing is everything else — notably **FPGA2SDRAM** (the DDR
+bridge the core's L2 needs) and the h2f/f2h AXI bridges.
+
+**Entry point.** Follow the `mpu_general_purpose` pattern: bel creation in `mistral/arch.cc`, `constids.inc`,
+port mapping in `mistral/pack.cc`, emit in `mistral/bitstream.cc`. libmistral already models the config
+surface; this is nextpnr-side integration.
+
+**Scope honestly.** This is a feature, not a fix. Until it exists, "the open flow builds and runs the real
+core" is unreachable — which is why a **fabric-only demonstrator** (no HPS, no DDR, BRAM-backed) is the
+right way to prove the flow on silicon in the meantime.
+
+---
+
+## G4 — PLL output → clock network is not in the routing graph
+
+**Status: genuine libmistral chipdb RE residual, not a nextpnr extension.**
+
+**Measured.** The FPLL bel is implemented and works on the input side: `mistral/pll.cc` +
+`pack.cc`/`bitstream.cc` (`2ffa7bc`, direction fix `248c655`). The refclk half routes end-to-end
+(input pin → `MISTRAL_CLKBUF` → GCLK → SCLK → PMUX → PLL) and emits a valid 1.95 MB `.rbf` whose 22 FPLL
+config bmuxes are `fplldump`-verified (M=20, N bypass, C={100,40,10}, analog constants).
+
+The **output** side has no routing port at any FPLL position — enumerated every port at every pos. libmistral
+stores the PLL-output→clock-tree path (`CMUX_PLLIN` → CMUX → GCLK) as a **bitstream mux, not as routing-graph
+edges**; its `cmux_*_link_table`s are never consumed. So a full `altera_pll` test fails with "No wire found
+for port outclk".
+
+**Fix.** Add the `CMUX_PLLIN`→CMUX→GCLK edges to the libmistral routing graph (upstream: Ravenslofty/mistral).
+
+**Workaround.** The fabric can be clocked directly from an input pin (CLKBUF→GCLK, proven by the refclk
+route), so a **single-clock** core builds today; only multi-clock freq-synthesis needs G4.
+
+---
+
+## Also carried in this fork (not gaps)
+
+- **macOS portability fix** in `mistral/pack.cc` — `std::max/min(int64_t, long-literal)` was ambiguous and
+  blocked *all* nextpnr-mistral compiles on macOS; now `std::max<int64_t>` / `std::min<int64_t>`.
+- **`MISTRAL_HEAP_BETA` env override** in `mistral/arch.cc` — experimental hook for the cut-spreader's
+  `beta`, which carries the upstream `TODO: find a good value of beta for sensible ALM spreading`.
+  **Measured: `beta = 0.5` (default) never routes the dense core; `beta ≤ 0.40` routes it to overuse 0 and
+  emits a `.rbf`.** The knob is coarse — 0.25/0.35/0.40 produce byte-identical placements; only 0.45 differs.
+  A defensible upstream change is lowering the default, or making it utilisation-dependent.
+
+## Anti-patterns already measured out — do not re-run these
+
+- **router2 congestion cost-schedule tuning.** Aggressive escalation *diverges* (min 2,018 overuse then
+  climbs past 5,575); gentle escalation is stable but worse than default (min 434 vs 326); the default is
+  already near-optimal and still does not route without the beta change. Dead lever in both directions.
+- **beta sweeps expecting a timing win.** The knob buys routability, not timing, and only at coarse steps.

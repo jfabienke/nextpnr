@@ -470,6 +470,15 @@ bool Arch::place()
         cfg.hpwl_scale_y = 2;
 
         cfg.beta = 0.5; // TODO: find a good value of beta for sensible ALM spreading
+        // EXPERIMENTAL (routing-congestion mitigation): beta caps the ALM-slot
+        // utilisation the cut-spreader tolerates per region; lowering it spreads
+        // cells across more of the (mostly-empty) die, distributing routing-wire
+        // demand. Sweepable via env to probe whether ALM-spreading relieves the
+        // router2 overuse floor before building a routing-demand-aware inflator.
+        if (const char *beta_env = getenv("MISTRAL_HEAP_BETA")) {
+            cfg.beta = float(atof(beta_env));
+            log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
+        }
         cfg.criticalityExponent = 7;
         if (!placer_heap(getCtx(), cfg))
             return false;
