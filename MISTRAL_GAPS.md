@@ -70,11 +70,12 @@ and tabulates routed/overuse/iters/Fmax/time. Built precisely because three P&R 
 judged by reasoning plus one run, and **all three needed correcting** — the router cost schedule (predicted
 win, diverged), the delay recalibration (better description, placer 2× worse), and this one.
 
-**Not changing `arch.cc:482` yet, deliberately.** Exponent 7 was presumably tuned on designs that nearly
-meet timing, where sharp discrimination is correct; 2 helps a design failing by ~8×. One data point does
-not justify flipping the default for every Cyclone V user. The upstream-able version of this finding is
-either a utilisation/slack-dependent exponent or a documented recommendation — both want a second design
-first.
+**Not changing `arch.cc:482` — and the second design settled it.** The default was held back pending more
+than one data point; the second design came in at **−7.2%**, so flipping it would have made things worse for
+part of the design space. The upstream-able version of this finding is therefore an **adaptive** exponent
+(keyed on congestion — e.g. router iteration count or post-place overuse at the default), not a new constant.
+That is a real change to nextpnr's placer and should be evaluated through `pnrcal` across more designs before
+being attempted.
 
 **Why it blocks.** The routed core hits **6.22 MHz** where the critical path is **94% wire** (19.77 ns
 routing vs 0.60 ns logic; one 1×3-tile hop costs 11.52 ns — a congestion detour, not distance). Logic depth
