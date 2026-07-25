@@ -8,7 +8,7 @@ Each item below states what was measured, why it blocks, and the entry point —
 
 ## G1 — Timing-driven placement is ineffective: `criticalityExponent = 7`
 
-**Status: root-caused, cheap fix candidate, under test.**
+**Status: root-caused and FIXED via existing flags — measured +12.5% Fmax, 44% fewer router iters.**
 
 **Measured.** `--freq 50` changes the placement *not at all*: post-placement Fmax is **10.40 MHz with and
 without it**, byte-identical. The plumbing is fine — `--freq` → `target_freq` (`common/kernel/command.cc:502`,
@@ -28,8 +28,30 @@ worst get any weight**, so on a design failing timing by ~8× there is no gradie
 nextpnr's global default is **2** (`command.cc:581`); ecp5 and machxo2 use **4**; mistral inherited **7**
 from nexus, where it was presumably tuned on designs that nearly meet timing.
 
-**Fix.** Lower `criticalityExponent` for mistral (2–4) and consider raising `timingWeight`. Testable with
-existing flags before touching source: `--placer-heap-critexp 2 --placer-heap-timingweight 30`.
+**Fix — MEASURED, and no source change is required: `criticalityExponent` is already a CLI flag.**
+
+| run | post-place | routed | router iters | final Fmax | `.rbf` |
+|---|---|---|---|---|---|
+| baseline (`critexp 7`) | 10.40 MHz | yes | 1312 | **6.22 MHz** | 2.96 MB |
+| `--placer-heap-critexp 2 --placer-heap-timingweight 30` | 11.09 MHz | yes | **736** | **7.00 MHz** | 2.95 MB |
+
+**+12.5% Fmax and 44% fewer routing iterations**, EXIT=0 in 24 min — versus every `--tmg-ripup` variant,
+which timed out at 48 min with no bitstream at all. `--freq 50` on its own changes nothing (post-place
+10.40 MHz either way), so the gain is attributable to the exponent/weight, not the target.
+
+**Recommended invocation for dense Cyclone V designs** (until a default change is justified on more than
+one design):
+
+```
+MISTRAL_HEAP_BETA=0.35 nextpnr-mistral ... \
+    --freq <real target> --placer-heap-critexp 2 --placer-heap-timingweight 30
+```
+
+**Not changing `arch.cc:482` yet, deliberately.** Exponent 7 was presumably tuned on designs that nearly
+meet timing, where sharp discrimination is correct; 2 helps a design failing by ~8×. One data point does
+not justify flipping the default for every Cyclone V user. The upstream-able version of this finding is
+either a utilisation/slack-dependent exponent or a documented recommendation — both want a second design
+first.
 
 **Why it blocks.** The routed core hits **6.22 MHz** where the critical path is **94% wire** (19.77 ns
 routing vs 0.60 ns logic; one 1×3-tile hop costs 11.52 ns — a congestion detour, not distance). Logic depth
