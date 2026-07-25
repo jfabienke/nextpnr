@@ -8,7 +8,7 @@ Each item below states what was measured, why it blocks, and the entry point —
 
 ## G1 — Timing-driven placement is ineffective: `criticalityExponent = 7`
 
-**Status: root-caused and FIXED via existing flags — measured +12.5% Fmax, 44% fewer router iters.**
+**Status: root-caused. The flag fix is a CONDITIONAL trade, not a uniform win — measured across 3 designs.**
 
 **Measured.** `--freq 50` changes the placement *not at all*: post-placement Fmax is **10.40 MHz with and
 without it**, byte-identical. The plumbing is fine — `--freq` → `target_freq` (`common/kernel/command.cc:502`,
@@ -39,13 +39,36 @@ from nexus, where it was presumably tuned on designs that nearly meet timing.
 which timed out at 48 min with no bitstream at all. `--freq 50` on its own changes nothing (post-place
 10.40 MHz either way), so the gain is attributable to the exponent/weight, not the target.
 
-**Recommended invocation for dense Cyclone V designs** (until a default change is justified on more than
-one design):
+**CORRECTED 2026-07-25 — measured across three designs, `critexp 2` is a TRADE, not an improvement.**
+The single-design result above was over-generalized. Full matrix (`scratchpad/pnrcal`, beta 0.35, `--freq 50`):
+
+| design | ALUT | critexp 7 | critexp 2 | Δ Fmax | router iters |
+|---|---|---|---|---|---|
+| compact | 1,781 | 118.81 MHz | 123.24 MHz | **+3.7%** | 13 → 11 |
+| neutral | 31,428 | 8.30 MHz | 7.70 MHz | **−7.2%** | 81 → 102 |
+| core | 34,405 | 6.22 MHz | 7.00 MHz | **+12.5%** | 1312 → 736 |
+
+**The predictor is not density** — `neutral` (31.4k) and `core` (34.4k) are nearly the same size and move in
+opposite directions. It tracks whether routing is **congestion-bound**: `core` needed 1312 iterations at
+critexp 7 and `critexp 2` nearly halved that while gaining 12.5%; `neutral` already routed in 81 iterations
+and `critexp 2` made it *harder* (102) and slower. So the working hypothesis is:
+
+> `--placer-heap-critexp 2` helps when the design is congestion-bound (high router iteration count) and
+> hurts when routing is already easy. Apply it conditionally, per design, and measure.
+
+That is a hypothesis from **three** data points, not a rule. Do not apply it by default, and do not quote
+the +12.5% without the −7.2% beside it.
 
 ```
+# only after confirming the design is congestion-bound at the default
 MISTRAL_HEAP_BETA=0.35 nextpnr-mistral ... \
     --freq <real target> --placer-heap-critexp 2 --placer-heap-timingweight 30
 ```
+
+**Use `scratchpad/pnrcal/pnrcal.sh` for any further placer/router change.** It runs the design×config matrix
+and tabulates routed/overuse/iters/Fmax/time. Built precisely because three P&R changes this session were
+judged by reasoning plus one run, and **all three needed correcting** — the router cost schedule (predicted
+win, diverged), the delay recalibration (better description, placer 2× worse), and this one.
 
 **Not changing `arch.cc:482` yet, deliberately.** Exponent 7 was presumably tuned on designs that nearly
 meet timing, where sharp discrimination is correct; 2 helps a design failing by ~8×. One data point does
