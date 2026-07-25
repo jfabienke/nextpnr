@@ -133,6 +133,58 @@ route), so a **single-clock** core builds today; only multi-clock freq-synthesis
   emits a `.rbf`.** The knob is coarse — 0.25/0.35/0.40 produce byte-identical placements; only 0.45 differs.
   A defensible upstream change is lowering the default, or making it utilisation-dependent.
 
+## G5 — the placer's delay estimate is congestion-blind (and naive recalibration BACKFIRES)
+
+**Status: characterized. The cheap fix was tried and REVERTED — it made things measurably worse.**
+
+**Measured.** `predictDelay`/`estimateDelay` (`mistral/delay.cc:409,421`) are `75·Δx + 200·Δy`;
+`getWireDelay` is **0**; `getPipDelay` is, per its own comment, *"guesswork based on average of
+(interconnect delay / number of pips)"* — a per-node-**type** table, so every H14 hop scores identically
+whether it is direct or a 20-wire detour. Real delays come from `mistral::AnalogSim` in
+`getArcDelayOverride`, but that walks the **actual routed PIP chain** and is gated on `bitstream_configured`
+— which is not an oversight: you cannot analog-simulate a path that does not exist yet. So P&R optimises
+guesswork and only signoff sees reality.
+
+Scraped 958 real routed arcs (delay + endpoint coords from critical-path reports, fabi386 CPU core, 41% COMB):
+
+| | value |
+|---|---|
+| actual arc delay | mean 1.27 ns, sd 2.44, max 20.56 |
+| current model | under-predicts mean by **2.7×** |
+| **zero-distance arcs** | **402 of 958** — model says **free**; actual mean 0.28 ns, **max 8.49 ns** |
+| delay concentration | top 5% of arcs carry **40%** of all routing delay |
+| **R² of distance** | **0.248** — distance explains only a quarter of the variance |
+| R² after least-squares recalibration | 0.442 |
+
+**The tempting fix, and why it is wrong.** Least squares gives `0.331·Δx + 0.285·Δy + 0.344` — better
+*description* (R² 0.248→0.442), and it exposes three apparent flaws: no constant term, inverted x/y
+asymmetry (old weights make y 2.7× costlier; measured is near-parity), slopes too small.
+
+**Substituting it made the placer dramatically WORSE: post-placement Fmax 11.09 → 5.44 MHz**, with routing
+also degrading (overuse 369 at iter 72 where the uncalibrated run was converging). Reverted.
+
+**Why it backfired — the transferable lesson.** These coefficients are not a *description* of delay, they
+are one term in a **tuned optimisation objective**, balanced against the wirelength term and against
+`hpwl_scale_y = 2` (which encodes the same y-penalty the old 200-vs-75 did — flattening one while leaving
+the other creates an inconsistency). A constant term also compresses the criticality range, reproducing
+exactly the discrimination loss that made `criticalityExponent = 7` ineffective in G1. **Fitting a
+descriptive model and dropping it into an optimiser's cost function is not a valid transformation.**
+
+**What is actually missing.** 56% of the variance is congestion, which no distance model can express — the
+same-tile arc costing 8.49 ns is a detour, not a distance. Closing it needs a **congestion-aware placement
+estimate** (RUDY-style routing-demand, not just cell-slot utilisation, which is what `beta` already covers).
+That is real algorithm work, and per the evidence above it must not be attempted without a **calibration
+harness**: a way to change one placer cost term and measure *routed* Fmax across several designs. Changing
+the objective by reasoning alone is how both this recalibration and the `--tmg-ripup` attempt failed.
+
+**Corroborating evidence that "tighter predicted" ≠ "better routed":** beta 0.40 had *better*
+post-placement Fmax than 0.35 (10.02 vs 9.26) and *worse* routed Fmax (6.84 vs 8.30). Any optimiser that
+tightens placement against a congestion-blind model is likely to reproduce that inversion — which is the
+main reason to be sceptical of wiring in `timing_opt` (`common/place/timing_opt.cc`, called only by ice40)
+before G5 is addressed.
+
+---
+
 ## Anti-patterns already measured out — do not re-run these
 
 - **router2 congestion cost-schedule tuning.** Aggressive escalation *diverges* (min 2,018 overuse then
