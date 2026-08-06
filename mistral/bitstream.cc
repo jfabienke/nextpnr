@@ -417,6 +417,24 @@ struct MistralBitgen
                        CycloneV::PLL_MCNT0);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
+        // REFERENCE-CLOCK ENABLE. The positive control (a Quartus build of THIS telemetry design,
+        // measured at PLL=96.469 MHz / LOCKED=1) brings the clock pin onto the network with
+        //     CMUXVG(42,0) INPUT_SEL[0] = 0x00 -> {CLKPIN, 1}
+        // whereas nextpnr's write_clkbuf_cell hardcodes {CLKIN,2} = 0x1b (general routing) on
+        // CMUXHG. The earlier CLKPIN sweep tested this idea on the wrong mux -- CMUXHG(0,35)/(89,35),
+        // never CMUXVG(42,0). Working theory: the dedicated clock-pin buffer is enabled by BEING
+        // SELECTED through a {CLKPIN,n} entry, so with only a general-routing selection the pin's
+        // clock buffer never turns on and the PLL's dedicated reference is dead -- which is exactly
+        // the measured symptom, and why the pin's pad CRAM is identical in working and dead builds.
+        if (const char *e = getenv("VUP_CLKPIN_GCLK")) {
+            int g = int(strtoul(e, nullptr, 0)) & 3;
+            uint32_t sel = 0x00;
+            if (const char *v = getenv("VUP_CLKPIN_ENTRY"))
+                sel = uint32_t(strtoul(v, nullptr, 0));
+            cv->bmux_r_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), CycloneV::INPUT_SEL, g, sel);
+            log_info("  CLKPIN enable: CMUXVG(42,0) gclk %d INPUT_SEL=0x%02x\n", g, sel);
+        }
+
         // Enables.
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::VCO0PH_EN, 0, true);
