@@ -596,6 +596,17 @@ enable isn't in the pad; the FPLL tile matched byte-for-byte because the enable 
 all PRAM transplants failed because the enable isn't in PRAM; and `CLKIN_0_SRC` swept clean because
 the PLL was selecting a source that nothing was driving.
 
+**Narrowed to column 9 alone — 27 bits, and still `LOCKED=1`:**
+
+```
+tile (9, 9):2  (9,11):2  (9,13):2  (9,15):2  (9,17):2  (9,19):2
+     (9,21):2  (9,23):2  (9,25):2  (9,27):2  (9,29):3  (9,76):4
+```
+
+Eleven consecutive odd rows, 2 bits each, from y=9 to y=29 — the spine segment enables — plus a
+3-bit cap at y=29 and 4 bits at y=76. **That is the whole reference-clock delivery mechanism, and
+nextpnr emits none of it.**
+
 **To implement it:** these spine bits must be emitted as a function of (clock source entry, PLL
 position). One data point exists (pin → FPLL(0,14) via column 9, rows 9..29). Deriving the general
 rule needs a handful more Quartus builds at other PLL positions — cheap now that the NAS flow,
