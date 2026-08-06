@@ -414,9 +414,55 @@ no working clock in the design.
 
 `LOCKED=0` is now measured: the PLL never starts, so G4a's output path is neither validated nor
 implicated. The emitted `FPLL(0,14)` differs from the reference only in which C-counter the design
-asks for. The last untested difference is that our clock pin *also* drives fabric (the REF counter,
-via a CLKBUF onto GCLK) whereas the reference's pin drives only the PLL — testable because `BUILD_ID`
-and `LOCKED` need no clock to be read.
+asks for.
+
+### 2026-08-07 (round 11) — PRAM is where the unnamed bits live, and the FPLL's own chain is NOT the answer
+
+Two corrections to the round-10 plan, both from measurement:
+
+1. **A raw CRAM diff cannot see PLL configuration.** libmistral keeps `pram[32]` separate from
+   `cram`; periphery/FPLL config lives in PRAM. A windowed `cramdiff` over the FPLL(0,14) tile
+   reports "0 differing bits" — which means the window does not cover the block, **not** that the
+   tiles agree (`bmuxdiff` shows the counters differ). Do not read that zero as equality.
+2. **Mirroring the reference exactly still does not lock.** With the clock pin driving *only* the PLL
+   (REF counter removed, so the pin has no fabric load at all, as in the reference): `LOCKED=0`,
+   `LOAD OK`. The full non-logic diff at that point is the C-counter, LED drive strength, and
+   `PL_AUX_BG_POWERDOWN` on an unused PLL — nothing on the reference-clock side.
+
+New instruments: `pramdiff` (per-chain PRAM diff) and `pramown` (attributes each chain to its owning
+blocks — the index is `pram[(base >> 16) & 31]`, with `base & 0xffff` the bit offset, from
+`fpll2pram`/`cmuxh2pram`/... ). Reference vs ours: **219 differing PRAM bits**, of which `bmuxdiff`
+names only the counter choice.
+
+| chain | owners | differ | set only in reference |
+|---|---|---|---|
+| 13 | **FPLL(0,14)** + FPLL(0,31), HSSI(0,23), PMA3 | 14 | 7 |
+| 12 | **CMUXH(0,35)** + HSSI(0,35), HIP(1,56) | 65 | 63 |
+| 5 | CMUXH(89,35) + TERM(89,27) | 64 | 61 |
+| 4 | CBUF(87,0), LVL(89,17), SERPAR, TERM(89,5) | 72 | 32 |
+| 1, 10 | CMUXV(42,0)/LVL, FPLL(0,73)/CMUXC/DLL/CBUF | 3, 1 | 3, 1 |
+
+**Transplant results** (`prampatch`, donor = the minimal Quartus reference; note it also moves
+`oram[5]`/`oram[7]` unconditionally, so each trial carries *more* reference config than named):
+
+| transplant | REF | LOCKED | verdict |
+|---|---|---|---|
+| all 6 chains | 0.000 | 0 | **INCONCLUSIVE** — the donor's periphery clobbered our clock network, killing the instrument |
+| chain 13 only (the FPLL's own) | 50.332 MHz | **0** | **valid negative** |
+
+So installing every bit of a working PLL's own PRAM chain — modelled and unmodelled alike — does not
+start it. **The missing configuration is not in the FPLL block at all**, which retires the last
+hypothesis that the fault lies in how we program the PLL.
+
+What remains are the analog/periphery blocks that carry the bulk of the reference-only bits:
+`HSSI(0,35)` and `CMUXH(0,35)` (chain 12, 63 reference-only bits), `TERM` and `CBUF` and `LVL`
+(chains 4/5). A chain-12 transplant is the next targeted step, but it touches the clock muxes, so it
+needs the instrument's clock moved off that path first or the trial repeats the inconclusive result.
+
+**Method note.** Sweeping is exhausted as an instrument here: `CLKIN_0_SRC` (all 8), CLKBUF source
+(6), PLL position, both feedback modes, and a byte-identical tile clone are all negative. A sweep can
+only turn knobs that have names, and the remaining difference is in bits libmistral does not name —
+so differential transplant, not a wider sweep, is the technique that can still make progress.
 
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
