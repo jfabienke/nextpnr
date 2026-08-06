@@ -114,6 +114,13 @@ Arch::Arch(ArchArgs args)
     for (auto cmuxh_pos : cyclonev->cmuxh_get_pos())
         create_clkbuf(CycloneV::pos2x(cmuxh_pos), CycloneV::pos2y(cmuxh_pos));
 
+    // G4: PLL-output clock injection bels at the global cmuxes + the (pll,counter)->INPUT_SEL map.
+    for (auto cmuxh_pos : cyclonev->cmuxh_get_pos())
+        create_pllclk(CycloneV::pos2x(cmuxh_pos), CycloneV::pos2y(cmuxh_pos), /*vertical=*/false);
+    for (auto cmuxv_pos : cyclonev->cmuxv_get_pos())
+        create_pllclk(CycloneV::pos2x(cmuxv_pos), CycloneV::pos2y(cmuxv_pos), /*vertical=*/true);
+    build_pllclk_map();
+
     create_control(CycloneV::pos2x(cyclonev->ctrl_get_pos()[0]), CycloneV::pos2y(cyclonev->ctrl_get_pos()[0]));
 
     auto hps_pos = cyclonev->hps_get_pos();
@@ -194,6 +201,22 @@ bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
     } else if (data.type == id_MISTRAL_FF) {
         return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
                is_lab_ctrlset_legal(data.lab_data.lab) && check_mlab_groups(data.lab_data.lab);
+    } else if (data.type == id_MISTRAL_PLLCLK) {
+        // A PLLCLK bel is legal only where the dedicated PLL->cmux wiring exists for its source
+        // PLL counter (pllclk_sel_map). If the source PLL is not placed yet, defer (valid); the
+        // pair converges as the placer binds both.
+        CellInfo *ci = getBoundBelCell(bel);
+        if (ci == nullptr)
+            return true;
+        if (!ci->attrs.count(id_PLLCLK_PLL) || !ci->attrs.count(id_PLLCLK_COUNTER))
+            return true; // not a pack-inserted pllclk (shouldn't happen); nothing to check
+        auto pll_it = cells.find(id(ci->attrs.at(id_PLLCLK_PLL).as_string()));
+        if (pll_it == cells.end() || pll_it->second->bel == BelId())
+            return true;
+        Loc pl = getBelLocation(pll_it->second->bel);
+        int counter = int(ci->attrs.at(id_PLLCLK_COUNTER).as_int64());
+        return pllclk_lookup(uint32_t(CycloneV::xy2pos(pl.x, pl.y)), counter, uint32_t(bel.pos),
+                             data.block_index) >= 0;
     }
     return true;
 }

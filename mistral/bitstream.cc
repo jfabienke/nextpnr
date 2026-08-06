@@ -130,6 +130,32 @@ struct MistralBitgen
         cv->bmux_m_set(CycloneV::CMUXHG, pos, CycloneV::TESTSYN_ENOUT_SELECT, bi, CycloneV::PRE_SYNENB);
     }
 
+    // G4 (PLL_OUTCLK_DESIGN.md): a MISTRAL_PLLCLK bound at gclk instance `bi` of a global cmux
+    // injects its source PLL counter via the dedicated wiring — pure configuration: program this
+    // instance's INPUT_SEL to the map-derived entry that selects {PLLIN, k} for (pll pos, counter).
+    // v1 emits the DIRECT path; whether the CLK_SELECT switchover layer is additionally required is
+    // the design's open question, arbitrated on silicon (V3). PLL feedback stays in the FPLL config
+    // (write_fpll_cell); the cmux PLL_FEEDBACK_* path (external feedback) is deliberately untouched.
+    void write_pllclk_cell(CellInfo *ci, int x, int y, int bi)
+    {
+        auto pos = CycloneV::xy2pos(x, y);
+        auto pll_it = ctx->cells.find(ctx->id(ci->attrs.at(id_PLLCLK_PLL).as_string()));
+        if (pll_it == ctx->cells.end() || pll_it->second->bel == BelId())
+            log_error("PLLCLK '%s': source PLL missing or unplaced at bitstream time\n", ctx->nameOf(ci));
+        Loc pl = ctx->getBelLocation(pll_it->second->bel);
+        int counter = int(ci->attrs.at(id_PLLCLK_COUNTER).as_int64());
+        int sel = ctx->pllclk_lookup(uint32_t(CycloneV::xy2pos(pl.x, pl.y)), counter, uint32_t(pos), bi);
+        if (sel < 0)
+            log_error("PLLCLK '%s': no dedicated wiring from FPLL(%d,%d) C%d to cmux (%d,%d) gclk %d — "
+                      "placement validity should have prevented this\n",
+                      ctx->nameOf(ci), pl.x, pl.y, counter, x, y, bi);
+        auto bt = ctx->pllclk_pos_is_vertical(uint32_t(pos)) ? CycloneV::CMUXVG : CycloneV::CMUXHG;
+        cv->bmux_r_set(bt, pos, CycloneV::INPUT_SEL, bi, uint32_t(sel));
+        cv->bmux_m_set(bt, pos, CycloneV::TESTSYN_ENOUT_SELECT, bi, CycloneV::PRE_SYNENB);
+        log_info("PLLCLK '%s': cmux(%d,%d)%s gclk %d INPUT_SEL=0x%x selects FPLL(%d,%d) C%d\n", ctx->nameOf(ci), x,
+                 y, bt == CycloneV::CMUXVG ? "VG" : "HG", bi, sel, pl.x, pl.y, counter);
+    }
+
     void write_m10k_cell(CellInfo *ci, int x, int y, int bi)
     {
         auto pos = CycloneV::xy2pos(x, y);
@@ -300,14 +326,20 @@ struct MistralBitgen
                 C = 1;
             int c_hi = C / 2;
             int c_lo = C - c_hi;
+            // Physical counter for logical clock c: pack may remap (G4) because only C4..C8 have
+            // dedicated wiring to the GLOBAL cmuxes (p2p-verified); C0..C3 reach only regionals.
+            int phys = c;
+            IdString pa = ctx->idf("PLLCLK_PHYS_%d", c);
+            if (ci->attrs.count(pa))
+                phys = int(ci->attrs.at(pa).as_int64());
             // Per-counter output divider (midx = counter index 0..8).
-            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_HI_DIV, c, c_hi);
-            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_LO_DIV, c, c_lo);
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_HI_DIV, phys, c_hi);
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_LO_DIV, phys, c_lo);
             // Odd divides need the odd/even-duty enable bit.
             if (C % 2)
-                cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, c, true);
+                cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, phys, true);
             // Enable this counter's clock output.
-            cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[c], 0, true);
+            cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[phys], 0, true);
         }
 
         // Integer mode: no delta-sigma / fractional division.
@@ -347,6 +379,8 @@ struct MistralBitgen
                 write_m10k_cell(ci, loc.x, loc.y, bi);
             else if (ctx->is_pll_cell(ci->type))
                 write_fpll_cell(ci, loc.x, loc.y, bi);
+            else if (ci->type == id_MISTRAL_PLLCLK)
+                write_pllclk_cell(ci, loc.x, loc.y, bi);
         }
     }
 

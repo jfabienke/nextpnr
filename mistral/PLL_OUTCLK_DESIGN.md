@@ -47,6 +47,24 @@ Three selector layers stand between an FPLL output counter and a global clock li
   the direct path works standalone (without the CLK_SELECT layer), or CLK_SELECT must be set to pass
   the chosen input through, is **the one remaining semantic unknown**.
 
+## 2a. IMPLEMENTED 2026-08-06 — and the open question answered offline
+
+The v1 below is implemented and V1/V2-verified. During V1 the self-check exposed a decoder bug in
+`cmuxdump` (INPUT_SEL is an **r-type** bmux; the tool had read the scalar `.s` field), and the
+corrected decode overturned the ground-truth reading in §1: **Quartus DOES use the direct
+`INPUT_SEL={PLLIN,k}` path** — the fitted fabi386 shows 7 direct PLLIN selections; the earlier
+"two-level CLKPIN_SEL" mechanism was a misdecode artifact. So the open question is closed without
+silicon: our emission mechanism matches Quartus 1:1.
+
+Verified V1 (self-check): `plltest.v` (50 MHz pin -> altera_pll -> 10 MHz C5 -> LED divider,
+locked on LED[7]) routes end-to-end (exit 0, 1.95 MB `.rbf`) — the previously-impossible
+"No wire found for port outclk" case; decode shows exactly the intended
+`CMUXVG(42,0) INPUT_SEL[0]=0x10 -> {PLLIN,8}` (= FPLL(0,14) C5) + M=20/VCO=1000/C5=100 config.
+Verified V2 (shape): same INPUT_SEL={PLLIN,k} r-type mechanism as the Quartus ground truth.
+V3 (silicon lock + blink) pending board availability. Implementation notes: only C4..C8 reach the
+global cmuxes, so pack remaps logical outclk[i] to a physical counter (PLLCLK_PHYS_i) and pre-binds
+PLL + injector; a default-BelId sentinel collides with the real (0,0) bel — found-flags required.
+
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
 **v1 emits the direct configuration:** `INPUT_SEL = e({PLLIN,k})` for the chosen gclk instance,

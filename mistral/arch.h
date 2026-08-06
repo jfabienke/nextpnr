@@ -483,6 +483,33 @@ struct Arch : BaseArch<ArchRanges>
     void create_hps_mpu_general_purpose(int x, int y); // globals.cc
     void create_fpll(int x, int y);                    // pll.cc
 
+    // G4: PLL outclk -> global clock network (see PLL_OUTCLK_DESIGN.md). The map is composed at
+    // init from libmistral's p2p tables (FPLL PLLCOUT[c] -> CMUX* PLLIN[k], dedicated wiring) and
+    // the compiled cmux link tables (PLLIN line k -> INPUT_SEL entry e per gclk instance):
+    //   key(fpll_pos, counter, cmux_pos, gclk_instance) -> the INPUT_SEL value selecting that
+    //   PLL counter at that gclk instance.
+    void create_pllclk(int x, int y, bool vertical);   // pll.cc
+    void build_pllclk_map();                           // pll.cc
+    int pllclk_lookup(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst) const; // -1 if absent
+    bool pllclk_pos_is_vertical(uint32_t cmux_pos) const; // CMUXVG vs CMUXHG position
+    // Deterministic co-assignment for pack: choose an FPLL position plus, per logical output clock,
+    // a (physical counter, cmux pos, gclk instance, INPUT_SEL) tuple. Physical-counter freedom is
+    // required: only C4..C8 have dedicated wiring to the global cmuxes (p2p-verified).
+    struct PllClkChoice
+    {
+        uint32_t cmux_pos;
+        int inst;
+        int phys_counter;
+        int sel;
+    };
+    bool pllclk_choose(int nclk, uint32_t &fpll_pos, std::vector<PllClkChoice> &out) const; // pll.cc
+    std::map<uint64_t, uint8_t> pllclk_sel_map;
+    static uint64_t pllclk_key(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst)
+    {
+        return (uint64_t(fpll_pos) << 40) | (uint64_t(counter & 0xff) << 32) | (uint64_t(cmux_pos) << 8) |
+               uint64_t(inst & 0xff);
+    }
+
     // -------------------------------------------------
 
     bool is_comb_cell(IdString cell_type) const;        // lab.cc

@@ -513,19 +513,15 @@ struct MistralPacker
             if (ci->ports.count(id_fbclk))
                 ci->pin_data[id_fbclk].bel_pins = {id_FBCLK};
 
-            // PLL output clocks. NONE of the altera_pll output clocks can be
-            // routed: the Mistral e50f model exposes no FPLL routing port for a
-            // PLL output (verified by enumerating every port type at every FPLL
-            // position). Physically the C-counter outputs reach the clock tree
-            // only through the clock control block via the dedicated CMUX_PLLIN
-            // selection, which libmistral represents as a bitstream mux and not
-            // as routing-graph edges - and the clock network is only ever driven
-            // by clock-type nodes, never by the PLL. So there is no bel pin to
-            // map an output onto. Leave the mapping empty; if an output is
-            // actually used, routing will fail with a clear "No wire found for
-            // port outclk" naming the unmodelled resource.
+            // PLL output clocks (G4, PLL_OUTCLK_DESIGN.md). The C-counter outputs reach the clock
+            // tree through dedicated wiring into the global clock control blocks, selected by the
+            // cmux INPUT_SEL bitstream mux — configuration, not routing, so there is no FPLL bel
+            // pin to map an outclk onto. Instead each used outclk net gets a MISTRAL_PLLCLK cell
+            // spliced in as its driver: its Q binds a global cmux CLKOUT (GCLK root) wire,
+            // placement validity restricts it to gclk instances the dedicated wiring can actually
+            // feed (pllclk_sel_map), and bitstream emission programs the INPUT_SEL accordingly.
             int nclk = ci->params.count(id_number_of_clocks) ? int(ci->params.at(id_number_of_clocks).as_int64()) : 1;
-            bool outclk_used = false;
+            std::vector<std::pair<int, CellInfo *>> injectors; // (logical clock index, pllclk cell)
             for (int i = 0; i < nclk; i++) {
                 IdString cellport =
                         (nclk == 1 && ci->ports.count(id_outclk)) ? id_outclk : ctx->idf("outclk[%d]", i);
@@ -533,14 +529,66 @@ struct MistralPacker
                     continue;
                 ci->pin_data[cellport].bel_pins.clear();
                 NetInfo *on = ci->getPort(cellport);
-                if (on != nullptr && !on->users.empty())
-                    outclk_used = true;
+                if (on == nullptr || on->users.empty())
+                    continue;
+                CellInfo *pc =
+                        ctx->createCell(ctx->idf("%s$pllclk[%d]", ci->name.c_str(ctx), i), id_MISTRAL_PLLCLK);
+                pc->addOutput(id_Q);
+                // The outclk net's driver becomes the PLLCLK cell; the PLL port is left
+                // disconnected (the physical connection is the dedicated wiring the map encodes).
+                ci->movePortTo(cellport, pc, id_Q);
+                pc->attrs[id_PLLCLK_PLL] = ci->name.str(ctx);
+                injectors.emplace_back(i, pc);
             }
-            if (outclk_used)
-                log_warning("altera_pll '%s': PLL output clock(s) are used but cannot be routed - the Cyclone V "
-                            "PLL->clock-network path (CMUX_PLLIN) is not modelled as routing in the Mistral e50f "
-                            "graph; routing will fail on 'outclk'.\n",
-                            ctx->nameOf(ci));
+            if (!injectors.empty()) {
+                // Deterministic co-assignment (G4): choose the FPLL position and, per output clock,
+                // the physical counter + global-cmux gclk instance the dedicated wiring supports —
+                // only C4..C8 reach the global cmuxes, so logical clock i is remapped to a physical
+                // counter and both cells are pre-bound (LOCKED). Refusal is loud, never a guess.
+                uint32_t fpll_pos = 0;
+                std::vector<Arch::PllClkChoice> picks;
+                if (!ctx->pllclk_choose(int(injectors.size()), fpll_pos, picks))
+                    log_error("altera_pll '%s': no FPLL position has dedicated global-cmux wiring for "
+                              "%d output clock(s)\n",
+                              ctx->nameOf(ci), int(injectors.size()));
+                // NOTE: a default BelId() is (pos 0, z 0), which is a REAL bel id in tile (0,0) —
+                // FPLL(0,0) can be exactly that — so "found" needs an explicit flag, not a sentinel.
+                BelId pll_bel;
+                bool pll_found = false;
+                for (BelId b : ctx->getBels())
+                    if (ctx->getBelType(b) == id_altera_pll && uint32_t(b.pos) == fpll_pos) {
+                        pll_bel = b;
+                        pll_found = true;
+                        break;
+                    }
+                if (!pll_found)
+                    log_error("altera_pll '%s': no FPLL bel at chosen position (%d,%d)\n", ctx->nameOf(ci),
+                              CycloneV::pos2x(CycloneV::pos_t(fpll_pos)), CycloneV::pos2y(CycloneV::pos_t(fpll_pos)));
+                ctx->bindBel(pll_bel, ci, STRENGTH_LOCKED);
+                for (size_t j = 0; j < injectors.size(); j++) {
+                    auto &pk = picks.at(j);
+                    CellInfo *pc = injectors[j].second;
+                    pc->attrs[id_PLLCLK_COUNTER] = Property(pk.phys_counter);
+                    ci->attrs[ctx->idf("PLLCLK_PHYS_%d", injectors[j].first)] = Property(pk.phys_counter);
+                    BelId cb;
+                    bool cb_found = false;
+                    for (BelId b : ctx->getBels())
+                        if (ctx->getBelType(b) == id_MISTRAL_PLLCLK && uint32_t(b.pos) == pk.cmux_pos &&
+                            ctx->bel_data(b).block_index == pk.inst) {
+                            cb = b;
+                            cb_found = true;
+                            break;
+                        }
+                    if (!cb_found)
+                        log_error("altera_pll '%s': no PLLCLK bel at chosen cmux position\n", ctx->nameOf(ci));
+                    ctx->bindBel(cb, pc, STRENGTH_LOCKED);
+                    Loc pl = ctx->getBelLocation(pll_bel), cl = ctx->getBelLocation(cb);
+                    log_info("  PLL clock injector '%s': outclk[%d] -> FPLL(%d,%d) C%d -> cmux(%d,%d) gclk %d "
+                             "(INPUT_SEL=0x%x)\n",
+                             ctx->nameOf(pc), injectors[j].first, pl.x, pl.y, pk.phys_counter, cl.x, cl.y, pk.inst,
+                             pk.sel);
+                }
+            }
 
             // The only *input* pins we model on the FPLL bel are refclk and
             // fbclk. Every other input the altera_pll cell carries (reset

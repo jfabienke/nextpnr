@@ -195,7 +195,7 @@ struct MistralGlobalRouter
             CellInfo *drv = ni->driver.cell;
             if (drv == nullptr)
                 continue;
-            if (drv->type.in(id_MISTRAL_CLKENA, id_MISTRAL_CLKBUF)) {
+            if (drv->type.in(id_MISTRAL_CLKENA, id_MISTRAL_CLKBUF, id_MISTRAL_PLLCLK)) {
                 route_clk_net(ni);
                 continue;
             }
