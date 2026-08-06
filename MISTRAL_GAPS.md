@@ -155,6 +155,27 @@ for port outclk".
 **Workaround.** The fabric can be clocked directly from an input pin (CLKBUF→GCLK, proven by the refclk
 route), so a **single-clock** core builds today; only multi-clock freq-synthesis needs G4.
 
+**REVISED 2026-08-06 — ground-truth decode changes the mechanism.** New instrument
+`openflow-test/cmuxdump` (fplldump pattern: `bmux_get()` filtered to CMUX blocks, each `INPUT_SEL`
+decoded through the link tables). Swept three independent Quartus-fitted designs with PLL-driven
+clocks — ao486_20170803, ao486_20220914/20240616, and the fitted fabi386 (`f386_mister.rbf`):
+
+- **Zero direct `{PLLIN,k}` INPUT_SEL selections in any design.** The link tables' PLLIN entries are
+  not how Quartus puts a PLL output onto GCLK on this die.
+- The consistent mechanism is **two-level**: `INPUT_SEL = 0x6 → {NCLKPIN_SEL_2, n}` (a per-gclk
+  *selector line*), plus `CLKPIN_SEL_0/_2` bmuxes (observed values `0x1`, `0x5`) choosing what the
+  selector lines carry — i.e. the `CMUX_PLL_SEL_0/1`-style indirection the earlier RE noted in the
+  rmux vocabulary. CMUXVG adds a `CLK_SELECT_C/_D` layer (observed `0x2`).
+- The residual is therefore **narrow and named: the CLKPIN_SEL_x / CLK_SELECT_x value encoding**
+  (which value selects which PLL counter vs. which clock pin). Two values observed so far; the
+  clean derivation is 2–3 targeted Quartus diff builds (same design, only the PLL-counter→GCLK
+  assignment changed) through the existing quartus_jobs pipeline, diffed with `cmuxdump`.
+
+Implementation stays gated on that value table — emitting guessed selector values would violate the
+"every number from a real command" rule. Entry point once derived: CLKBUF-precedent bel whose
+bitstream emission programs `INPUT_SEL=0x6` + the derived `CLKPIN_SEL_x` value (nextpnr-side only;
+no libmistral graph surgery needed for v1).
+
 ---
 
 ## G6 — SDRAM (board-module) controller path: unproven in the open flow, but mostly leverage
@@ -192,6 +213,19 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
 **Path.** Port the MiSTer `sdram.sv` (smallest proven variant) + its qsf pin block into the open
 flow at conservative clocking → silicon MemTest → raise the clock once G4 lands phase-shifted
 outputs. Success criterion is a silicon-verified memory test through the open flow, not "it routes."
+
+**Module design (added 2026-08-06).** Ship the controller as standard slice modules, two variants:
+**16-bit** (one module — the common MiSTer analog-board case) and **32-bit** (dual/ganged modules).
+Nice-to-have features, in priority order:
+1. **Capacity auto-detect** — standard row/col/bank aliasing probe at init (write-pattern address
+   folding), reporting detected geometry (32/64/128MB) instead of a build-time parameter.
+2. **Frequency capability probe** — trial the clock ladder (G4-gated) with the self-check as the
+   pass gate per step; report the highest stable rate rather than assuming one.
+3. **Built-in self-check** — a MemTest-class pattern engine (walking bits, address-in-address,
+   refresh-retention spot check) exposed as **`vup-telemetry/1` channels** (ADR-0006):
+   `sdram.geometry`, `sdram.freq_mhz`, `sdram.selfcheck` as kept registered state — so the same
+   assert corpus gates the controller in sim and on silicon, and the deploy gate can read PASS from
+   telemetry rather than "it configured."
 
 - **macOS portability fix** in `mistral/pack.cc` — `std::max/min(int64_t, long-literal)` was ambiguous and
   blocked *all* nextpnr-mistral compiles on macOS; now `std::max<int64_t>` / `std::min<int64_t>`.
