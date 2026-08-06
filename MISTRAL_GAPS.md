@@ -65,10 +65,20 @@ MISTRAL_HEAP_BETA=0.35 nextpnr-mistral ... \
     --freq <real target> --placer-heap-critexp 2 --placer-heap-timingweight 30
 ```
 
+**AUTOMATED (2026-08-06): `scratchpad/pnrcal/critexp_auto.sh`** applies exactly this conditional:
+default run → parse router iterations → below threshold (`CRITEXP_ITER_THRESHOLD`, default 200,
+between the measured 81/neutral and 1312/core populations) means NOT congestion-bound and the flags
+are *refused*; above it, both configs run and the winner is chosen by **routed** Fmax only. Emits a
+one-line JSON verdict (`critexp-auto/1`) carrying both measurements. Verified live: blinky → 5 iters,
+212 MHz, `keep_default` with flags not applied. The threshold is a 3-datapoint hypothesis — re-derive
+it via `pnrcal.sh` as designs accrue.
+
 **Use `scratchpad/pnrcal/pnrcal.sh` for any further placer/router change.** It runs the design×config matrix
 and tabulates routed/overuse/iters/Fmax/time. Built precisely because three P&R changes this session were
 judged by reasoning plus one run, and **all three needed correcting** — the router cost schedule (predicted
 win, diverged), the delay recalibration (better description, placer 2× worse), and this one.
+*(The original scratchpad copy was never committed; recreated and committed 2026-08-06 —
+`designs.tsv`/`configs.tsv` in, routed/iters/overuse/Fmax/time table out.)*
 
 **Not changing `arch.cc:482` — and the second design settled it.** The default was held back pending more
 than one data point; the second design came in at **−7.2%**, so flipping it would have made things worse for
