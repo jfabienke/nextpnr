@@ -361,6 +361,63 @@ conclusion this evidence supports is not "one more field to find" but:
 
 This is a lead's call, not a sweep: see MISTRAL_GAPS.md for the options.
 
+### 2026-08-07 (round 10) — the minimal Quartus reference names the root cause
+
+Built the reference the gap table asked for: one PLL, 50 MHz → 96 MHz, nothing else, on the NAS
+(`admin@192.168.50.100`, container `quartus`, Quartus Prime Lite 17.0.2). `altera_pll` elaborates
+directly from Verilog — no Qsys needed. Its fit report is unambiguous:
+
+```
+Reference Clock Sourced by : Dedicated Pin
+CLKIN(0) source            : FPGA_CLK1_50~input
+PLL VCO Frequency          : 480.0 MHz
+PLL Operation Mode         : Normal
+```
+
+and the bitstream agrees. The entire design has **one** non-default clock mux —
+`CMUXHG(0,35)[0] = 0x16 → {PLLIN,14}`, which is the PLL's *output* — and its complete 24-link clock
+network contains **no path into any PLL**. The 50 MHz pin never enters the clock network at all.
+
+> **nextpnr's whole refclk model is wrong-headed.** We build
+> `pin → CLKBUF → GCLK → SCLK → PMUX → CORECLK0`; the silicon uses a hardwired `pin → CLKIN(0)` that
+> needs no bitstream configuration. That is why twelve trials with a byte-identical FPLL tile
+> produced nothing: the PLL was listening to a pin we never fed.
+
+**Why every offline check missed it:** libmistral's p2p table maps `FPLL(0,14).CLKIN[0]` to
+`GPIO(32,0)`, but the pin is at `GPIO(10,17)` (`pinfind V11`). The table does not carry this edge for
+5CSEBA6U23I7 — which is also what made `pinat` report "no bonded dedicated PLL clock pins" and cancel
+the original NAS job. The negative was an artefact of the model, not of the silicon.
+
+**Two further corrections it forced:**
+
+- **The feedback, again.** Round 8 concluded from the 20 shipped cores that `FBCLK_MUX_2=1` with no
+  cmux feedback was correct. The minimal reference — same device, same pin, same instantiation as
+  ours — does the *opposite*: `PLL_FEEDBACK_ENABLE_0 = PLL_MCNT0` at `CMUXVG(42,0)`, no
+  `FBCLK_MUX_2`. The shipped cores are fitted in a different operation mode; generalizing from them
+  was wrong. The index also tracks the cmux GCLK instance rather than being the hardcoded `_3`.
+- **The VCO, confirmed.** Quartus's own VCO for 50 → 96 MHz is **480.0 MHz** — exactly what round 8's
+  rebuilt recipe derived from the corpus band.
+
+**Instrument gap closed.** The harness could not distinguish "never locked" from "locked but the
+output does not reach the counter", so every `0.000 MHz` was ambiguous between the two halves of G4 —
+and I had been assuming the first without measuring it. `gp_in` is now
+`{BUILD_ID[7:0], locked, cnt_pll[31:21], cnt_ref[31:20]}`; `locked` is a level, so it reads even with
+no working clock in the design.
+
+**Silicon after all of the above** (build-ID verified, reboot between loads):
+
+| variant | REF | PLL | LOCKED |
+|---|---|---|---|
+| PLL relocated to FPLL(0,14) (`VUP_PLL_POS`) | 50.332 MHz | 0.000 | — |
+| + `PLL_FEEDBACK_ENABLE_0`, no `FBCLK_MUX_2` | 50.332 MHz | 0.000 | — |
+| + refclk left unrouted (`VUP_PLL_NO_REFCLK_BUF`) | 50.332 MHz | 0.000 | **0** |
+
+`LOCKED=0` is now measured: the PLL never starts, so G4a's output path is neither validated nor
+implicated. The emitted `FPLL(0,14)` differs from the reference only in which C-counter the design
+asks for. The last untested difference is that our clock pin *also* drives fabric (the REF counter,
+via a CLKBUF onto GCLK) whereas the reference's pin drives only the PLL — testable because `BUILD_ID`
+and `LOCKED` need no clock to be read.
+
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
 **v1 emits the direct configuration:** `INPUT_SEL = e({PLLIN,k})` for the chosen gclk instance,
