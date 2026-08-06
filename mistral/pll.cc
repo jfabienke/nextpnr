@@ -170,6 +170,14 @@ bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkCho
                         continue;
                     if (used_gclk.count({k_cmux, k_inst}))
                         continue;
+                    // The reference clock now enters the SAME cmux via a {CLKPIN,n} entry (G4b), so
+                    // the PLL output must not claim that gclk instance or it overwrites the
+                    // reference -- measured: the PLL locked but the counter read the 50 MHz
+                    // reference instead of the divided output. VUP_CLKPIN_GCLK names the instance
+                    // the reference uses; skip it here.
+                    if (const char *cg = getenv("VUP_CLKPIN_GCLK"))
+                        if (k_inst == (int(strtoul(cg, nullptr, 0)) & 3))
+                            continue;
                     picks.push_back(PllClkChoice{k_cmux, k_inst, c, int(kv.second)});
                     used_gclk.insert({k_cmux, k_inst});
                     used_counter.insert(c);

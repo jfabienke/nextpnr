@@ -439,6 +439,12 @@ struct MistralBitgen
         }
 
         // Enables.
+        // Ground truth powers down the aux bandgap of an UNUSED PLL whenever a PLL is instantiated;
+        // it appears in the with/without differential and in every locking build, and we never
+        // emitted it. Attested position only, like the spine table.
+        if (getenv("VUP_PLL_SPINE") != nullptr)
+            cv->bmux_b_set(CycloneV::FPLL, CycloneV::xy2pos(0, 73), CycloneV::PL_AUX_BG_POWERDOWN, 0, true);
+
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::VCO0PH_EN, 0, true);
         static const CycloneV::bmux_type_t vco_ph_en[8] = {

@@ -628,6 +628,44 @@ So the locking result must be read precisely:
 > transplant that locked also carried the donor's PRAM chains 4/5/10/12/13. The spine flipped that
 > build from dead to locked, so it is **necessary**; it is **not sufficient on its own**.
 
+## G4 SOLVED — 2026-08-07. A native nextpnr build drives the fabric from the PLL.
+
+```
+NATIVE: ref gclk0 + outclk gclk1    PLL = 9.996 MHz   LOCKED = 1   LOAD OK
+```
+
+Requested 10.000 MHz, measured 9.996 MHz over a 30 s window (0.04% error) from a **pure
+nextpnr-generated bitstream** — no transplant, no Quartus content. `LOCKED=1` and the counter is
+clocked by the PLL's C-counter output, so both halves of G4 are closed on silicon at once.
+
+**The complete mechanism, as implemented:**
+
+| piece | what it is | how it is emitted |
+|---|---|---|
+| reference **in** | `CMUXVG(42,0) INPUT_SEL[0] = 0x00 -> {CLKPIN,1}` | bmux (`VUP_CLKPIN_GCLK`) |
+| reference **distribution** | 56 unmodelled CRAM bits: a spine network (col 9 rows 9–29, col 15, row 76 across cols 9/12/15/18) | raw CRAM (`vup_cram.cc`) |
+| analog bias | `PL_AUX_BG_POWERDOWN` on the unused `FPLL(0,73)` | bmux |
+| PLL config | integer family, N=5 M=48, VCO 480 MHz, `CTRL_OVERRIDE=0`, cmux `PLL_FEEDBACK_ENABLE_0` | bmux |
+| output **out** | `CMUXVG(42,0) INPUT_SEL[1] = 0x10 -> {PLLIN,8}` | bmux (G4a injector) |
+
+**The two mistakes that hid it for ~25 silicon trials**, both now fixed in code:
+
+1. nextpnr routed the reference through the *modelled* `pin → CLKBUF → GCLK → SCLK → PMUX` path.
+   The silicon uses a `{CLKPIN,n}` cmux entry plus a spine that libmistral does not model at all —
+   and worse, our emission **set** spine bits that block it, so the fix was partly a *removal*.
+2. The reference and the PLL output both wanted cmux gclk **0**. With the reference installed there,
+   the PLL locked but the fabric counter measured the 50 MHz reference (measured: `PLL=50.332 MHz,
+   LOCKED=1`) — a perfect illustration of why the `LOCKED` channel was worth adding. Putting the
+   output on gclk 1 gave the requested 10 MHz.
+
+**Scope of the fix (honest):** the spine table is empirical and gated to the one attested
+configuration — `PIN_V11 → FPLL(0,14)`, behind `VUP_PLL_SPINE` + `VUP_PLL_POS` + `VUP_CLKPIN_GCLK`.
+Generalising needs the (pin, PLL position) → spine rule, which is a handful more Quartus references
+now that the whole harness exists. The proper home remains libmistral's routing model; this is a
+working interim that proves the mechanism end to end.
+
+---
+
 ### 2026-08-07 (round 15) — the spine is a NETWORK, and it is now emitted by nextpnr
 
 Iterating "build → re-diff the built artifact against the donor → add what is missing" grew the
