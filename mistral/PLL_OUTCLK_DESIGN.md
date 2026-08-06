@@ -513,6 +513,58 @@ The remaining step is a bisection over that difference — by tile region first 
 then by halves — which is bounded at roughly a dozen trials because each one is a ~90 s load with
 `BUILD_ID` proving which bitstream is live and `LOCKED` giving an unambiguous verdict.
 
+### 2026-08-07 (round 13) — transplant methodology VALIDATED; bisection blocked on instrument fragility
+
+**The control that proves the method.** Transplanting the working same-design donor's *entire* state
+— all PRAM, both oram words, and all CRAM columns — into our bitstream reproduces it and runs:
+
+```
+full transplant (should BE the donor)   REF=50.332 MHz  PLL=96.469 MHz  LOCKED=1  LOAD OK
+```
+
+So `crampatch`/`prampatch` are faithful, CRAM+PRAM fully determine behaviour, and bisecting the
+difference is a sound, bounded procedure. `pramdiff` confirms 0 differing PRAM bits at that point.
+
+**A flaw I introduced, and how it was caught.** For three trials I dropped the reboot protocol and
+loaded straight over a running core. Every *patched* variant inherits `BUILD_ID` from its base
+(0x92), so the ID channel could not discriminate between them. The tell: a bitstream with **zero**
+CRAM and **zero** PRAM difference from the donor still reported `0x92` instead of the donor's `0x90`
+— the load had not taken. Those three results are **void, not negative**.
+
+> The build-ID channel only discriminates when variants carry **distinct** IDs. Derived/patched
+> bitstreams share one, so for those the reboot is what guarantees the load, not the ID.
+
+**Bisection results so far** (all with reboot):
+
+| transplanted region | bits | REF | LOCKED | verdict |
+|---|---|---|---|---|
+| everything (PRAM+oram+CRAM) | all | 50.332 MHz | **1** | method validated |
+| CRAM tile cols 0..6 (left periphery) | 7 | 0.000 | 0 | **inconclusive** — instrument died |
+| CRAM tile cols 0..6 + 86..89 | 1534 | 0.000 | 0 | **inconclusive** — instrument died |
+
+**The blocker is the instrument, not the method.** The telemetry shares the hardware under test: the
+REF counter is clocked through `CMUXHG(0,35)`, which the left-periphery transplant reconfigures, and
+the HPS/LED IO sits in columns 86..89. Any transplant touching those kills the readout.
+
+**Fix, applied:** bisect on a probe whose readout does not depend on the hardware under test.
+`BUILD_ID` is a constant and `LOCKED` is a level, so both read with no working clock anywhere. The
+`pllonly` design (no REF counter; its only clock is the PLL output, which leaves via CMUXVG(42,0) in
+the *middle* columns) is clear of both peripheries. Note `outclk` cannot be left entirely unused —
+nextpnr then fails with "No wire found for port outclk" — so a counter on it must stay.
+
+With that base the first **valid** bisection step lands:
+
+| base | transplanted | BUILD_ID | LOCKED | verdict |
+|---|---|---|---|---|
+| `pllonly` + all donor PRAM/oram + CRAM cols 0..6 | 7 CRAM bits | 0x81 ✓ | **0** | **valid negative** |
+
+(`REF=0.000` here is expected, not an instrument failure — this probe has no REF counter.)
+
+**So the responsible state is not in PRAM, not in oram, and not in CRAM tile columns 0..6** — even
+though that is where `FPLL(0,14)` and `CMUXH(0,35)` live. It remains in columns 7..89 (~4617 bits).
+Next cuts: 7..46, 47..85, 86..89, avoiding the HPS tile at (51,80) whose transplant kills the gp
+readout; ~7 further trials at ~3 minutes each.
+
 **Method note.** Sweeping is exhausted as an instrument here: `CLKIN_0_SRC` (all 8), CLKBUF source
 (6), PLL position, both feedback modes, and a byte-identical tile clone are all negative. A sweep can
 only turn knobs that have names, and the remaining difference is in bits libmistral does not name —
