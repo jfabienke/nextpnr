@@ -429,8 +429,13 @@ struct MistralBitgen
         // SELECTED through a {CLKPIN,n} entry, so with only a general-routing selection the pin's
         // clock buffer never turns on and the PLL's dedicated reference is dead -- which is exactly
         // the measured symptom, and why the pin's pad CRAM is identical in working and dead builds.
-        if (const char *e = getenv("VUP_CLKPIN_GCLK")) {
-            int g = int(strtoul(e, nullptr, 0)) & 3;
+        // DEFAULT ON. Without this the PLL never receives a reference at all, so the attested
+        // configuration is strictly better than the previous always-dead behaviour.
+        // VUP_PLL_LEGACY=1 restores the old path; VUP_CLKPIN_GCLK overrides the instance.
+        if (!getenv("VUP_PLL_LEGACY")) {
+            int g = 0;
+            if (const char *e = getenv("VUP_CLKPIN_GCLK"))
+                g = int(strtoul(e, nullptr, 0)) & 3;
             uint32_t sel = 0x00;
             if (const char *v = getenv("VUP_CLKPIN_ENTRY"))
                 sel = uint32_t(strtoul(v, nullptr, 0));
@@ -442,7 +447,7 @@ struct MistralBitgen
         // Ground truth powers down the aux bandgap of an UNUSED PLL whenever a PLL is instantiated;
         // it appears in the with/without differential and in every locking build, and we never
         // emitted it. Attested position only, like the spine table.
-        if (getenv("VUP_PLL_SPINE") != nullptr)
+        if (!getenv("VUP_PLL_LEGACY"))
             cv->bmux_b_set(CycloneV::FPLL, CycloneV::xy2pos(0, 73), CycloneV::PL_AUX_BG_POWERDOWN, 0, true);
 
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);
@@ -471,7 +476,7 @@ struct MistralBitgen
         // that exact position: the general rule as a function of (pin, PLL position) needs more
         // Quartus references, and guessing it would violate "every number from a real command".
         // The proper home for the fix is libmistral's routing model; this is the interim.
-        if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && getenv("VUP_PLL_SPINE") != nullptr) {
+        if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && !getenv("VUP_PLL_LEGACY")) {
             static const struct { uint32_t x, y; uint8_t v; } spine[] = {
         {865, 796, 0},
         {866, 797, 0},

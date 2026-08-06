@@ -636,7 +636,7 @@ struct MistralPacker
             // configuration. libmistral's p2p CLKIN table does not carry that edge for this package,
             // which is why the model forces the detour above. VUP_PLL_NO_REFCLK_BUF drops the detour
             // so the dedicated path can be tested on silicon.
-            bool no_refclk_buf = getenv("VUP_PLL_NO_REFCLK_BUF") != nullptr;
+            bool no_refclk_buf = !getenv("VUP_PLL_LEGACY");
             NetInfo *refnet = ci->getPort(id_refclk);
             if (no_refclk_buf && refnet != nullptr) {
                 ci->pin_data[id_refclk].bel_pins.clear();

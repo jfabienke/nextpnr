@@ -658,6 +658,13 @@ clocked by the PLL's C-counter output, so both halves of G4 are closed on silico
    LOCKED=1`) — a perfect illustration of why the `LOCKED` channel was worth adding. Putting the
    output on gclk 1 gave the requested 10 MHz.
 
+**It is now the DEFAULT.** A plain `nextpnr-mistral` invocation — no environment variables at all —
+emits the whole working configuration and measures `PLL = 10.066 MHz, LOCKED = 1` (build-ID verified;
+10.000 MHz requested, within the counter's quantisation). `VUP_PLL_LEGACY=1` restores the previous
+behaviour. Defaulting to the attested path is strictly better than the alternative, because without
+it the PLL never receives a reference at all. Regression-checked: a non-PLL design and a PLL design
+both build clean with no env set.
+
 **Scope of the fix (honest):** the spine table is empirical and gated to the one attested
 configuration — `PIN_V11 → FPLL(0,14)`, behind `VUP_PLL_SPINE` + `VUP_PLL_POS` + `VUP_CLKPIN_GCLK`.
 Generalising needs the (pin, PLL position) → spine rule, which is a handful more Quartus references

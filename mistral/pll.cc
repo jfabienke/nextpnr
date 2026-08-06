@@ -175,9 +175,13 @@ bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkCho
                     // reference -- measured: the PLL locked but the counter read the 50 MHz
                     // reference instead of the divided output. VUP_CLKPIN_GCLK names the instance
                     // the reference uses; skip it here.
-                    if (const char *cg = getenv("VUP_CLKPIN_GCLK"))
-                        if (k_inst == (int(strtoul(cg, nullptr, 0)) & 3))
+                    if (!getenv("VUP_PLL_LEGACY")) {
+                        int ref_gclk = 0;
+                        if (const char *cg = getenv("VUP_CLKPIN_GCLK"))
+                            ref_gclk = int(strtoul(cg, nullptr, 0)) & 3;
+                        if (k_inst == ref_gclk)
                             continue;
+                    }
                     picks.push_back(PllClkChoice{k_cmux, k_inst, c, int(kv.second)});
                     used_gclk.insert({k_cmux, k_inst});
                     used_counter.insert(c);
@@ -231,9 +235,12 @@ void Arch::fixup_pllclk_placement()
     // source: FPGA_CLK1_50~input" -- a hardwired pin->PLL path that needs no bitstream config and
     // that libmistral's p2p CLKIN table does not carry for this package. Position is therefore
     // load-bearing, and this knob makes it sweepable on silicon.
-    if (const char *e = getenv("VUP_PLL_POS")) {
+    const char *pos_env = getenv("VUP_PLL_POS");
+    if (!pos_env && !getenv("VUP_PLL_LEGACY"))
+        pos_env = "0,14"; // the attested reference-path position (see PLL_OUTCLK_DESIGN.md)
+    if (pos_env) {
         int px = -1, py = -1;
-        if (sscanf(e, "%d,%d", &px, &py) == 2) {
+        if (sscanf(pos_env, "%d,%d", &px, &py) == 2) {
             for (auto &cell : cells) {
                 CellInfo *ci = cell.second.get();
                 if (!is_pll_cell(ci->type))
@@ -252,7 +259,7 @@ void Arch::fixup_pllclk_placement()
                 log_info("VUP_PLL_POS: '%s' relocated to FPLL(%d,%d)\n", nameOf(ci), px, py);
             }
         } else {
-            log_warning("VUP_PLL_POS: expected \"x,y\", got \"%s\" - ignored\n", e);
+            log_warning("VUP_PLL_POS: expected \"x,y\", got \"%s\" - ignored\n", pos_env);
         }
     }
 
