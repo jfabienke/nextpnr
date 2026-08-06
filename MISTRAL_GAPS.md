@@ -138,6 +138,9 @@ right way to prove the flow on silicon in the meantime.
 
 ## G4 — PLL output → clock network is not in the routing graph
 
+**Status 2026-08-06: output half SOLVED; INPUT half is now the blocker, and it is a second, larger
+modelling gap — see "G4b" at the end of this section. Needs a lead decision.**
+
 **Status: genuine libmistral chipdb RE residual, not a nextpnr extension.**
 
 **Measured.** The FPLL bel is implemented and works on the input side: `mistral/pll.cc` +
@@ -183,6 +186,47 @@ Implementation stays gated on that value table — emitting guessed selector val
 "every number from a real command" rule. Entry point once derived: CLKBUF-precedent bel whose
 bitstream emission programs `INPUT_SEL=0x6` + the derived `CLKPIN_SEL_x` value (nextpnr-side only;
 no libmistral graph surgery needed for v1).
+
+### G4a — outclk → clock network: **DONE**
+
+Implemented and offline-verified: the direct `INPUT_SEL={PLLIN,k}` path matches Quartus 1:1, the
+`MISTRAL_PLLCLK` injector bel is in, and B2 (the placer migrating the FPLL out from under a
+pre-assigned injector) is fixed by a post-place `fixup_pllclk_placement()`. nextpnr routes `pllclk`
+using global resources and reports a critical path on it.
+
+### G4b — **the PLL reference path is not in the model at all** (new blocker, needs a decision)
+
+Twelve build-ID-verified silicon trials, every one `PLL=0.000 MHz` with the REF channel alive:
+the CTRL_OVERRIDE fix, the rebuilt 480 MHz recipe, a **byte-identical clone of Apogee's working
+FPLL(89,0)**, six CLKBUF-source variants, and `CLKIN_0_SRC` swept across its full range. What the
+new forensics tools (`pmuxinfo`, `bmuxdiff`, `bmuxhist`, `pmuxdump`) establish against a corpus of
+20 shipped MiSTer cores:
+
+- the FPLL tile config is exonerated — ours is *bit-for-bit* a PLL that runs on this silicon;
+- the reference **never arrives through `CORECLK0`/`PMUX`** in ground truth: the PMUX default
+  (`0x21` = 33) is out of range of its 30 sources, i.e. selects nothing, and **no core overrides
+  it**. We are the only bitstream in the corpus that drives a PMUX;
+- every other FPLL input the model exposes is excluded: `CLKIN[0..3]` and `DB_IN0` come from GPIO
+  positions with **no package pin** on 5CSEBA6U23I7, and `FBLVDS_IN0`'s `CBUF` driver is configured
+  in **zero** of the 20 cores;
+- the board's own clock pin is not among them either — `pinfind V11` → `GPIO(10,17)`, feeding no
+  FPLL CLKIN.
+
+So the path every shipped core uses is not in the routing graph, not an FPLL bmux, and not a bonded
+dedicated pin. **This is a modelling gap of the same kind as G4a, on the input side** — and unlike
+G4a it cannot be closed by deriving a value from tables we already have.
+
+**Options (lead's call):**
+
+1. **RE it from a minimal Quartus reference.** One trivial 50 MHz → N MHz PLL design built on the
+   NAS, diffed with `bmuxdiff` against our own output. The corpus narrows the search to blocks GT
+   writes and we never do: `HPS_CLOCKS(51,80)`, `CMUXVR(42,81)`, `CMUXVG(42,81)`, and the extra
+   CMUXHG/CMUXVG instances at (0,35)/(89,35)/(42,0). A minimal design makes that diff small — the
+   shipped cores are ~85k LAB settings of noise by comparison. **Cheapest path to a real answer.**
+2. **Ship G4a and park G4b.** Single-clock cores build today off a pin-driven CLKBUF→GCLK; only
+   multi-clock frequency synthesis needs the PLL. Record G4b as a measured negative and move to G6.
+3. **Upstream it.** File the finding against Ravenslofty/mistral — the p2p tables genuinely do not
+   contain a usable reference path for FPLL(89,0) on this package.
 
 ---
 

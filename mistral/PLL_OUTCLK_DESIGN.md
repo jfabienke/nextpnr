@@ -321,11 +321,45 @@ one structural difference the corpus leaves standing is the one it has pointed a
 > routes its reference over `CORECLK0`→`PMUX`. Whatever delivers the reference in ground truth is
 > not a routed core clock, and is not a field of the FPLL block.
 
-Next: sweep `CLKIN_0_SRC` 0..7 (`VUP_PLL_CLKIN_SRC`) — with the tile exonerated and the clock network
-proven alive, the open question is simply *which input the PLL is listening to*. If none of the eight
-starts it, the reference must be configured in a block we have never written, and the candidates the
-corpus hands us are `HPS_CLOCKS` (3 settings), `CMUXVR(42,81)`, and the CMUXHG instances ground truth
-drives that we do not.
+### 2026-08-06 (round 9) — the blocker is a MODELLING GAP, not a config value
+
+First, a correction to round 8's own statistic. `route_all_active_links()` returns nothing for a mux
+left at its **default**, so "20/20 cores drive zero PMUX" only means *ground truth never overrides
+the PMUX default*. New tool `pmuxinfo` closes that hole by reading the mux value directly:
+
+```
+PMUX.077.000.0000   ours:   val=0x90 def=0x21  (OVERRIDDEN)  -> SCLK.077.000.0004
+PMUX.077.000.0000   Apogee: val=0x21 def=0x21  (AT DEFAULT)  -> <none>
+```
+
+**The PMUX default `0x21` = 33 is out of range of its 30 sources — it selects nothing.** So ground
+truth does not merely decline to override the PMUX; its PLL reference genuinely does not arrive
+through `CORECLK0`/`PMUX` at all. The caveat does not rescue the earlier reading, it sharpens it.
+
+Second, the device model's own answer for what *can* reach `FPLL(89,0)` (all 44 p2p edges into any
+FPLL):
+
+| input port | driven by | bonded on 5CSEBA6U23I7? |
+|---|---|---|
+| `CLKIN[0..3]` | GPIO(56,0), GPIO(64,0), GPIO(89,25), GPIO(89,23) | **no** — `pinat` finds no package pin at any FPLL-CLKIN GPIO position |
+| `FBLVDS_IN0` | CBUF(87,0), CBUF(89,2) | CBUF is configured in **zero** of the 20 cores |
+| `DB_IN0` | GPIO(89,23) | same unbonded position |
+| `CORECLK0` | PMUX ← SCLK ← GCLK | modelled, and **the one we use** |
+
+And the board's clock pin is not among them: `pinfind V11` → `GPIO(10,17)`, feeding **no** FPLL CLKIN.
+
+So every reference input the model exposes has now been tried or excluded, the FPLL tile is
+byte-identical to a PLL known to run at this position, `CLKIN_0_SRC` has been swept across its whole
+range, and the clock network is proven alive by a counter on the PLL's own refclk node. The
+conclusion this evidence supports is not "one more field to find" but:
+
+> **libmistral/nextpnr's model of the Cyclone V PLL reference path is incomplete.** The path every
+> shipped core actually uses is not in the routing graph, not an FPLL bmux, and not a bonded
+> dedicated pin. It is configured somewhere we have not identified — the blocks ground truth writes
+> and we never do are `HPS_CLOCKS(51,80)`, `CMUXVR(42,81)`, `CMUXVG(42,81)`, and the CMUXHG/CMUXVG
+> instances at (0,35)/(89,35)/(42,0) that GT drives beyond the ones we drive.
+
+This is a lead's call, not a sweep: see MISTRAL_GAPS.md for the options.
 
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
