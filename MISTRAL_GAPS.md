@@ -171,6 +171,14 @@ clocks — ao486_20170803, ao486_20220914/20240616, and the fitted fabi386 (`f38
   clean derivation is 2–3 targeted Quartus diff builds (same design, only the PLL-counter→GCLK
   assignment changed) through the existing quartus_jobs pipeline, diffed with `cmuxdump`.
 
+**RESEARCHED + DESIGNED 2026-08-06 (see `mistral/PLL_OUTCLK_DESIGN.md`).** Second revision: the
+(FPLL, counter) → (cmux, PLLIN line) wiring is **already in libmistral's p2p tables** (`p2pdump`:
+`FPLL(0,0).PLLCOUT[5] → CMUXVG(42,0).PLLIN[0]`, 250 links), and PLLIN line → INPUT_SEL entry is the
+link tables — so the full direct-path configuration is offline-derivable, **no Quartus RE needed for
+v1**. The one remaining unknown is whether the direct INPUT_SEL={PLLIN,k} path works standalone or
+Quartus' CLK_SELECT switchover layer is required; the design makes a cheap silicon blink-test the
+arbiter (V3), falling back to the CLK_SELECT differential only if it fails.
+
 Implementation stays gated on that value table — emitting guessed selector values would violate the
 "every number from a real command" rule. Entry point once derived: CLKBUF-precedent bel whose
 bitstream emission programs `INPUT_SEL=0x6` + the derived `CLKPIN_SEL_x` value (nextpnr-side only;
