@@ -459,6 +459,60 @@ What remains are the analog/periphery blocks that carry the bulk of the referenc
 (chains 4/5). A chain-12 transplant is the next targeted step, but it touches the clock muxes, so it
 needs the instrument's clock moved off that path first or the trial repeats the inconclusive result.
 
+### 2026-08-07 (round 12) — POSITIVE CONTROL, and the fault is in CRAM, not config
+
+**The control this hunt never had.** Built a Quartus version of *our own* telemetry design
+(`altera_pll` + the HPS gp harness, `/projects/mintlm` on the NAS) and measured it with the same
+script used for every nextpnr trial:
+
+```
+POSITIVE CONTROL (Quartus PLL)   REF=50.332 MHz  PLL=96.469 MHz  LOCKED=1  LOAD OK
+```
+
+Until this existed, "PLL=0.000, LOCKED=0" was only evidence about the PLL if the measurement chain
+was known to report a *working* PLL correctly — which had never been established. It is now, so every
+prior negative is trustworthy. It also yields a donor built from the **identical design**, which is
+what makes whole-chain transplants non-destructive (the earlier all-chains attempt used a
+different-design donor and killed the instrument).
+
+**What a PLL costs, measured.** A with/without Quartus pair (`min_pll` vs `min_nopll`, identical
+apart from the PLL) gives the exact footprint: **50 PRAM bits**. New tool `pramapply` applies only
+the with-vs-without delta, so the patient keeps its own clock network and IO.
+
+| step | REF | LOCKED |
+|---|---|---|
+| we already had 37/50; applied the missing 13 + differential oram | 50.332 MHz | 0 |
+| same, on the variant whose pin drives only the PLL | (no ref ctr) | 0 |
+| transplant PRAM chains 10+12+13 from the same-design donor | 50.332 MHz | 0 |
+| **transplant EVERY differing PRAM chain + both oram words** | 50.332 MHz | **0** |
+
+> **Installing the complete peripheral-RAM and option-RAM state of a working PLL, from a donor built
+> from the identical design, with the instrument verified alive, does not make the PLL lock.**
+> The missing piece is therefore **not in PRAM, not in oram, and not in any bmux** — it is in CRAM.
+
+**Clock delivery, named at last.** The working build's cmux decode:
+
+```
+(42,0) CMUXVG INPUT_SEL[0] = 0x00 -> {CLKPIN, 1}    the clock pin ENTERS here
+(0,35) CMUXHG INPUT_SEL[0] = 0x16 -> {PLLIN, 14}    the PLL output LEAVES here
+```
+
+nextpnr emits `{CLKIN,2}` = `0x1b` (general routing) on CMUXHG instead. The earlier CLKPIN sweep
+tested this idea on the **wrong mux** — CMUXHG(0,35)/(89,35), never CMUXVG(42,0). Emitting the exact
+entry (`VUP_CLKPIN_GCLK`), including on gclk 0 with the output path removed so nothing competes for
+the instance, is **not sufficient**: still `LOCKED=0`.
+
+**Port-level truth** (`pllports`): every modelled FPLL port — `CORECLK0`→PMUX, `CLKEN`, `CNT_SEL0`,
+`ATPGMODE0`, `CLKSEL0` — is **UNDRIVEN in the working build too**. So the reference really does
+arrive over hardwiring libmistral does not model, and the "PLL held in reset because nextpnr
+disconnects `rst`" theory is refuted: ground truth drives no control port either.
+
+**State of the search.** `tx_full.rbf` has ground truth's entire PRAM/oram and our CRAM, and fails;
+`gt_tlm.rbf` has both and works. The difference is 4624 CRAM bits, dominated by LAB placement noise.
+The remaining step is a bisection over that difference — by tile region first (periphery vs fabric),
+then by halves — which is bounded at roughly a dozen trials because each one is a ~90 s load with
+`BUILD_ID` proving which bitstream is live and `LOCKED` giving an unambiguous verdict.
+
 **Method note.** Sweeping is exhausted as an instrument here: `CLKIN_0_SRC` (all 8), CLKBUF source
 (6), PLL position, both feedback modes, and a byte-identical tile clone are all negative. A sweep can
 only turn knobs that have names, and the remaining difference is in bits libmistral does not name —
