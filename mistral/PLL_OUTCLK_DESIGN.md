@@ -98,6 +98,39 @@ FPLL analog/feedback configuration, which is upstream of G4's scope.
 - **B3 — `CTRL_OVERRIDE_SETTING`** cannot be written through any of `bmux_r/b/n_set` (silently
   absent from the emitted rbf); ground truth sets it on every active PLL.
 
+### The instrument problem is SOLVED (2026-08-06) — `tlmtest` + `measure_clocks.sh`
+
+Watching LEDs was the wrong instrument: a frozen counter and a running one look identical in a
+photo, and five rounds burned on ambiguous readings. Replaced with a **self-validating frequency
+measurement over SSH**, using the one HPS interface nextpnr already models and that is
+silicon-proven (`cyclonev_hps_interface_mpu_general_purpose`):
+
+- `tlmtest.v` runs TWO counters — a reference clocked straight off the 50 MHz pin (exactly like the
+  proven blinky) and one clocked by the PLL outclk — and feeds `{cnt_pll[31:16], cnt_ref[31:16]}`
+  into `gp_in`, which the ARM reads at **gpi = 0xFF706014**.
+- `measure_clocks.sh` samples gpi twice T seconds apart and prints **both clocks in MHz**.
+- The reference channel **validates the instrument in the same load**: ~50 MHz there means a 0 on
+  the PLL channel is a genuinely dead clock, not a broken measurement.
+
+Measured (T=2s, two independent loads, cmux MCNT feedback enabled in the second):
+
+| channel | reading | verdict |
+|---|---|---|
+| REF (50 MHz pin) | **50.33–50.36 MHz** | instrument sound |
+| PLL (outclk) | **0.000 MHz** | zero edges — the PLL does not start |
+
+Note the emitted PLL landed at **(89,0)**, not the pack-chosen (0,0) — B2 again, and it means these
+two runs still did not test the ground-truth-mapped position. B2 is now the *only* thing standing
+between us and a valid feedback experiment.
+
+**B2 attempts that FAILED (all measured, do not re-run):** `STRENGTH_LOCKED` / `STRENGTH_USER`
+binds (placer migrates anyway), an `isBelLocationValid` pin (placer cannot satisfy → 10001-attempt
+timeout), the `BEL` attribute (`getBelByName` name-format mismatch), and an
+`isValidBelForCellType` pin to (0,0) (the corner tile is never offered by the placer's radius
+search → "no BELs remaining"). **The remaining idea: assign the PLL/PLLCLK pair AFTER placement**
+(a post-place arch hook) so the choice is derived from where the placer actually put the PLL,
+instead of trying to force the placer to honour a pre-made choice.
+
 **Next experiment (cheap, decisive):** fix B2, confirm via `fplldump` that the emitted PLL tile is
 (0,0), then reload. If it still does not lock, bisect the feedback by cloning the ENTIRE ground-truth
 PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK

@@ -347,14 +347,10 @@ struct MistralBitgen
         // for FPLL(0,0). Without the cmux side, FBCLK_MUX_2=1 selects an undriven input -> open
         // loop -> the VCO spins up and dies (the frozen-counter LED signature, twice). Currently
         // mapped for the GT-proven (0,0) position only; other positions warn honestly.
-        if (pos == CycloneV::xy2pos(0, 0)) {
-            cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), CycloneV::PLL_FEEDBACK_ENABLE_3, 0,
-                           CycloneV::PLL_MCNT0);
-        } else {
-            log_warning("FPLL '%s' at (%d,%d): no cmux MCNT-feedback mapping for this position - the "
-                        "loop may not close (only (0,0) is ground-truth-mapped)\n",
-                        ctx->nameOf(ci), x, y);
-        }
+        // Ground truth enables MCNT feedback at the GCLK-root CMUXVG(42,0) regardless of which PLL
+        // drives it, so emit it there unconditionally (harmless if the loop is internal).
+        cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), CycloneV::PLL_FEEDBACK_ENABLE_3, 0,
+                       CycloneV::PLL_MCNT0);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
         // Enables.

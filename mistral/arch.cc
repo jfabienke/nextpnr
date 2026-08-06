@@ -307,6 +307,14 @@ bool Arch::isValidBelForCellType(IdString cell_type, BelId bel) const
     // Any combinational cell type can - theoretically - be placed at a combinational ALM bel
     // The precise legality mechanics will be dealt with in isBelLocationValid.
     IdString bel_type = getBelType(bel);
+    // G4/B2: the FPLL position is load-bearing — the MCNT feedback loop closes only where the cmux
+    // feedback mapping is ground-truth-known (currently (0,0)). The heap placer relocates cells
+    // regardless of bind strength (MEASURED: pack chose (0,0), the bitstream emitted (89,0)), so the
+    // constraint must live HERE: fast_bels builds the placer's candidate list from this predicate,
+    // so an unmapped position is never even a candidate.
+    // (An attempt to pin the FPLL to (0,0) here made placement unreachable — the heap placer's
+    // radius search never offers that corner tile. Position pinning therefore remains OPEN; see
+    // PLL_OUTCLK_DESIGN.md B2. The emission adapts to wherever the placer lands instead.)
     if (bel_type == id_MISTRAL_COMB)
         return is_comb_cell(cell_type);
     else if (bel_type == id_MISTRAL_MCOMB)

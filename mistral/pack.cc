@@ -564,10 +564,12 @@ struct MistralPacker
                 if (!pll_found)
                     log_error("altera_pll '%s': no FPLL bel at chosen position (%d,%d)\n", ctx->nameOf(ci),
                               CycloneV::pos2x(CycloneV::pos_t(fpll_pos)), CycloneV::pos2y(CycloneV::pos_t(fpll_pos)));
-                // The chosen FPLL position is load-bearing: the MCNT feedback path exists only where
-                // ground-truth-mapped. STRENGTH_LOCKED is what keeps it there — placer_heap excludes
-                // locked cells from its solve set (placer_heap.cc: belStrength > STRENGTH_STRONG),
-                // whereas STRENGTH_USER let it migrate to (0,14) and silicon froze (round 4/5).
+                // Bind both cells so the pack-time (PLL, counter, cmux, gclk) choice survives into
+                // bitstream emission. NOTE (B2, unresolved): the heap placer still MIGRATES the PLL
+                // off this bel — measured, pack chose (0,0), emission saw (89,0) — while the PLLCLK
+                // stays put. Attempts that failed: STRENGTH_USER, an isBelLocationValid pin, the BEL
+                // attribute (getBelByName name-format mismatch), and an isValidBelForCellType pin
+                // (makes the corner tile unreachable for the placer's radius search).
                 ctx->bindBel(pll_bel, ci, STRENGTH_LOCKED);
                 for (size_t j = 0; j < injectors.size(); j++) {
                     auto &pk = picks.at(j);
