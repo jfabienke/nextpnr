@@ -288,6 +288,45 @@ and `VCO_DIV`, which are behind `VUP_PLL_SLF_RST` / `VUP_PLL_VCO_DIV` pending si
 clone was byte-identical *in the fields we emit* — it could never have caught a field we never emit
 at all. Diff against ground truth over the **full** non-default set, not the set you wrote.
 
+### 2026-08-06 (round 8) — recipe rebuilt on the corpus; the FPLL tile is now PROPERLY exonerated
+
+Clearing `CTRL_OVERRIDE_SETTING` alone did not start the PLL (`PLL=0.000`, `LOAD OK`). Diffing our
+`FPLL(89,0)` against **Apogee**, the one integer-family PLL in the corpus and at our own position,
+found three more substantive errors — all of them invented values that ground truth contradicts:
+
+| | ours (before) | ground truth (20 cores) |
+|---|---|---|
+| feedback | no `FBCLK_MUX_2`; `PLL_FEEDBACK_ENABLE_3=PLL_MCNT0` at CMUXVG(42,0) | `FBCLK_MUX_2=1`; **`PLL_FEEDBACK_ENABLE_*` in ZERO cores** |
+| VCO | 1233 MHz (N=6, M=148) | **~400–500 MHz in every core** (Apogee: N=5, M=48 → 480 MHz) |
+| `BWCTRL` / `CP_CURRENT` | overridden to 0x03 / 0x01 | **not overridden — defaults** |
+
+The feedback was exactly inverted, and the "CP_CURRENT is REQUIRED, the charge pump drives the loop"
+note was a guess. Recipe now tracks Apogee; `VUP_PLL_GT_CLONE` clones Apogee and `bmuxdiff` confirms
+the emitted tile is **byte-identical** to it.
+
+**Silicon (build-ID verified, reboot between loads):**
+
+| variant | expected | REF | PLL |
+|---|---|---|---|
+| `CTRL_OVERRIDE=0` | — | 50.332 MHz | **0.000** |
+| `+ SLF_RST=3, VCO_DIV=0` | — | 50.332 MHz | **0.000** |
+| Apogee clone (byte-identical) | 96.0 MHz | 50.332 MHz | **0.000** |
+| new recipe, VCO 480 MHz | 10.0 MHz | 50.856 MHz | **0.000** |
+
+A tile that is bit-for-bit a PLL known to run on this silicon, at that PLL's own position, still
+produces nothing. **The FPLL tile configuration is now exonerated on a correct reference** — and the
+one structural difference the corpus leaves standing is the one it has pointed at all along:
+
+> 20 of 20 shipped cores drive **zero** PMUX nodes. Ours is the only bitstream in the corpus that
+> routes its reference over `CORECLK0`→`PMUX`. Whatever delivers the reference in ground truth is
+> not a routed core clock, and is not a field of the FPLL block.
+
+Next: sweep `CLKIN_0_SRC` 0..7 (`VUP_PLL_CLKIN_SRC`) — with the tile exonerated and the clock network
+proven alive, the open question is simply *which input the PLL is listening to*. If none of the eight
+starts it, the reference must be configured in a block we have never written, and the candidates the
+corpus hands us are `HPS_CLOCKS` (3 settings), `CMUXVR(42,81)`, and the CMUXHG instances ground truth
+drives that we do not.
+
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
 **v1 emits the direct configuration:** `INPUT_SEL = e({PLLIN,k})` for the chosen gclk instance,
