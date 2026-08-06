@@ -216,6 +216,38 @@ void Arch::create_pllclk(int x, int y, bool vertical)
 // the final, consistent choice.
 void Arch::fixup_pllclk_placement()
 {
+    // VUP_PLL_POS="x,y" relocates the FPLL after placement, using the same "don't fight the placer,
+    // run after it" trick as the PLLCLK fixup below (which then re-picks a cmux legal for the new
+    // position). Motivated by the minimal Quartus reference: for PIN_V11 it places the PLL at
+    // FPLL(0,14) and its fit report says "Reference Clock Sourced by: Dedicated Pin, CLKIN(0)
+    // source: FPGA_CLK1_50~input" -- a hardwired pin->PLL path that needs no bitstream config and
+    // that libmistral's p2p CLKIN table does not carry for this package. Position is therefore
+    // load-bearing, and this knob makes it sweepable on silicon.
+    if (const char *e = getenv("VUP_PLL_POS")) {
+        int px = -1, py = -1;
+        if (sscanf(e, "%d,%d", &px, &py) == 2) {
+            for (auto &cell : cells) {
+                CellInfo *ci = cell.second.get();
+                if (!is_pll_cell(ci->type))
+                    continue;
+                // create_fpll() calls add_bel(x, y, id_MISTRAL_FPLL, id_altera_pll): MISTRAL_FPLL is
+                // the bel NAME, altera_pll is its TYPE, and bel_by_block_idx matches on type.
+                BelId target = bel_by_block_idx(px, py, id_altera_pll, 0);
+                if (target == BelId()) {
+                    log_warning("VUP_PLL_POS: no FPLL bel at (%d,%d); leaving '%s' where the placer put it\n",
+                                px, py, nameOf(ci));
+                    continue;
+                }
+                if (ci->bel != BelId())
+                    unbindBel(ci->bel);
+                bindBel(target, ci, STRENGTH_LOCKED);
+                log_info("VUP_PLL_POS: '%s' relocated to FPLL(%d,%d)\n", nameOf(ci), px, py);
+            }
+        } else {
+            log_warning("VUP_PLL_POS: expected \"x,y\", got \"%s\" - ignored\n", e);
+        }
+    }
+
     for (auto &cell : cells) {
         CellInfo *pc = cell.second.get();
         if (pc->type != id_MISTRAL_PLLCLK)
