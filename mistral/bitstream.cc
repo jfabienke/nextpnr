@@ -311,10 +311,15 @@ struct MistralBitgen
         // VUP_PLL_GT_CLONE=1 additionally pins the C dividers to the ground truth's own values, so
         // the emitted tile is byte-identical to a KNOWN-WORKING PLL and the only remaining variable
         // is our cmux/PLLCLK emission (the decisive experiment).
-        const int N = 6, M = 148;                 // PFD = f_ref/6 = 8.333 MHz
-        double vco = f_ref * double(M) / double(N); // 1233.333 MHz
+        // ATTESTED ENVELOPE (bmuxhist over 20 shipped MiSTer cores, all three PLL positions): every
+        // ground-truth PLL runs its VCO at ~400-500 MHz, never near the 1233 MHz the invented recipe
+        // asked for. Apogee's FPLL(89,0) -- our own position, integer family -- is N=5 (3+2), M=48
+        // (0x18+0x18), PFD 10 MHz, VCO 480 MHz. Track that: pick N for a 10 MHz PFD, then M for a VCO
+        // inside the attested band.
+        const int N = 5, M = 48;                    // PFD = f_ref/5 = 10 MHz
+        double vco = f_ref * double(M) / double(N); // 480 MHz -- inside the attested band
         int m_hi = M / 2, m_lo = M - m_hi;
-        int n_hi = N / 2, n_lo = N - n_hi;
+        int n_hi = (N + 1) / 2, n_lo = N - n_hi;    // 3 + 2, as ground truth encodes an odd N
         bool gt_clone = getenv("VUP_PLL_GT_CLONE") != nullptr;
 
         log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz (INTEGER family%s)\n",
@@ -338,11 +343,12 @@ struct MistralBitgen
             int c_hi = C / 2;
             int c_lo = C - c_hi;
             if (gt_clone) {
-                // Ground truth's own C5 divide (25+24=49 -> 25.17 MHz); makes the tile byte-identical
-                // to a PLL known to run on this silicon. The design's clock is then GT's, not the
-                // requested one - reported honestly below.
-                c_hi = 0x19;
-                c_lo = 0x18;
+                // Apogee's own C5 divide (3+2 = 5 -> 96 MHz off the 480 MHz VCO); makes the tile
+                // byte-identical to an integer-family PLL known to run at THIS position on THIS
+                // silicon. The design's clock is then ground truth's, not the requested one -
+                // reported honestly below.
+                c_hi = 0x03;
+                c_lo = 0x02;
                 log_info("  GT-clone: C%d divider pinned to %d+%d -> %.3f MHz (NOT the requested "
                          "%.3f MHz)\n",
                          c, c_hi, c_lo, vco / double(c_hi + c_lo), fout[c]);
@@ -356,8 +362,9 @@ struct MistralBitgen
             // Per-counter output divider (midx = counter index 0..8).
             cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_HI_DIV, phys, c_hi);
             cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_LO_DIV, phys, c_lo);
-            // Odd divides need the odd/even-duty enable bit.
-            if (C % 2)
+            // Odd divides need the odd/even-duty enable bit. Keyed off the EMITTED halves, not C,
+            // so the gt_clone override above still gets the bit right.
+            if ((c_hi + c_lo) % 2)
                 cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, phys, true);
             // Counter input source: VCO phase 0 (ground truth sets CNT_IN_SRC=0 for active counters).
             cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_IN_SRC, phys, 0);
@@ -365,13 +372,19 @@ struct MistralBitgen
             cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[phys], 0, true);
         }
 
-        // Integer family: DSM off (frac field carries the idle value 1), no external feedback mux,
-        // no VCO post-divide, no self-reset. CP_CURRENT + NREVERT_INVERT are REQUIRED here - the
-        // charge pump is what drives the loop.
+        // Integer family, as ATTESTED by Apogee's FPLL(89,0) rather than derived: DSM off (the frac
+        // field carries the idle value 1), and BWCTRL / CP_CURRENT left at their DEFAULTS -- ground
+        // truth overrides neither, so the earlier "CP_CURRENT is REQUIRED, the charge pump drives
+        // the loop" note was a guess that the corpus contradicts.
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 1);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::BWCTRL, 0, 0x03);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CP_CURRENT, 0, 0x01);
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::NREVERT_INVERT, 0, true);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, 0x00);
+        // M-counter preset/phase-mux preset. Only integer-family ground truth sets these, and the
+        // corpus is too small to fit a formula (LO_PRESET in {4,5,6}, PH_MUX_PRESET in {3,5,6}), so
+        // take Apogee's pair verbatim - it is the sample that shares our position and our family.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_LO_PRESET_SETTING, 0, 0x05);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_PH_MUX_PRESET_SETTING, 0, 0x06);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x19);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
         uint32_t clkin_src = 0x04;
@@ -386,23 +399,13 @@ struct MistralBitgen
         // entirely, and it used the wrong setter (bmux_r_set/bmux_n_set no-op on a BOOL) besides.
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, 0, false);
 
-        // Remaining ground-truth-only fields that are NOT fractional-family specific. Held behind
-        // env knobs until silicon says whether they matter (SLF_RST=0x03 and VCO_DIV=0x00 appear in
-        // every sampled core; the integer recipe currently leaves both at their defaults).
-        if (const char *e = getenv("VUP_PLL_SLF_RST"))
-            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, strtoul(e, nullptr, 0));
-        if (const char *e = getenv("VUP_PLL_VCO_DIV"))
-            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, strtoul(e, nullptr, 0));
-
-        // Close the M-counter feedback loop THROUGH THE CMUX (the piece rounds 1-4 lacked): the
-        // fitted ground truth feeds MCNT back via CMUXVG(42,0) PLL_FEEDBACK_ENABLE_3 = PLL_MCNT0
-        // for FPLL(0,0). Without the cmux side, FBCLK_MUX_2=1 selects an undriven input -> open
-        // loop -> the VCO spins up and dies (the frozen-counter LED signature, twice). Currently
-        // mapped for the GT-proven (0,0) position only; other positions warn honestly.
-        // Ground truth enables MCNT feedback at the GCLK-root CMUXVG(42,0) regardless of which PLL
-        // drives it, so emit it there unconditionally (harmless if the loop is internal).
-        cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), CycloneV::PLL_FEEDBACK_ENABLE_3, 0,
-                       CycloneV::PLL_MCNT0);
+        // FEEDBACK — we had this exactly inverted. Ground truth closes the loop INSIDE the FPLL with
+        // FBCLK_MUX_2=1 and enables NO cmux feedback at all: across the 20-core corpus, every PLL of
+        // both families sets FBCLK_MUX_2=1, and PLL_FEEDBACK_ENABLE_* appears in ZERO of them. We
+        // emitted the opposite pair (no FBCLK_MUX_2, PLL_FEEDBACK_ENABLE_3=PLL_MCNT0 at CMUXVG(42,0))
+        // on the reasoning that FBCLK_MUX_2 alone "selects an undriven input -> open loop". The
+        // corpus refutes that: FBCLK_MUX_2=1 with no cmux side IS the working configuration.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FBCLK_MUX_2, 0, 0x01);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
         // Enables.
