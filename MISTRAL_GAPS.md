@@ -138,8 +138,12 @@ right way to prove the flow on silicon in the meantime.
 
 ## G4 — PLL output → clock network is not in the routing graph
 
-**Status 2026-08-06: output half SOLVED; INPUT half is now the blocker, and it is a second, larger
-modelling gap — see "G4b" at the end of this section. Needs a lead decision.**
+**Status 2026-08-07: SOLVED, both halves, on silicon.** A plain `nextpnr-mistral` invocation
+produces a working PLL: `PLL = 10.066 MHz, LOCKED = 1` against a 10.000 MHz request. The reference
+arrives via a `{CLKPIN,n}` cmux entry plus a 56-bit CRAM spine network that libmistral does not
+model; the output leaves via the G4a injector on a *different* cmux gclk instance. Details and the
+full evidence trail in `mistral/PLL_OUTCLK_DESIGN.md`. Remaining work is generalisation, not
+mechanism: the spine table is attested for `PIN_V11 → FPLL(0,14)` only.
 
 **Status: genuine libmistral chipdb RE residual, not a nextpnr extension.**
 
