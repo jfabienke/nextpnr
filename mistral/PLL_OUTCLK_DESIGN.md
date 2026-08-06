@@ -561,9 +561,46 @@ With that base the first **valid** bisection step lands:
 (`REF=0.000` here is expected, not an instrument failure — this probe has no REF counter.)
 
 **So the responsible state is not in PRAM, not in oram, and not in CRAM tile columns 0..6** — even
-though that is where `FPLL(0,14)` and `CMUXH(0,35)` live. It remains in columns 7..89 (~4617 bits).
-Next cuts: 7..46, 47..85, 86..89, avoiding the HPS tile at (51,80) whose transplant kills the gp
-readout; ~7 further trials at ~3 minutes each.
+though that is where `FPLL(0,14)` and `CMUXH(0,35)` live.
+
+### 2026-08-07 (round 14) — **THE PLL LOCKS.** It is an unmodelled vertical clock spine.
+
+Continuing the bisection on the robust probe (all trials build-ID verified, reboot between loads):
+
+| base + transplanted CRAM | bits | LOCKED |
+|---|---|---|
+| donor PRAM/oram + cols 0..6 | 7 | 0 |
+| + cols 86..89 | 1527 | 0 |
+| **+ cols 7..15** | **41** | **1** ✅ |
+
+**`LOCKED=1` — the first time the PLL has ever started in this flow.** And precisely the case the
+LOCKED channel was added to distinguish: the PLL is locked while the output channel still reads
+0.000 MHz, so what remains is a *downstream* output-path problem (G4a), not a dead PLL.
+
+The 41 responsible bits have an unmistakable shape:
+
+```
+tile ( 9, 9): 2   ( 9,11): 2   ( 9,13): 2   ( 9,15): 2   ( 9,17): 2
+tile ( 9,19): 2   ( 9,21): 2   ( 9,23): 2   ( 9,25): 2   ( 9,27): 2   ( 9,29): 3
+tile ( 9,76): 4   (15, 1): 4   (15, 4): 2   (15, 9): 2   (15,29): 2   (15,76): 4
+```
+
+**Two bits per tile, marching up column 9 at rows 9,11,13,…,29 — a vertical clock spine, passing
+directly by our PLL at FPLL(0,14).** So the reference clock does *not* reach the PLL by a dedicated
+pin wire, nor by the `CORECLK0`/`PMUX` path nextpnr models. It is carried up a sector-clock spine
+whose per-tile enable bits live in **fabric CRAM**, are not attributed by libmistral's route decode
+(they never appear as active links), and are therefore never emitted by nextpnr.
+
+That single fact explains every earlier negative at once: the pin's pad config matched because the
+enable isn't in the pad; the FPLL tile matched byte-for-byte because the enable isn't in the block;
+all PRAM transplants failed because the enable isn't in PRAM; and `CLKIN_0_SRC` swept clean because
+the PLL was selecting a source that nothing was driving.
+
+**To implement it:** these spine bits must be emitted as a function of (clock source entry, PLL
+position). One data point exists (pin → FPLL(0,14) via column 9, rows 9..29). Deriving the general
+rule needs a handful more Quartus builds at other PLL positions — cheap now that the NAS flow,
+`crampatch`, and the validated probe all work. The proper home for the fix is libmistral's routing
+model (upstream); a nextpnr-side CRAM write is viable as an interim.
 
 **Method note.** Sweeping is exhausted as an instrument here: `CLKIN_0_SRC` (all 8), CLKBUF source
 (6), PLL position, both feedback modes, and a byte-identical tile clone are all negative. A sweep can
