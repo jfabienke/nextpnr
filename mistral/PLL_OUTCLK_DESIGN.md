@@ -199,6 +199,45 @@ arriving from core/general routing — and diff the FPLL bmuxes with `fplldump`.
 family should change: that is the field. This is far narrower than the earlier "2–3 diff builds"
 plan because the tile config and the output path are both now eliminated.
 
+### 2026-08-06 (later) — the planned Quartus diff pair is UNBUILDABLE, and the real difference is the CLKBUF
+
+Two findings while staging the NAS job; the second makes the job unnecessary for now.
+
+**(a) There are no bonded dedicated PLL clock pins on this package.** `pinat` (new tool) enumerates
+the package pin table against the FPLL-dedicated CLKIN GPIO positions and finds **zero** signal pins
+there (only `VCCA_FPLL` power pins exist). So the planned A/B — "PLL reference on a dedicated pin vs
+from core routing" — **cannot be built on 5CSEBA6U23I7**, and it follows that the fitted fabi386's
+own working PLLs already take their reference over the clock network. Do not spend a Quartus cycle
+on that pair.
+
+**(b) The real difference is how the clock ENTERS the network (CMUXHG INPUT_SEL).**
+
+| CLKBUF instance | ground truth | ours |
+|---|---|---|
+| 0 | `INPUT_SEL=0x0 -> {CLKPIN_SEL_0,0}`, with `CLKPIN_SEL_0=0x1` | — |
+| 1 | `INPUT_SEL=0x2 -> {CLKPIN_SEL_2,1}`, with `CLKPIN_SEL_2=0x5` | — |
+| 2 | — | **`0x1b -> {CLKIN,2}` (general routing)** |
+| 3 | `0x1b -> {CLKIN,2}` (general routing) | — |
+
+Ground truth drives the clock network from **dedicated clock PINS** (`CLKPIN_SEL_x`) and uses the
+general-routing entry only for one spare instance. nextpnr's `write_clkbuf_cell` hardcodes `0x1b`
+("hardcode to general routing", bitstream.cc). A general-routing-sourced GCLK demonstrably works for
+**fabric** loads (`clkbuftest` blinks on silicon) — but it is now the *only* remaining structural
+difference between our bitstream and a working one, and therefore the prime suspect for why the
+PLL's PMUX/`CORECLK0` reference never arrives.
+
+**Next experiment — no Quartus needed:** emit the CLKPIN-sourced form for the refclk CLKBUF
+(`INPUT_SEL` = the `{CLKPIN_SEL_x, n}` entry plus the matching `CLKPIN_SEL_x` bmux) instead of
+`0x1b`, and measure. The one unknown is which CLKPIN index the board's 50 MHz pin lands on; the
+link tables enumerate the candidates, so a short sweep over them (with the telemetry harness, which
+makes each trial ~90 s) resolves it. **Add the build-ID channel first** so the sweep proves which
+bitstream is live.
+
+**If that sweep fails, THEN the NAS job worth running** is not a diff pair but a single minimal
+Quartus PLL design for this board — it would hand us the pin -> CLKPIN_SEL mapping and the complete
+cmux+FPLL configuration for a trivial 50 MHz -> N MHz PLL, as a minimal reference to diff against
+(the fitted fabi386 is a large, noisy reference by comparison).
+
 **Next experiment (cheap, decisive):** fix B2, confirm via `fplldump` that the emitted PLL tile is
 (0,0), then reload. If it still does not lock, bisect the feedback by cloning the ENTIRE ground-truth
 PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK
