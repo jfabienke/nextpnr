@@ -629,9 +629,21 @@ struct MistralPacker
             // onto a global clock line (input pin -> CLKBUF -> GCLK -> SCLK ->
             // PMUX) and route_globals() then delivers it to the PLL. (Verified:
             // both create_clkbuf CMUXHG outputs reach the e50f PLL PMUX nodes.)
+            // ...except the minimal Quartus reference does none of this. Its fit report says
+            // "Reference Clock Sourced by: Dedicated Pin / CLKIN(0) source: FPGA_CLK1_50~input",
+            // and its whole bitstream contains no clock-network path into any PLL and no CLKBUF on
+            // the reference at all: the pin reaches the PLL over hardwiring that needs no bitstream
+            // configuration. libmistral's p2p CLKIN table does not carry that edge for this package,
+            // which is why the model forces the detour above. VUP_PLL_NO_REFCLK_BUF drops the detour
+            // so the dedicated path can be tested on silicon.
+            bool no_refclk_buf = getenv("VUP_PLL_NO_REFCLK_BUF") != nullptr;
             NetInfo *refnet = ci->getPort(id_refclk);
-            if (refnet != nullptr && refnet->driver.cell != nullptr &&
-                !ctx->is_clkbuf_cell(refnet->driver.cell->type)) {
+            if (no_refclk_buf && refnet != nullptr) {
+                ci->pin_data[id_refclk].bel_pins.clear();
+                ci->disconnectPort(id_refclk);
+                log_info("  refclk left UNROUTED for altera_pll '%s' (dedicated-pin path)\n", ctx->nameOf(ci));
+            } else if (refnet != nullptr && refnet->driver.cell != nullptr &&
+                       !ctx->is_clkbuf_cell(refnet->driver.cell->type)) {
                 CellInfo *cbuf =
                         ctx->createCell(ctx->idf("%s$refclk_clkbuf", ci->name.c_str(ctx)), id_MISTRAL_CLKBUF);
                 cbuf->addInput(id_A);

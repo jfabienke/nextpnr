@@ -378,7 +378,6 @@ struct MistralBitgen
         // the loop" note was a guess that the corpus contradicts.
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 1);
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::NREVERT_INVERT, 0, true);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, 0x00);
         // M-counter preset/phase-mux preset. Only integer-family ground truth sets these, and the
         // corpus is too small to fit a formula (LO_PRESET in {4,5,6}, PH_MUX_PRESET in {3,5,6}), so
@@ -399,13 +398,23 @@ struct MistralBitgen
         // entirely, and it used the wrong setter (bmux_r_set/bmux_n_set no-op on a BOOL) besides.
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, 0, false);
 
-        // FEEDBACK — we had this exactly inverted. Ground truth closes the loop INSIDE the FPLL with
-        // FBCLK_MUX_2=1 and enables NO cmux feedback at all: across the 20-core corpus, every PLL of
-        // both families sets FBCLK_MUX_2=1, and PLL_FEEDBACK_ENABLE_* appears in ZERO of them. We
-        // emitted the opposite pair (no FBCLK_MUX_2, PLL_FEEDBACK_ENABLE_3=PLL_MCNT0 at CMUXVG(42,0))
-        // on the reasoning that FBCLK_MUX_2 alone "selects an undriven input -> open loop". The
-        // corpus refutes that: FBCLK_MUX_2=1 with no cmux side IS the working configuration.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FBCLK_MUX_2, 0, 0x01);
+        // FEEDBACK. There are two coherent modes and the corpus mixes them, which misled round 8:
+        // the shipped cores set FBCLK_MUX_2=1 with no cmux feedback, but they are fitted in a
+        // different PLL operation mode. The MINIMAL QUARTUS REFERENCE -- same device, same pin, same
+        // 'direct' instantiation as ours, fit report "PLL Operation Mode: Normal" -- does the
+        // opposite: PLL_FEEDBACK_ENABLE_0 = PLL_MCNT0 at the GCLK-root CMUXVG(42,0), and NO
+        // FBCLK_MUX_2. Match the reference that matches our use case.
+        //
+        // The index is the cmux GCLK INSTANCE carrying the feedback, not a constant: the reference
+        // uses _0 alongside its gclk-0 selection, while this code used to hardcode _3.
+        static const CycloneV::bmux_type_t pll_fb_en[4] = {
+                CycloneV::PLL_FEEDBACK_ENABLE_0, CycloneV::PLL_FEEDBACK_ENABLE_1,
+                CycloneV::PLL_FEEDBACK_ENABLE_2, CycloneV::PLL_FEEDBACK_ENABLE_3};
+        int fb_gclk = 0; // the reference's value; VUP_PLL_FB_GCLK makes it sweepable
+        if (const char *e = getenv("VUP_PLL_FB_GCLK"))
+            fb_gclk = int(strtoul(e, nullptr, 0)) & 3;
+        cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), pll_fb_en[fb_gclk], 0,
+                       CycloneV::PLL_MCNT0);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
         // Enables.
