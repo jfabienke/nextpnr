@@ -274,25 +274,37 @@ struct MistralBitgen
         // Among valid VCOs we prefer even C's (50% duty from HI==LO) and the
         // one closest to a 1000 MHz mid-band target. For the fabi386 case
         // (50 MHz -> 10/25/100 MHz) this yields M=20, VCO=1000, C={100,40,10}.
-        // Recipe CLONED WHOLESALE from the fitted fabi386's PLL(0,0) — the PLL whose reference
-        // topology matches ours exactly: refclk arrives over the CLOCK NETWORK from a non-dedicated
-        // pin (V11 is GPIO(10,17), not a PLL clkpin — verified via pinfind/p2p). Analog loop
-        // constants, feedback muxing, and divider mode are a matched SET; mixing recipes across
-        // configurations silicon-failed twice. (0,0) runs N bypassed, M = 8 + frac (DSM), so:
-        //   PFD = 50 MHz, VCO = 50 * (8 + 0x39c2f5e8/2^32) = 411.28 MHz
-        const int M = 8;
-        const double vco = f_ref * (double(M) + double(0x39c2f5e8) / 4294967296.0);
+        // ---------------------------------------------------------------------------------
+        // FPLL recipe. RESEARCH (2026-08-06, fplldump over the fitted fabi386's three active PLLs):
+        // the ground truth uses TWO COHERENT FAMILIES, and fields must not be mixed across them:
+        //
+        //   FRACTIONAL (PLL(0,0), PLL(0,55)):  N bypassed + N div 0, M=8, DSM_OUT_SEL=1,
+        //     FRACTIONAL_DIVISION_SETTING=<design>, FBCLK_MUX_2=1, VCO_DIV=0, BWCTRL=0x07,
+        //     SLF_RST=0x03, no CP_CURRENT.
+        //   INTEGER (PLL(89,0)):  N=6 (3+3, NOT bypassed), M=148, no DSM/FBCLK_MUX_2/VCO_DIV/SLF_RST,
+        //     frac=1, BWCTRL=0x03, CP_CURRENT=0x01, NREVERT_INVERT=1.
+        //   Invariant in BOTH: CTRL_OVERRIDE_SETTING=0, CNT_IN_SRC=0, TCLK_SEL=0,
+        //     LOCK_FILTER=0x19, UNLOCK_FILTER=0x02, CLKIN_0_SRC=0x04.
+        //
+        // Silicon rounds 1-6 each emitted a HYBRID and none locked; notably CP_CURRENT (the charge
+        // pump drive, without which the loop cannot be pulled to lock) was lost when the fractional
+        // recipe replaced the integer one. v1 therefore emits the INTEGER family verbatim - it is
+        // the family of the tile the placer actually lands in - and derives only the C dividers.
+        // VUP_PLL_GT_CLONE=1 additionally pins the C dividers to the ground truth's own values, so
+        // the emitted tile is byte-identical to a KNOWN-WORKING PLL and the only remaining variable
+        // is our cmux/PLLCLK emission (the decisive experiment).
+        const int N = 6, M = 148;                 // PFD = f_ref/6 = 8.333 MHz
+        double vco = f_ref * double(M) / double(N); // 1233.333 MHz
         int m_hi = M / 2, m_lo = M - m_hi;
+        int n_hi = N / 2, n_lo = N - n_hi;
+        bool gt_clone = getenv("VUP_PLL_GT_CLONE") != nullptr;
 
-        log_info("FPLL '%s': f_ref=%.3f MHz, N=1 (bypass), M=%d+frac, VCO=%.3f MHz (network-refclk "
-                 "recipe cloned from ground truth PLL(0,0))\n",
-                 ctx->nameOf(ci), f_ref, M, vco);
+        log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz (INTEGER family%s)\n",
+                 ctx->nameOf(ci), f_ref, N, M, vco, gt_clone ? ", GT-clone C dividers" : "");
 
-        // ---- program the block (byte-parity with GT (0,0) except the C output dividers) ----
-        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::N_CNT_BYPASS_EN, 0, true);
-        // GT (0,0) also writes the (bypassed) N dividers to 0 explicitly — their default is nonzero.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_HI_DIV_SETTING, 0, 0);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_LO_DIV_SETTING, 0, 0);
+        // ---- program the block ----
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_HI_DIV_SETTING, 0, n_hi);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_LO_DIV_SETTING, 0, n_lo);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_HI_DIV_SETTING, 0, m_hi);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_LO_DIV_SETTING, 0, m_lo);
 
@@ -307,6 +319,16 @@ struct MistralBitgen
                 C = 1;
             int c_hi = C / 2;
             int c_lo = C - c_hi;
+            if (gt_clone) {
+                // Ground truth's own C5 divide (25+24=49 -> 25.17 MHz); makes the tile byte-identical
+                // to a PLL known to run on this silicon. The design's clock is then GT's, not the
+                // requested one - reported honestly below.
+                c_hi = 0x19;
+                c_lo = 0x18;
+                log_info("  GT-clone: C%d divider pinned to %d+%d -> %.3f MHz (NOT the requested "
+                         "%.3f MHz)\n",
+                         c, c_hi, c_lo, vco / double(c_hi + c_lo), fout[c]);
+            }
             // Physical counter for logical clock c: pack may remap (G4) because only C4..C8 have
             // dedicated wiring to the GLOBAL cmuxes (p2p-verified); C0..C3 reach only regionals.
             int phys = c;
@@ -325,30 +347,16 @@ struct MistralBitgen
             cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[phys], 0, true);
         }
 
-        // Fractional/DSM config exactly as GT (0,0): DSM engaged, frac = 0x39c2f5e8.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DSM_OUT_SEL, 0, 1);
-        // byte order: r-fields pack LSB-first; GT bytes are 39 c2 f5 e8, so write the swapped word.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 0xe8f5c239);
-        // FEEDBACK MUX — the field whose absence left the loop OPEN (no lock) in rounds 1-3.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FBCLK_MUX_2, 0, 1);
-        // VCO post-divider: default is NOT zero ((0,0) sets it explicitly); force 0.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, 0);
-        // Analog loop constants from the SAME (0,0) recipe:
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::BWCTRL, 0, 0x07);
+        // Integer family: DSM off (frac field carries the idle value 1), no external feedback mux,
+        // no VCO post-divide, no self-reset. CP_CURRENT + NREVERT_INVERT are REQUIRED here - the
+        // charge pump is what drives the loop.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 1);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::BWCTRL, 0, 0x03);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CP_CURRENT, 0, 0x01);
+        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::NREVERT_INVERT, 0, true);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x19);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
-        // CLKIN_0_SRC selects WHICH reference the PLL listens to. 0x04 was copied from a ground
-        // truth whose refclk arrives on a DEDICATED PIN, while ours arrives over the clock network
-        // at CORECLK0 (PMUX) — if this mux points at the pin, our routed reference is ignored and
-        // the PLL can never lock. Overridable for the silicon sweep that resolves it.
-        {
-            uint32_t clkin_src = 0x04;
-            if (const char *e = getenv("VUP_PLL_CLKIN_SRC"))
-                clkin_src = uint32_t(strtoul(e, nullptr, 0));
-            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, clkin_src);
-        }
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_1_SRC, 0, 0x04);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, 0x04);
         // Universal ground-truth invariants previously missing entirely:
         // CTRL_OVERRIDE is a type-2 mux: bmux_r_set silently no-ops (round-3 rbf proved it).\n        cv->bmux_n_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, -1, 0); // NUM mux, midx -1
 

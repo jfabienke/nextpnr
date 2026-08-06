@@ -156,6 +156,49 @@ does not *prove* each variant actually reconfigured. Before trusting any future 
 **build-ID channel** to the telemetry word (a few constant bits that differ per variant) so the
 harness proves which bitstream is live — a cheap fix that makes sweeps self-verifying.
 
+### PLL RESEARCH 2026-08-06 — the FPLL tile config is EXONERATED; the fault is refclk DELIVERY
+
+**1. Ground truth uses two coherent recipe FAMILIES; fields must never be mixed** (fplldump over the
+fitted fabi386's three active PLLs):
+
+| | fractional — PLL(0,0), PLL(0,55) | integer — PLL(89,0) |
+|---|---|---|
+| N | bypassed, dividers 0 | 6 (3+3), NOT bypassed |
+| M | 8 | 148 |
+| DSM / frac | `DSM_OUT_SEL=1`, design-specific frac | off, frac = 1 |
+| `FBCLK_MUX_2` / `VCO_DIV` / `SLF_RST` | set | absent |
+| `BWCTRL` | 0x07 | 0x03 |
+| `CP_CURRENT` / `NREVERT_INVERT` | — | 0x01 / 1 |
+| invariant in both | `CTRL_OVERRIDE=0`, `CNT_IN_SRC=0`, `TCLK_SEL=0`, `LOCK_FILTER=0x19`, `UNLOCK=0x02`, `CLKIN_0_SRC=0x04` | |
+
+Rounds 1–6 each emitted a **hybrid** of the two — and `CP_CURRENT` (the charge-pump drive, without
+which the loop cannot be pulled to lock) was silently lost when the fractional recipe replaced the
+integer one. v1 now emits the INTEGER family verbatim, matching the tile the placer lands in.
+
+**2. A byte-identical clone of a WORKING ground-truth PLL still produces 0 Hz.** With
+`VUP_PLL_GT_CLONE=1` the emitted FPLL(89,0) tile is field-for-field identical to the fitted
+fabi386's own integer PLL — zero extra fields, zero value differences, only GT's unused C0 counter
+and the unwritable `CTRL_OVERRIDE` remain — and the measured output is still **0.000 MHz** (REF
+channel sound at 50.33 MHz). **This exonerates the entire 141-field FPLL configuration space.** The
+fault is therefore in the *delivery* of the reference clock INTO the PLL, or of the output OUT of it.
+
+**3. Why the reference is the prime suspect — and the concrete blocker.** libmistral's p2p tables
+show the FPLLs have *dedicated* CLKIN inputs, fed only from GPIO positions (32,0) (40,0) (56,0)
+(64,0) (89,23) (89,25) (32,81) (40,81). **None of the DE10-Nano's three 50 MHz clock pins is one of
+them** — FPGA_CLK1_50 = V11 = GPIO(10,17), CLK2 = Y13 = GPIO(12,19), CLK3 = E11 = GPIO(10,4)
+(`pinfind`). So on this board a PLL reference **must** arrive over the clock network
+(pin → CLKBUF → GCLK → SCLK → PMUX → `CORECLK0`), which is exactly what nextpnr models as the
+refclk bel pin — but `CLKIN_0_SRC` selects among the *dedicated* sources and has been swept and
+refuted (0x00–0x05, all 0 Hz). **The unidentified item is the mux field that selects the
+core/PMUX reference instead of a dedicated pin.** Unexercised candidates from the 141-field
+vocabulary: `sw_refclk_src`, `src`, `bypass_en`, `m_cnt_in_src`, `dll_src`.
+
+**4. The targeted RE that answers it (one Quartus diff pair, now a sharp question):** build the same
+PLL design in Quartus twice — once with the reference on a dedicated PLL clock pin, once with it
+arriving from core/general routing — and diff the FPLL bmuxes with `fplldump`. Exactly one field
+family should change: that is the field. This is far narrower than the earlier "2–3 diff builds"
+plan because the tile config and the output path are both now eliminated.
+
 **Next experiment (cheap, decisive):** fix B2, confirm via `fplldump` that the emitted PLL tile is
 (0,0), then reload. If it still does not lock, bisect the feedback by cloning the ENTIRE ground-truth
 PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK
