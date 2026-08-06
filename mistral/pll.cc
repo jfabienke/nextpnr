@@ -141,7 +141,16 @@ bool Arch::pllclk_pos_is_vertical(uint32_t cmux_pos) const
 
 bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkChoice> &out) const
 {
-    for (auto fp : cyclonev->fpll_get_pos()) {
+    // Prefer FPLL(0,0): the ground-truth network-refclk PLL with a PROVEN fabric MCNT feedback
+    // path via CMUXVG(42,0) PLL_FEEDBACK_ENABLE_3. (0,14)/(0,31)/(0,55) are HSSI-adjacent fPLLs
+    // whose feedback wiring is transceiver-side (p2p-verified) — silicon round 4 froze on (0,14).
+    std::vector<CycloneV::pos_t> order;
+    for (auto fp : cyclonev->fpll_get_pos())
+        if (uint32_t(fp) == uint32_t(CycloneV::xy2pos(0, 0)))
+            order.insert(order.begin(), fp);
+        else
+            order.push_back(fp);
+    for (auto fp : order) {
         uint32_t fpll_pos = uint32_t(fp);
         std::vector<PllClkChoice> picks;
         std::set<std::pair<uint32_t, int>> used_gclk;

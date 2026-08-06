@@ -273,45 +273,25 @@ struct MistralBitgen
         // Among valid VCOs we prefer even C's (50% duty from HI==LO) and the
         // one closest to a 1000 MHz mid-band target. For the fabi386 case
         // (50 MHz -> 10/25/100 MHz) this yields M=20, VCO=1000, C={100,40,10}.
-        const int N = 1;
-        const double target = 1000.0;
-        int bestM = 0;
-        double bestScore = 0, bestVco = 0;
-        for (int M = 1; M <= 512; M++) {
-            double vco = f_ref * double(M) / double(N);
-            if (vco < 600.0 || vco > 1600.0)
-                continue;
-            bool ok = true, all_even = true;
-            for (double f : fout) {
-                double c = vco / f;
-                double cr = std::round(c);
-                if (cr < 1 || cr > 512 || std::abs(c - cr) > 1e-6) {
-                    ok = false;
-                    break;
-                }
-                if (int(cr) % 2 != 0)
-                    all_even = false;
-            }
-            if (!ok)
-                continue;
-            double score = std::abs(vco - target) + (all_even ? 0.0 : 1.0e6);
-            if (bestM == 0 || score < bestScore) {
-                bestM = M;
-                bestScore = score;
-                bestVco = vco;
-            }
-        }
-        int M = bestM ? bestM : 20;
-        double vco = bestM ? bestVco : (f_ref * 20.0);
-        int m_hi = M / 2;
-        int m_lo = M - m_hi;
+        // Recipe CLONED WHOLESALE from the fitted fabi386's PLL(0,0) — the PLL whose reference
+        // topology matches ours exactly: refclk arrives over the CLOCK NETWORK from a non-dedicated
+        // pin (V11 is GPIO(10,17), not a PLL clkpin — verified via pinfind/p2p). Analog loop
+        // constants, feedback muxing, and divider mode are a matched SET; mixing recipes across
+        // configurations silicon-failed twice. (0,0) runs N bypassed, M = 8 + frac (DSM), so:
+        //   PFD = 50 MHz, VCO = 50 * (8 + 0x39c2f5e8/2^32) = 411.28 MHz
+        const int M = 8;
+        const double vco = f_ref * (double(M) + double(0x39c2f5e8) / 4294967296.0);
+        int m_hi = M / 2, m_lo = M - m_hi;
 
-        log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz\n", ctx->nameOf(ci), f_ref, N, M, vco);
+        log_info("FPLL '%s': f_ref=%.3f MHz, N=1 (bypass), M=%d+frac, VCO=%.3f MHz (network-refclk "
+                 "recipe cloned from ground truth PLL(0,0))\n",
+                 ctx->nameOf(ci), f_ref, M, vco);
 
-        // ---- program the block ----
-        // Reference divider N is bypassed.
+        // ---- program the block (byte-parity with GT (0,0) except the C output dividers) ----
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::N_CNT_BYPASS_EN, 0, true);
-        // Feedback divider M (M = HI + LO).
+        // GT (0,0) also writes the (bypassed) N dividers to 0 explicitly — their default is nonzero.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_HI_DIV_SETTING, 0, 0);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_LO_DIV_SETTING, 0, 0);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_HI_DIV_SETTING, 0, m_hi);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::M_CNT_LO_DIV_SETTING, 0, m_lo);
 
@@ -338,22 +318,44 @@ struct MistralBitgen
             // Odd divides need the odd/even-duty enable bit.
             if (C % 2)
                 cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, phys, true);
+            // Counter input source: VCO phase 0 (ground truth sets CNT_IN_SRC=0 for active counters).
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_IN_SRC, phys, 0);
             // Enable this counter's clock output.
             cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[phys], 0, true);
         }
 
-        // Integer mode: no delta-sigma / fractional division.
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DSM_OUT_SEL, 0, 0);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 0);
-
-        // Verbatim analog/config constants required to reach lock (see the
-        // off-silicon-verified FPLL field model).
+        // Fractional/DSM config exactly as GT (0,0): DSM engaged, frac = 0x39c2f5e8.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::DSM_OUT_SEL, 0, 1);
+        // byte order: r-fields pack LSB-first; GT bytes are 39 c2 f5 e8, so write the swapped word.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FRACTIONAL_DIVISION_SETTING, 0, 0xe8f5c239);
+        // FEEDBACK MUX — the field whose absence left the loop OPEN (no lock) in rounds 1-3.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::FBCLK_MUX_2, 0, 1);
+        // VCO post-divider: default is NOT zero ((0,0) sets it explicitly); force 0.
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, 0);
+        // Analog loop constants from the SAME (0,0) recipe:
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::BWCTRL, 0, 0x07);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x1900);
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x19);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, 0x04);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_1_SRC, 0, 0x04);
+        // Universal ground-truth invariants previously missing entirely:
+        // CTRL_OVERRIDE is a type-2 mux: bmux_r_set silently no-ops (round-3 rbf proved it).\n        cv->bmux_n_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, -1, 0); // NUM mux, midx -1
+
+        // Close the M-counter feedback loop THROUGH THE CMUX (the piece rounds 1-4 lacked): the
+        // fitted ground truth feeds MCNT back via CMUXVG(42,0) PLL_FEEDBACK_ENABLE_3 = PLL_MCNT0
+        // for FPLL(0,0). Without the cmux side, FBCLK_MUX_2=1 selects an undriven input -> open
+        // loop -> the VCO spins up and dies (the frozen-counter LED signature, twice). Currently
+        // mapped for the GT-proven (0,0) position only; other positions warn honestly.
+        if (pos == CycloneV::xy2pos(0, 0)) {
+            cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), CycloneV::PLL_FEEDBACK_ENABLE_3, 0,
+                           CycloneV::PLL_MCNT0);
+        } else {
+            log_warning("FPLL '%s' at (%d,%d): no cmux MCNT-feedback mapping for this position - the "
+                        "loop may not close (only (0,0) is ground-truth-mapped)\n",
+                        ctx->nameOf(ci), x, y);
+        }
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
         // Enables.
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);

@@ -65,6 +65,44 @@ V3 (silicon lock + blink) pending board availability. Implementation notes: only
 global cmuxes, so pack remaps logical outclk[i] to a physical counter (PLLCLK_PHYS_i) and pre-binds
 PLL + injector; a default-BelId sentinel collides with the real (0,0) bel — found-flags required.
 
+
+## 2b. SILICON STATUS 2026-08-06 — outclk routing WORKS, PLL does not yet LOCK (honest)
+
+Five silicon rounds on the DE10-Nano. **The G4 mechanism itself is validated**; the blocker is the
+FPLL analog/feedback configuration, which is upstream of G4's scope.
+
+**What silicon PROVED (new facts, each from a real load):**
+1. **The clock-network leg works.** A counter clocked through `MISTRAL_CLKBUF` -> GCLK (no PLL)
+   blinks correctly (`clkbuftest.rbf`). First silicon validation of that path — it is the leg the
+   PLL refclk depends on, and it is sound.
+2. **The compressed-RBF requirement still governs.** An uncompressed `.rbf` configures
+   (`fpga_manager: operating`) yet leaves ALL user IO dead — reproduced exactly (this is the
+   already-known root cause; the tooling default must stay compressed).
+3. **The VCO starts and dies.** Rounds 2/4/5 left the LED counter FROZEN at different values each
+   time (photographed) — i.e. the counter received a few hundred thousand to a few million edges
+   and then the clock stopped. Not "no clock": an unstable/collapsing loop. Round 3 (integer recipe)
+   produced no edges at all.
+4. **Recipes are matched sets.** Mixing the fractional PLL's loop constants with different N/M
+   silicon-failed; so did the integer recipe. FPLL fields are now at byte-parity with the fitted
+   fabi386's PLL(0,0) except the C dividers (verified by `fplldump` diff) and it still does not lock.
+
+**Open blockers (in priority order):**
+- **B1 — the MCNT feedback loop.** Ground truth closes it at the CMUX
+  (`PLL_FEEDBACK_ENABLE_3 = PLL_MCNT0` on CMUXVG(42,0) for FPLL(0,0)); we emit `FBCLK_MUX_2=1` on
+  the FPLL side. The cmux-side enable is implemented but has NEVER REACHED SILICON, because:
+- **B2 — the placer migrates the PLL.** Pack chooses FPLL(0,0) (the position whose feedback mapping
+  is ground-truth-known) but the design is emitted at FPLL(0,14). `STRENGTH_LOCKED`, `STRENGTH_USER`,
+  an `isBelLocationValid` pin, and the `BEL` attribute have each been tried; the heap placer still
+  relocates it (BEL-attr path additionally hits a name-format mismatch in `getBelByName`). **Fix
+  this first — every feedback experiment is invalid until the PLL provably lands where pack chose.**
+- **B3 — `CTRL_OVERRIDE_SETTING`** cannot be written through any of `bmux_r/b/n_set` (silently
+  absent from the emitted rbf); ground truth sets it on every active PLL.
+
+**Next experiment (cheap, decisive):** fix B2, confirm via `fplldump` that the emitted PLL tile is
+(0,0), then reload. If it still does not lock, bisect the feedback by cloning the ENTIRE ground-truth
+PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK
+emission — a design that produces the GT's own clock frequency is an acceptable proof for G4.
+
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
 **v1 emits the direct configuration:** `INPUT_SEL = e({PLLIN,k})` for the chosen gclk instance,
