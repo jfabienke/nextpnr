@@ -628,10 +628,16 @@ So the locking result must be read precisely:
 > transplant that locked also carried the donor's PRAM chains 4/5/10/12/13. The spine flipped that
 > build from dead to locked, so it is **necessary**; it is **not sufficient on its own**.
 
-What remains is to identify which of the donor PRAM chains is also required — chains 4/5/12 carry
-`TERM`, `CBUF`, `LVL`, `HSSI(0,35)` and `CMUXH(0,35)`, and each can now be added to a pure build one
-at a time on top of the spine, with `LOCKED` as an unambiguous verdict. That is a handful of trials,
-not a search.
+What remains is to identify which of the donor PRAM chains is also required. Each can be added to a
+pure build one at a time on top of the spine, with `LOCKED` as an unambiguous verdict:
+
+| spine + PRAM chain | owners | LOCKED |
+|---|---|---|
+| 12 | `HSSI(0,35)`, `CMUXH(0,35)`, `HIP(1,56)` | 0 |
+| 4, 5, 10, 13 | `TERM`, `CBUF`, `LVL`, `SERPAR`, `CMUXH(89,35)`, `FPLL` | *not yet run* |
+
+That is a handful of trials, not a search — and the combination is known to exist, since spine + all
+five chains locks.
 
 *(Trial-harness note: the load check compared build IDs case-sensitively, so a correct `0xb0` vs
 `0xB0` load was reported `STALE`. Fixed; the affected trial was valid.)*
