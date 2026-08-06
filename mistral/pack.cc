@@ -636,8 +636,28 @@ struct MistralPacker
             // configuration. libmistral's p2p CLKIN table does not carry that edge for this package,
             // which is why the model forces the detour above. VUP_PLL_NO_REFCLK_BUF drops the detour
             // so the dedicated path can be tested on silicon.
-            bool no_refclk_buf = !getenv("VUP_PLL_LEGACY");
+            //
+            // GUARD: the dedicated-pin path is ATTESTED FOR ONE CONFIGURATION ONLY -- the board
+            // clock pin PIN_V11 feeding FPLL(0,14). Applying it to a PLL fed from some other pin
+            // would emit a spine derived for the wrong source, i.e. a subtly WRONG bitstream rather
+            // than an obviously dead one. So verify the reference really is driven by that pin, and
+            // otherwise fall back to the old (never-working, but honest) modelled path with a loud
+            // warning. Mark the cell so bitstream.cc applies the spine only in the attested case.
             NetInfo *refnet = ci->getPort(id_refclk);
+            bool attested_pin = false;
+            if (refnet != nullptr && refnet->driver.cell != nullptr) {
+                CellInfo *drv = refnet->driver.cell;
+                if (drv->attrs.count(id_LOC) && drv->attrs.at(id_LOC).as_string() == "PIN_V11")
+                    attested_pin = true;
+            }
+            if (!attested_pin && !getenv("VUP_PLL_LEGACY"))
+                log_warning("altera_pll '%s': reference is not the attested board clock pin (PIN_V11); "
+                            "falling back to the modelled refclk path, which is NOT known to work on "
+                            "silicon. See mistral/PLL_OUTCLK_DESIGN.md.\n",
+                            ctx->nameOf(ci));
+            if (attested_pin)
+                ci->attrs[id_PLLCLK_ATTESTED_REF] = 1;
+            bool no_refclk_buf = attested_pin && !getenv("VUP_PLL_LEGACY");
             if (no_refclk_buf && refnet != nullptr) {
                 ci->pin_data[id_refclk].bel_pins.clear();
                 ci->disconnectPort(id_refclk);

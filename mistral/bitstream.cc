@@ -432,7 +432,7 @@ struct MistralBitgen
         // DEFAULT ON. Without this the PLL never receives a reference at all, so the attested
         // configuration is strictly better than the previous always-dead behaviour.
         // VUP_PLL_LEGACY=1 restores the old path; VUP_CLKPIN_GCLK overrides the instance.
-        if (!getenv("VUP_PLL_LEGACY")) {
+        if (!getenv("VUP_PLL_LEGACY") && ci->attrs.count(id_PLLCLK_ATTESTED_REF)) {
             int g = 0;
             if (const char *e = getenv("VUP_CLKPIN_GCLK"))
                 g = int(strtoul(e, nullptr, 0)) & 3;
@@ -447,7 +447,7 @@ struct MistralBitgen
         // Ground truth powers down the aux bandgap of an UNUSED PLL whenever a PLL is instantiated;
         // it appears in the with/without differential and in every locking build, and we never
         // emitted it. Attested position only, like the spine table.
-        if (!getenv("VUP_PLL_LEGACY"))
+        if (!getenv("VUP_PLL_LEGACY") && ci->attrs.count(id_PLLCLK_ATTESTED_REF))
             cv->bmux_b_set(CycloneV::FPLL, CycloneV::xy2pos(0, 73), CycloneV::PL_AUX_BG_POWERDOWN, 0, true);
 
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::FPLL_ENABLE, 0, true);
@@ -476,7 +476,8 @@ struct MistralBitgen
         // that exact position: the general rule as a function of (pin, PLL position) needs more
         // Quartus references, and guessing it would violate "every number from a real command".
         // The proper home for the fix is libmistral's routing model; this is the interim.
-        if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && !getenv("VUP_PLL_LEGACY")) {
+        if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && !getenv("VUP_PLL_LEGACY") &&
+            ci->attrs.count(id_PLLCLK_ATTESTED_REF)) {
             static const struct { uint32_t x, y; uint8_t v; } spine[] = {
         {865, 796, 0},
         {866, 797, 0},

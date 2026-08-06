@@ -236,8 +236,14 @@ void Arch::fixup_pllclk_placement()
     // that libmistral's p2p CLKIN table does not carry for this package. Position is therefore
     // load-bearing, and this knob makes it sweepable on silicon.
     const char *pos_env = getenv("VUP_PLL_POS");
-    if (!pos_env && !getenv("VUP_PLL_LEGACY"))
-        pos_env = "0,14"; // the attested reference-path position (see PLL_OUTCLK_DESIGN.md)
+    if (!pos_env && !getenv("VUP_PLL_LEGACY")) {
+        // Only claim the attested position when pack confirmed the attested reference pin; see the
+        // guard in pack.cc. Otherwise leave the placer's choice alone rather than emit a spine
+        // derived for a different clock source.
+        for (auto &cell : cells)
+            if (is_pll_cell(cell.second->type) && cell.second->attrs.count(id_PLLCLK_ATTESTED_REF))
+                pos_env = "0,14";
+    }
     if (pos_env) {
         int px = -1, py = -1;
         if (sscanf(pos_env, "%d,%d", &px, &py) == 2) {

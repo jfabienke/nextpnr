@@ -665,6 +665,15 @@ behaviour. Defaulting to the attested path is strictly better than the alternati
 it the PLL never receives a reference at all. Regression-checked: a non-PLL design and a PLL design
 both build clean with no env set.
 
+**Guarded, so the scope limit is enforced in code.** The attested path is applied only when pack
+confirms the reference is driven by the attested board clock pin (`PIN_V11`); the PLL cell is marked
+`PLLCLK_ATTESTED_REF` and the position override, the `{CLKPIN,n}` entry, the bandgap bit and the
+spine all key off that marker. A PLL fed from any other pin falls back to the old modelled path with
+an explicit warning that it is not known to work on silicon — an honest failure rather than a spine
+derived for the wrong source. Verified both ways: attested pin emits the full path and measures
+10.066 MHz / `LOCKED=1`; a design with the clock moved to another pin emits the warning and none of
+the attested configuration.
+
 **Scope of the fix (honest):** the spine table is empirical and gated to the one attested
 configuration — `PIN_V11 → FPLL(0,14)`, behind `VUP_PLL_SPINE` + `VUP_PLL_POS` + `VUP_CLKPIN_GCLK`.
 Generalising needs the (pin, PLL position) → spine rule, which is a handful more Quartus references
