@@ -243,6 +243,51 @@ cmux+FPLL configuration for a trivial 50 MHz -> N MHz PLL, as a minimal referenc
 PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK
 emission — a design that produces the GT's own clock frequency is an acceptable proof for G4.
 
+### 2026-08-06 (later still) — the CLKBUF sweep is a measured NEGATIVE, and a 20-core corpus reframes the fault
+
+**(a) The CLKBUF-source hypothesis is refuted on silicon.** Six variants, each with the build-ID
+channel and a reboot between loads, all verified `LOAD OK`:
+
+| CLKBUF config | REF | PLL |
+|---|---|---|
+| baseline general routing `0x1b` | 50.332 MHz | **0.000** |
+| `INPUT_SEL=0`, `CLKPIN_SEL_0=0x1` (the exact GT form) | 50.332 MHz | **0.000** |
+| `INPUT_SEL=0`, `CLKPIN_SEL_0=0x5` | 50.332 MHz | **0.000** |
+| `INPUT_SEL=2`, `CLKPIN_SEL_2=0x5` | 0.000 | 0.000 |
+| `INPUT_SEL=6`, `CLKPIN_SEL_2=0x5` | 0.000 | 0.000 |
+| `INPUT_SEL=2`, `CLKPIN_SEL_2=0x1` | 0.000 | 0.000 |
+
+The REF column proves the override is *live* (entries 2/6 kill the clock network outright), and the
+REF counter shares the overridden CMUXHG with the PLL's refclk — so in rows 1/2/5 a counter on that
+very node is running at 50 MHz while the PLL emits nothing. **Refclk delivery is exonerated too.**
+
+**(b) A 20-core ground-truth corpus (new tools: `pmuxdump`, `bmuxhist`, `bmuxdiff`).** Every real
+MiSTer core on the SD card is a Quartus bitstream with working PLLs. Scanning 20 of them:
+
+- **all 20 drive ZERO `PMUX` nodes**, yet every one has `CLKIN_0_SRC=0x04` — so the reference does
+  not arrive over the routed core-clock path that Mistral models as `CORECLK0`→`PMUX`. Ours is the
+  only bitstream in the corpus that drives a PMUX.
+- **all 20 have an active FPLL at (89,0)** — exactly where nextpnr places ours — so the position is
+  not the problem either.
+- two block types appear in every core and never in ours: `HPS_CLOCKS` (3 settings) and `CMUXVR`
+  (1 setting), identical across cores — board-level constants of the MiSTer template.
+
+**(c) THE BUG: `CTRL_OVERRIDE_SETTING` was never emitted.** An escaped `\n` inside a `//` comment had
+swallowed the emit statement, so the line was inert comment text; the call also used the wrong setter
+(the field is `MT_BOOL`, and `bmux_r_set`/`bmux_n_set` silently no-op on it). Consequence, confirmed
+by `fplldump --all` on our own rbf:
+
+> **its default is 1, and all 20 Quartus cores explicitly clear it to 0 at all three PLL positions.**
+
+We shipped a PLL with its control-override bit asserted. Fixed with `bmux_b_set(..., 0, false)`;
+`bmuxdiff` now shows no `CTRL_OVERRIDE_SETTING` delta against ground truth at (89,0). The remaining
+FPLL deltas are all fractional-family fields (GT's PLL is fractional, ours integer) plus `SLF_RST`
+and `VCO_DIV`, which are behind `VUP_PLL_SLF_RST` / `VUP_PLL_VCO_DIV` pending silicon.
+
+**Lesson worth keeping:** "config space is exonerated" rested on a byte-identical GT clone. That
+clone was byte-identical *in the fields we emit* — it could never have caught a field we never emit
+at all. Diff against ground truth over the **full** non-default set, not the set you wrote.
+
 ## 2. Design decision: try the direct path first, silicon is the arbiter
 
 **v1 emits the direct configuration:** `INPUT_SEL = e({PLLIN,k})` for the chosen gclk instance,

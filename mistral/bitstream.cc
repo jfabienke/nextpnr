@@ -127,7 +127,25 @@ struct MistralBitgen
     {
         (void)ci; // currently unused
         auto pos = CycloneV::xy2pos(x, y);
-        cv->bmux_r_set(CycloneV::CMUXHG, pos, CycloneV::INPUT_SEL, bi, 0x1b); // hardcode to general routing
+        // Default: general routing (entry 0x1b = {CLKIN,2}). Ground truth instead sources the clock
+        // network from DEDICATED CLOCK PINS - INPUT_SEL -> {CLKPIN_SEL_x, inst} plus the matching
+        // CLKPIN_SEL_x bmux picking the pin. General routing demonstrably drives FABRIC loads
+        // (silicon-proven), but is the prime suspect for failing to feed a PLL reference.
+        // VUP_CLKBUF_SEL / VUP_CLKPIN_SEL_IDX / VUP_CLKPIN_SEL_VAL drive the silicon sweep.
+        uint32_t sel = 0x1b;
+        if (const char *e = getenv("VUP_CLKBUF_SEL"))
+            sel = uint32_t(strtoul(e, nullptr, 0));
+        cv->bmux_r_set(CycloneV::CMUXHG, pos, CycloneV::INPUT_SEL, bi, sel);
+        if (const char *ei = getenv("VUP_CLKPIN_SEL_IDX")) {
+            static const CycloneV::bmux_type_t sel_mux[4] = {CycloneV::CLKPIN_SEL_0, CycloneV::CLKPIN_SEL_1,
+                                                             CycloneV::CLKPIN_SEL_2, CycloneV::CLKPIN_SEL_3};
+            int idx = int(strtoul(ei, nullptr, 0)) & 3;
+            uint32_t val = 0x1;
+            if (const char *ev = getenv("VUP_CLKPIN_SEL_VAL"))
+                val = uint32_t(strtoul(ev, nullptr, 0));
+            cv->bmux_r_set(CycloneV::CMUXHG, pos, sel_mux[idx], bi, val);
+            log_info("CLKBUF (%d,%d)[%d]: INPUT_SEL=0x%x, CLKPIN_SEL_%d=0x%x\n", x, y, bi, sel, idx, val);
+        }
         cv->bmux_m_set(CycloneV::CMUXHG, pos, CycloneV::TESTSYN_ENOUT_SELECT, bi, CycloneV::PRE_SYNENB);
     }
 
@@ -356,9 +374,25 @@ struct MistralBitgen
         cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::NREVERT_INVERT, 0, true);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x19);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, 0x04);
-        // Universal ground-truth invariants previously missing entirely:
-        // CTRL_OVERRIDE is a type-2 mux: bmux_r_set silently no-ops (round-3 rbf proved it).\n        cv->bmux_n_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, -1, 0); // NUM mux, midx -1
+        uint32_t clkin_src = 0x04;
+        if (const char *e = getenv("VUP_PLL_CLKIN_SRC"))
+            clkin_src = uint32_t(strtoul(e, nullptr, 0));
+        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, clkin_src);
+        // Universal ground-truth invariants previously missing entirely.
+        // CTRL_OVERRIDE_SETTING is MT_BOOL (type 2 == MT_BOOL in {MUX,NUM,BOOL,RAM}), and its
+        // DEFAULT IS 1 -- verified by dumping our own rbf with fplldump --all. Every Quartus core
+        // sampled (20/20, all three PLL positions) explicitly clears it to 0. We shipped the
+        // default: an escaped "\n" inside the preceding comment had swallowed the emit line
+        // entirely, and it used the wrong setter (bmux_r_set/bmux_n_set no-op on a BOOL) besides.
+        cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, 0, false);
+
+        // Remaining ground-truth-only fields that are NOT fractional-family specific. Held behind
+        // env knobs until silicon says whether they matter (SLF_RST=0x03 and VCO_DIV=0x00 appear in
+        // every sampled core; the integer recipe currently leaves both at their defaults).
+        if (const char *e = getenv("VUP_PLL_SLF_RST"))
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, strtoul(e, nullptr, 0));
+        if (const char *e = getenv("VUP_PLL_VCO_DIV"))
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::VCO_DIV, 0, strtoul(e, nullptr, 0));
 
         // Close the M-counter feedback loop THROUGH THE CMUX (the piece rounds 1-4 lacked): the
         // fitted ground truth feeds MCNT back via CMUXVG(42,0) PLL_FEEDBACK_ENABLE_3 = PLL_MCNT0
