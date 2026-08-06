@@ -157,7 +157,41 @@ route), so a **single-clock** core builds today; only multi-clock freq-synthesis
 
 ---
 
-## Also carried in this fork (not gaps)
+## G6 — SDRAM (board-module) controller path: unproven in the open flow, but mostly leverage
+
+**Status: added 2026-08-06. Not a nextpnr feature gap like G3/G4 — a flow-capability gap: nothing has
+ever driven the MiSTer SDRAM module through the open flow, and it is the cheapest route to real
+fabric-accessible memory (no HPS needed).**
+
+**Why it matters.** G3 (FPGA2SDRAM/HPS bridges) is the largest blocker for DDR — but the MiSTer
+ecosystem's **SDRAM modules sit on plain FPGA GPIO banks** (user pins), so a fabric SDR-SDRAM
+controller needs *no new bels at all*: the IO path the open flow already proves with blinky is the
+same path the SDRAM module uses. A working open-flow SDRAM controller unblocks a memory-backed
+fabric demonstrator (the G3 workaround, with real memory instead of BRAM), fabi386's near-memory
+tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
+
+**Leverage first — tried-and-true implementations exist; do not write a controller from scratch:**
+- **MiSTer framework `sdram.sv` controllers** — years of on-this-exact-board burn-in across hundreds
+  of cores, for the exact SDRAM modules (SDR, 16-bit, up to 128MB) on the exact pins.
+- **jotego's `jtframe_sdram`** — heavily exercised multi-bank controller family (48/96 MHz), MIT.
+- Simpler single-purpose controllers in individual cores (ao486's, various consoles) as references.
+
+**The honest blockers to check (in order):**
+1. **Clocking (ties to G4):** every proven controller phase-shifts the SDRAM clock vs the fabric
+   clock (PLL output tap or -phase clock). Without G4 the open flow has a single pin-driven clock —
+   a low-MHz controller variant may run degraded; full-rate needs the PLL outclk path. G4 first.
+2. **IO ring completeness:** the module wants bidirectional DQ with output/input registers in the IO
+   cells (and DQM/address/control at speed). nextpnr-mistral's GPIO support covers plain IO
+   (blinky); IO-register packing / DDIO for SDR data capture must be verified — entry point:
+   `mistral/io.cc` + libmistral GPIO bmux config.
+3. **Constraint fidelity:** the MiSTer `.qsf` pin set for the SDRAM bank (drive strength, fast
+   output register) must survive the qsf path.
+4. **Silicon validation:** MemTest-style pattern check as the acceptance gate, deployed over the
+   existing HPS deploy path — the measured verify model already exists (`deploy.rs`).
+
+**Path.** Port the MiSTer `sdram.sv` (smallest proven variant) + its qsf pin block into the open
+flow at conservative clocking → silicon MemTest → raise the clock once G4 lands phase-shifted
+outputs. Success criterion is a silicon-verified memory test through the open flow, not "it routes."
 
 - **macOS portability fix** in `mistral/pack.cc` — `std::max/min(int64_t, long-literal)` was ambiguous and
   blocked *all* nextpnr-mistral compiles on macOS; now `std::max<int64_t>` / `std::min<int64_t>`.
