@@ -628,6 +628,39 @@ So the locking result must be read precisely:
 > transplant that locked also carried the donor's PRAM chains 4/5/10/12/13. The spine flipped that
 > build from dead to locked, so it is **necessary**; it is **not sufficient on its own**.
 
+### 2026-08-07 (round 15) — the spine is a NETWORK, and it is now emitted by nextpnr
+
+Iterating "build → re-diff the built artifact against the donor → add what is missing" grew the
+table from 27 bits to **56**, and revealed that the reference path is not one column:
+
+| segment | tiles |
+|---|---|
+| vertical run A | column 9, rows 9…29 (pairs two rows apart, every 172 CRAM rows) |
+| vertical run B | column 15, rows 1, 4, 9, 29 |
+| horizontal run | row 76, across columns 9, 12, 15, 18 |
+| taps | (0,1), (6,50) |
+
+A pure nextpnr build now reproduces the donor's **entire clock region byte-for-byte** (`x<=20`:
+0 differing bits). One lesson from the iteration: a *single* differential pair under-reports — bits
+the pair happened to agree on are invisible in it, so always re-diff the **built artifact**.
+
+**Validated result** — pure nextpnr build + full spine table, with only PRAM and the two periphery
+CRAM regions transplanted:
+
+```
+full spine + PRAM + peripheries    LOCKED=1  LOAD OK
+```
+
+The identical recipe with the *incomplete* 27-bit table did **not** lock, so the expanded table is
+demonstrably necessary, inside a recipe that now starts from a nextpnr bitstream rather than a
+Quartus one.
+
+**Still transplanted, and therefore still to be made native:** the donor PRAM chains and CRAM tile
+columns 0..6 (7 bits) and 86..89 (1527 bits). Most PRAM differences are named bmux fields and are
+already expressible; the periphery CRAM needs the same diff-and-add treatment the spine just had.
+Note the clock region alone is **not** sufficient — a pure build matching it byte-for-byte still
+reads `LOCKED=0`.
+
 What remains is to identify which of the donor PRAM chains is also required. Each can be added to a
 pure build one at a time on top of the spine, with `LOCKED` as an unambiguous verdict:
 

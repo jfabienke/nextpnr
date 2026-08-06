@@ -490,6 +490,45 @@ struct MistralBitgen
         {836, 2508, 1},
         {858, 2516, 0},
         {860, 2516, 1},
+        // Two further bits at the y=76 tile, found only when a PURE nextpnr build was re-diffed
+        // against the donor: the pair the table was extracted from happened to already agree on
+        // them, so one differential pair can under-report. Always re-diff the BUILT artifact.
+        // The spine is not purely vertical: a HORIZONTAL segment at tile row 76 carries it across
+        // columns 12 and 15 as well. Found by diffing the built artifact against the donor after
+        // column 9 already matched byte-for-byte and the PLL still did not lock.
+        // The spine is a NETWORK, not one column: a second vertical run in column 15, the row-76
+        // horizontal continuing to column 18, and taps at (0,1)/(6,50). Each round of "diff the
+        // built artifact against the donor, add what is missing" revealed the next segment -- which
+        // is why the table is empirical and gated to the one attested (pin, PLL position) pair.
+        {0, 137, 1},
+        {657, 4380, 1},
+        {658, 4380, 1},
+        {657, 4381, 1},
+        {657, 4386, 1},
+        {657, 4387, 1},
+        {658, 4387, 1},
+        {1473, 98, 0},
+        {1473, 99, 1},
+        {1472, 102, 1},
+        {1473, 102, 0},
+        {1474, 381, 1},
+        {1476, 381, 0},
+        {1479, 788, 0},
+        {1479, 790, 0},
+        {1465, 2516, 1},
+        {1466, 2538, 1},
+        {1656, 6550, 0},
+        {1656, 6552, 0},
+        {1468, 780, 0},
+        {1469, 781, 0},
+        {1042, 6576, 0},
+        {1042, 6577, 0},
+        {1469, 6602, 1},
+        {1468, 6603, 1},
+        {859, 796, 0},
+        {859, 797, 0},
+        {865, 6590, 0},
+        {865, 6591, 0},
         {865, 6584, 0},
         {865, 6586, 0},
         {859, 6592, 1},
