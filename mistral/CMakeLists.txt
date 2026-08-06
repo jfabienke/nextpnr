@@ -6,6 +6,7 @@ set(SOURCES
     arch_pybindings.cc
     arch_pybindings.h
     bitstream.cc
+    vup_cram.cc
     constids.inc
     delay.cc
     globals.cc

@@ -603,9 +603,38 @@ tile (9, 9):2  (9,11):2  (9,13):2  (9,15):2  (9,17):2  (9,19):2
      (9,21):2  (9,23):2  (9,25):2  (9,27):2  (9,29):3  (9,76):4
 ```
 
-Eleven consecutive odd rows, 2 bits each, from y=9 to y=29 — the spine segment enables — plus a
-3-bit cap at y=29 and 4 bits at y=76. **That is the whole reference-clock delivery mechanism, and
-nextpnr emits none of it.**
+Eleven consecutive odd rows, 2 bits each, from y=9 to y=29, plus a 3-bit cap at y=29 and 4 bits at
+y=76. In absolute CRAM they are strikingly regular: **x=857, y = 968/970, 1140/1142, 1312/1314, …,
+2344/2346** — pairs two rows apart, repeating every 172 rows (two tile rows).
+
+**And the polarity is the opposite of what "unemitted enables" would predict.** In every one of those
+20 bits the *failing* build has `1` and the *working* build has `0`:
+
+> nextpnr is **setting** bits that block the spine, not failing to set bits that enable it.
+
+That is a different and more actionable defect: our emission actively writes state along this column
+— plausibly its own modelled `SCLK`/PMUX routing — and that write is what stops the dedicated
+reference from arriving. It also explains why adding configuration never helped: the fix is a
+*removal*.
+
+**Necessary, NOT sufficient — measured.** The spine table is now emitted directly from nextpnr
+(`vup_cram.cc` isolates the raw CRAM access, since these bits have no public API; `VUP_PLL_SPINE`
+gates it, restricted to the one attested position). A **pure nextpnr build** with 25/27 spine bits
+corrected reports `LOCKED=0`.
+
+So the locking result must be read precisely:
+
+> Column 9's spine bits were the **last missing piece given everything else from the donor** — the
+> transplant that locked also carried the donor's PRAM chains 4/5/10/12/13. The spine flipped that
+> build from dead to locked, so it is **necessary**; it is **not sufficient on its own**.
+
+What remains is to identify which of the donor PRAM chains is also required — chains 4/5/12 carry
+`TERM`, `CBUF`, `LVL`, `HSSI(0,35)` and `CMUXH(0,35)`, and each can now be added to a pure build one
+at a time on top of the spine, with `LOCKED` as an unambiguous verdict. That is a handful of trials,
+not a search.
+
+*(Trial-harness note: the load check compared build IDs case-sensitively, so a correct `0xb0` vs
+`0xB0` load was reported `STALE`. Fixed; the affected trial was valid.)*
 
 **To implement it:** these spine bits must be emitted as a function of (clock source entry, PLL
 position). One data point exists (pin → FPLL(0,14) via column 9, rows 9..29). Deriving the general

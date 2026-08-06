@@ -26,6 +26,9 @@
 #include "timing.h"
 #include "util.h"
 
+// Raw CRAM access for the reference-clock spine (see mistral/vup_cram.cc).
+extern "C" int vup_cram_set(void *cv, unsigned x, unsigned y, int value);
+
 NEXTPNR_NAMESPACE_BEGIN
 namespace {
 struct MistralBitgen
@@ -443,6 +446,62 @@ struct MistralBitgen
                 CycloneV::VCO_PH4_EN, CycloneV::VCO_PH5_EN, CycloneV::VCO_PH6_EN, CycloneV::VCO_PH7_EN};
         for (int i = 0; i < 8; i++)
             cv->bmux_b_set(CycloneV::FPLL, pos, vco_ph_en[i], 0, true);
+
+        // ---------------------------------------------------------------------------------------
+        // G4b — REFERENCE-CLOCK SPINE (silicon-proven 2026-08-07: this is what makes the PLL LOCK).
+        //
+        // Bisecting the CRAM difference against a Quartus build of the identical design isolated the
+        // reference-clock delivery to 27 bits in ONE tile column, and transplanting just those made
+        // the PLL lock for the first time (LOCKED=1, build-ID verified). They are a vertical
+        // sector-clock spine running up column 9 past FPLL(0,14): pairs at x=857, y=968/970,
+        // 1140/1142, ... 2344/2346 -- two rows apart, repeating every 172 rows (two tile rows).
+        //
+        // libmistral does not model them: they produce NO bmux difference and NO change in
+        // route_all_active_links(), so they are unattributed CRAM and nothing in the normal emission
+        // path can express them. Note the polarity -- the FAILING build has them SET and the working
+        // one CLEAR, i.e. we were writing state that BLOCKS the spine, so the fix is a removal.
+        //
+        // This table is the one attested pattern (PIN_V11 -> FPLL(0,14)). It is deliberately gated on
+        // that exact position: the general rule as a function of (pin, PLL position) needs more
+        // Quartus references, and guessing it would violate "every number from a real command".
+        // The proper home for the fix is libmistral's routing model; this is the interim.
+        if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && getenv("VUP_PLL_SPINE") != nullptr) {
+            static const struct { uint32_t x, y; uint8_t v; } spine[] = {
+        {865, 796, 0},
+        {866, 797, 0},
+        {857, 968, 0},
+        {857, 970, 0},
+        {857, 1140, 0},
+        {857, 1142, 0},
+        {857, 1312, 0},
+        {857, 1314, 0},
+        {857, 1484, 0},
+        {857, 1486, 0},
+        {857, 1656, 0},
+        {857, 1658, 0},
+        {857, 1828, 0},
+        {857, 1830, 0},
+        {857, 2000, 0},
+        {857, 2002, 0},
+        {857, 2172, 0},
+        {857, 2174, 0},
+        {857, 2344, 0},
+        {857, 2346, 0},
+        {836, 2508, 1},
+        {858, 2516, 0},
+        {860, 2516, 1},
+        {865, 6584, 0},
+        {865, 6586, 0},
+        {859, 6592, 1},
+        {860, 6593, 1},
+            };
+            int changed = 0;
+            for (const auto &b : spine)
+                changed += vup_cram_set(cv, b.x, b.y, b.v);
+            log_info("  refclk spine: %d/%zu unmodelled CRAM bits corrected in column 9\n", changed,
+                     sizeof(spine) / sizeof(spine[0]));
+        }
+
     }
 
     void write_cells()
