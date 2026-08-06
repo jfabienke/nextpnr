@@ -205,4 +205,77 @@ void Arch::create_pllclk(int x, int y, bool vertical)
     }
 }
 
+// G4/B2 resolution — post-placement assignment.
+//
+// The heap placer relocates the FPLL regardless of bind strength or validity constraints (measured:
+// STRENGTH_LOCKED/USER, isBelLocationValid, the BEL attribute, and an isValidBelForCellType pin all
+// failed, the last two by making the corner tile unreachable). Rather than fight it, run AFTER
+// placement: read where the PLL actually landed, then re-bind each PLLCLK injector to a cmux gclk
+// instance the dedicated wiring can feed FROM THAT POSITION, and record the physical counter the
+// FPLL emission must use. Called at the end of Arch::place(), before routing, so the router sees
+// the final, consistent choice.
+void Arch::fixup_pllclk_placement()
+{
+    for (auto &cell : cells) {
+        CellInfo *pc = cell.second.get();
+        if (pc->type != id_MISTRAL_PLLCLK)
+            continue;
+        auto pit = pc->attrs.find(id_PLLCLK_PLL);
+        if (pit == pc->attrs.end())
+            continue;
+        auto pll_it = cells.find(id(pit->second.as_string()));
+        if (pll_it == cells.end() || pll_it->second->bel == BelId())
+            continue;
+        CellInfo *pll = pll_it->second.get();
+        uint32_t fpll_pos = uint32_t(pll->bel.pos);
+
+        // Is the current binding already legal for the PLL's actual position?
+        int logical = 0;
+        auto lit = pc->attrs.find(id_PLLCLK_COUNTER);
+        if (lit != pc->attrs.end())
+            logical = int(lit->second.as_int64());
+        if (pc->bel != BelId() &&
+            pllclk_lookup(fpll_pos, logical, uint32_t(pc->bel.pos), bel_data(pc->bel).block_index) >= 0)
+            continue;
+
+        // Otherwise pick the first (counter, cmux, gclk) the wiring supports from where the PLL is.
+        bool fixed = false;
+        for (auto &kv : pllclk_sel_map) {
+            if (uint32_t(kv.first >> 40) != fpll_pos)
+                continue;
+            int counter = int((kv.first >> 32) & 0xff);
+            uint32_t cmux_pos = uint32_t((kv.first >> 8) & 0xffffff);
+            int inst = int(kv.first & 0xff);
+            BelId target;
+            bool found = false;
+            for (BelId b : getBels())
+                if (getBelType(b) == id_MISTRAL_PLLCLK && uint32_t(b.pos) == cmux_pos &&
+                    bel_data(b).block_index == inst) {
+                    target = b;
+                    found = true;
+                    break;
+                }
+            if (!found || (!checkBelAvail(target) && getBoundBelCell(target) != pc))
+                continue;
+            if (pc->bel != BelId())
+                unbindBel(pc->bel);
+            bindBel(target, pc, STRENGTH_LOCKED);
+            pc->attrs[id_PLLCLK_COUNTER] = Property(counter);
+            // The FPLL counter emission keys off this per-logical-clock physical mapping.
+            pll->attrs[idf("PLLCLK_PHYS_%d", logical)] = Property(counter);
+            Loc pl = getBelLocation(pll->bel), cl = getBelLocation(target);
+            log_info("PLLCLK '%s' re-assigned post-place: FPLL(%d,%d) C%d -> cmux(%d,%d) gclk %d "
+                     "(INPUT_SEL=0x%x)\n",
+                     nameOf(pc), pl.x, pl.y, counter, cl.x, cl.y, inst, int(kv.second));
+            fixed = true;
+            break;
+        }
+        if (!fixed)
+            log_error("PLLCLK '%s': the PLL landed at (%d,%d), which has no dedicated wiring to any "
+                      "free global cmux gclk instance\n",
+                      nameOf(pc), CycloneV::pos2x(CycloneV::pos_t(fpll_pos)),
+                      CycloneV::pos2y(CycloneV::pos_t(fpll_pos)));
+    }
+}
+
 NEXTPNR_NAMESPACE_END

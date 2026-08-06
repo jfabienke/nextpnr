@@ -503,6 +503,7 @@ struct Arch : BaseArch<ArchRanges>
         int sel;
     };
     bool pllclk_choose(int nclk, uint32_t &fpll_pos, std::vector<PllClkChoice> &out) const; // pll.cc
+    void fixup_pllclk_placement();                                                          // pll.cc
     std::map<uint64_t, uint8_t> pllclk_sel_map;
     static uint64_t pllclk_key(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst)
     {

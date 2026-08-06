@@ -131,6 +131,31 @@ search → "no BELs remaining"). **The remaining idea: assign the PLL/PLLCLK pai
 (a post-place arch hook) so the choice is derived from where the placer actually put the PLL,
 instead of trying to force the placer to honour a pre-made choice.
 
+### B2 RESOLVED 2026-08-06 — post-placement assignment
+
+`Arch::fixup_pllclk_placement()` (pll.cc), called at the end of `Arch::place()`: read where the
+placer actually put the FPLL, then re-bind each PLLCLK injector to a cmux gclk instance the
+dedicated wiring can feed *from that position*, recording the physical counter for the FPLL
+emission. Inverting the dependency sidesteps all four failed pinning approaches.
+
+**Verified self-consistent for the first time:** PLL emitted at (89,0) with
+`CMUXVG(42,0) INPUT_SEL=0xf -> {PLLIN,7}` — exactly the p2p wiring from FPLL(89,0) C5 — plus
+`PLL_FEEDBACK_ENABLE_3=PLL_MCNT0`. The bitstream now says one coherent thing.
+
+### Measured negative results (P6 — do not re-run)
+
+| experiment | result |
+|---|---|
+| consistent assignment + cmux MCNT feedback enable | PLL **0.000 MHz** |
+| `CLKIN_0_SRC` sweep over 0x00,0x01,0x02,0x03,0x05 | PLL **0.000 MHz** at every value |
+
+So the reference-select hypothesis is refuted, and the PLL still never starts even with a coherent
+bitstream. **Caveat on the sweep:** consecutive `load_core`s were issued without a reboot and the
+REF channel read an identical 50.725 MHz for all five, which is consistent with quantisation but
+does not *prove* each variant actually reconfigured. Before trusting any future sweep, add a
+**build-ID channel** to the telemetry word (a few constant bits that differ per variant) so the
+harness proves which bitstream is live — a cheap fix that makes sweeps self-verifying.
+
 **Next experiment (cheap, decisive):** fix B2, confirm via `fplldump` that the emitted PLL tile is
 (0,0), then reload. If it still does not lock, bisect the feedback by cloning the ENTIRE ground-truth
 PLL(0,0) tile bit-for-bit (including the C dividers) so the only variable left is our cmux/PLLCLK

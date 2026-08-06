@@ -18,6 +18,7 @@
  */
 
 #include <cmath>
+#include <cstdlib>
 #include <string>
 
 #include "log.h"
@@ -337,7 +338,16 @@ struct MistralBitgen
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::LOCK_FILTER_CFG_SETTING, 0, 0x19);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::UNLOCK_FILTER_CFG_SETTING, 0, 0x02);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::SLF_RST, 0, 0x03);
-        cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, 0x04);
+        // CLKIN_0_SRC selects WHICH reference the PLL listens to. 0x04 was copied from a ground
+        // truth whose refclk arrives on a DEDICATED PIN, while ours arrives over the clock network
+        // at CORECLK0 (PMUX) — if this mux points at the pin, our routed reference is ignored and
+        // the PLL can never lock. Overridable for the silicon sweep that resolves it.
+        {
+            uint32_t clkin_src = 0x04;
+            if (const char *e = getenv("VUP_PLL_CLKIN_SRC"))
+                clkin_src = uint32_t(strtoul(e, nullptr, 0));
+            cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_0_SRC, 0, clkin_src);
+        }
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CLKIN_1_SRC, 0, 0x04);
         // Universal ground-truth invariants previously missing entirely:
         // CTRL_OVERRIDE is a type-2 mux: bmux_r_set silently no-ops (round-3 rbf proved it).\n        cv->bmux_n_set(CycloneV::FPLL, pos, CycloneV::CTRL_OVERRIDE_SETTING, -1, 0); // NUM mux, midx -1

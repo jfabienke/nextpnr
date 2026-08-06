@@ -520,6 +520,11 @@ bool Arch::place()
         log_error("Mistral architecture does not support placer '%s'\n", placer.c_str());
     }
 
+    // G4/B2: the placer migrates the PLL off the pack-chosen bel no matter how it is constrained
+    // (four approaches measured as failures - see PLL_OUTCLK_DESIGN.md). So DERIVE the assignment
+    // from where it actually landed, here, after placement and before routing.
+    fixup_pllclk_placement();
+
     getCtx()->attrs[id_step] = std::string("place");
     archInfoToAttributes();
     return true;
