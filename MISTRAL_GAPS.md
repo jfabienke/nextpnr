@@ -382,9 +382,36 @@ silicon load) — cheap, and it moves items out of "should be fine" before anyon
 **Two of these are new named gaps** (DSP, two-PLL crash) that no prior document mentioned; both are
 hard blockers for a real video core, and both were found in minutes rather than mid-port.
 
-Still unasked, in rough priority for the SDRAM/SVGA line: DDIO for SDR capture; qsf constraint
-fidelity (does `CURRENT_STRENGTH_NEW` / IO standard / `FAST_OUTPUT_REGISTER` survive the qsf path, or
-is it silently dropped?); M10K at depth/width beyond 1024×16; and M10K true-dual-port.
+### qsf constraint fidelity — **SILENTLY DROPPED** (measured 2026-08-07)
+
+The dangerous failure mode, because the build *succeeds*: constraints are parsed, stored, and never
+used. Two builds of the same design whose qsf differ by `IO_STANDARD "2.5 V"`,
+`CURRENT_STRENGTH_NEW "4MA"`, `FAST_OUTPUT_REGISTER ON`, `WEAK_PULL_UP_RESISTOR ON` and a
+`set_global_assignment` produce **byte-identical bitstreams**. No warning is issued.
+
+Cause, by inspection: `qsf.cc` stores instance assignments into `ctx->io_attr` and `pack.cc` copies
+them onto the cell — but `write_io_cell()` in `bitstream.cc` **hardcodes**
+`DRIVE_STRENGTH = V3P3_LVTTL_16MA_LVCMOS_2MA`, `IOCSR_STD = DIS`, `USE_WEAK_PULLUP = false` and never
+reads them. `set_global_assignment_cmd()` is an empty `// TODO`.
+
+**So every pin gets 3.3 V LVTTL / 16 mA regardless of what the qsf says.** Against the real MiSTer
+constraints this is not academic — its SDRAM pin blocks carry:
+
+| assignment | count | consequence of dropping |
+|---|---|---|
+| `IO_STANDARD` | 33 | wrong bank voltage/standard on a memory bus |
+| `FAST_OUTPUT_REGISTER` | 7 | no IO register → timing (ties to the IO-register gap above) |
+| `CURRENT_STRENGTH_NEW` | 6 | wrong drive into the SDRAM — signal integrity |
+| `WEAK_PULL_UP_RESISTOR` | 5 | forced off; nextpnr writes `USE_WEAK_PULLUP=false` unconditionally |
+| `FAST_INPUT_REGISTER` | 2 | no input register → capture timing |
+
+**Fix.** Consume the attributes in `write_io_cell()` (map `IO_STANDARD`/`CURRENT_STRENGTH_NEW` onto
+the `DRIVE_STRENGTH` bmux enum, `WEAK_PULL_UP_RESISTOR` onto `USE_WEAK_PULLUP`) and, at minimum,
+**warn on any instance assignment that is parsed but not applied** — silence is what makes this
+costly. Implement `set_global_assignment` or warn there too.
+
+Still unasked, in rough priority for the SDRAM/SVGA line: DDIO for SDR capture; M10K at depth/width
+beyond 1024×16; and M10K true-dual-port (a framebuffer usually wants dual port).
 
 ---
 
