@@ -276,11 +276,31 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    **So the open flow cannot currently express a bidirectional bus with a driven output-enable** —
    a hard blocker for any SDRAM controller, and worth knowing before porting one.
 
-   **Entry point.** `mistral/io.cc` already puts an `OE` pin on the `MISTRAL_IO` bel
-   (`add_bel_pin(bel, id_OE, PORT_IN, ... CycloneV::OEIN, 0)`), so the bel supports it; the missing
-   piece is packing. Either (a) a nextpnr packer that absorbs `$_TBUF_` into the adjacent
-   `MISTRAL_IO`'s `OE` — the same shape as the other packing in `pack.cc`, and inside our fork — or
-   (b) fix the fold upstream in yosys's `iopadmap`. (a) is the cheaper first move.
+   **FIXED 2026-08-07 — `pack_tristates()` in `pack.cc`.** The bel already had an `OE` pin
+   (`io.cc`), so this was purely packing. The pass absorbs each `$_TBUF_` into the adjacent
+   `MISTRAL_IO`: `I ← A`, `OE ← E`, and any *other* reader of the buffer's output — the read-back
+   path, which `iopadmap` had wrongly tapped off the driver — is moved to the pad's `O` port (created
+   if absent, as the mis-mapping left it undeclared).
+
+   ```
+   Info: Packed 16 tristate buffer(s) into MISTRAL_IO OE.
+   Info: Program finished normally.
+   ```
+
+   The 16-bit bidirectional bus now builds (39 `MISTRAL_IO`). Regression-checked: an output-only
+   design is byte-identical to before and unaffected.
+
+   ⚠️ **NOT yet silicon-verified, and one known soft spot.** `write_io_cell()` sets the paired
+   `OEIN` inverters from a static `is_output` flag, and its own comment says those bits are "for
+   constant OE". With a *driven* OE routed in, that handling is unvalidated — it may need to change
+   for dynamic tristate. Build success does not settle it; a bus that drives when it should not is
+   exactly the failure this would produce.
+
+   **Suggested silicon proof (no memory device required):** drive a known pattern with `OE=1` and
+   read the pad back (should match), then set `OE=0` with `WEAK_PULL_UP_RESISTOR ON` (now honoured —
+   see qsf fidelity below) and read again (should be all ones). That separates "OE is dynamic and
+   effective" from "the pad is stuck driving". Hold `SDRAM2_nCS` **deasserted** throughout so no
+   command can ever be accepted by a fitted module.
 
    Still unverified beyond this: IO-register packing and DDIO for SDR capture.
 3. **Constraint fidelity:** the MiSTer `.qsf` pin set for the SDRAM bank (drive strength, fast

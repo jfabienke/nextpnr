@@ -682,11 +682,87 @@ struct MistralPacker
         }
     }
 
+
+    // Absorb $_TBUF_ into MISTRAL_IO's OE — G6 IO-ring blocker.
+    //
+    // yosys' iopadmap creates the inout pad but leaves the tristate behind: measured on a 16-bit
+    // bidirectional bus it emits 16 MISTRAL_IO *and* 16 orphan $_TBUF_, with the pad's OE tied to
+    // constant 1 (i.e. permanently driving, which would fight an SDRAM), and P&R then dies with
+    // "no BELs remaining to implement cell type '$_TBUF_'". The bel already has an OE pin
+    // (io.cc add_bel_pin(..., id_OE, ...)), so the missing piece is purely packing.
+    //
+    // Shape, from the emitted netlist:
+    //     $_TBUF_    A=<data out>  E=<output enable>  Y=<net N>
+    //     MISTRAL_IO I=<net N>     OE=1               PAD=<port>
+    //     <readers>  ... also on <net N>   (the read-back path, which belongs on IO.O)
+    // so: I <- A, OE <- E, other readers of N move to IO.O, drop the buffer.
+    void pack_tristates()
+    {
+        std::vector<IdString> to_remove;
+        for (auto &cell : ctx->cells) {
+            CellInfo *io = cell.second.get();
+            if (io->type != id_MISTRAL_IO)
+                continue;
+            NetInfo *inet = io->getPort(id_I);
+            if (inet == nullptr || inet->driver.cell == nullptr)
+                continue;
+            CellInfo *tb = inet->driver.cell;
+            if (tb->type != ctx->id("$_TBUF_"))
+                continue;
+
+            NetInfo *data = tb->getPort(ctx->id("A"));
+            NetInfo *oe = tb->getPort(ctx->id("E"));
+            if (data == nullptr || oe == nullptr)
+                continue;
+
+            // Everything else reading the buffer's output is the read-back path; it must come from
+            // the pad (IO.O), not from the driver we are about to delete.
+            std::vector<PortRef> readers;
+            for (auto &u : inet->users)
+                if (u.cell != io)
+                    readers.push_back(u);
+
+            // The pad cell as emitted may not declare every port (its OE arrived tied to a
+            // constant, and O is absent entirely because the read-back was mis-wired to the buffer
+            // output) -- create what is missing before connecting, or connectPort throws.
+            if (!io->ports.count(id_OE))
+                io->addInput(id_OE);
+            if (!io->ports.count(id_O))
+                io->addOutput(id_O);
+
+            io->disconnectPort(id_I);
+            tb->disconnectPort(ctx->id("A"));
+            tb->disconnectPort(ctx->id("E"));
+            tb->disconnectPort(ctx->id("Y"));
+            io->connectPort(id_I, data);
+            io->disconnectPort(id_OE);
+            io->connectPort(id_OE, oe);
+
+            if (!readers.empty()) {
+                NetInfo *obuf = io->getPort(id_O);
+                if (obuf == nullptr) {
+                    obuf = ctx->createNet(ctx->idf("%s$pad_in", io->name.c_str(ctx)));
+                    io->connectPort(id_O, obuf);
+                }
+                for (auto &r : readers) {
+                    r.cell->disconnectPort(r.port);
+                    r.cell->connectPort(r.port, obuf);
+                }
+            }
+            to_remove.push_back(tb->name);
+        }
+        for (IdString n : to_remove)
+            ctx->cells.erase(n);
+        if (!to_remove.empty())
+            log_info("Packed %d tristate buffer(s) into MISTRAL_IO OE.\n", int(to_remove.size()));
+    }
+
     void run()
     {
         init_constant_nets();
         pack_constants();
         pack_io();
+        pack_tristates();
         constrain_carries();
         constrain_lutram();
         setup_m10ks();
