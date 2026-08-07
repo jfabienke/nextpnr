@@ -86,6 +86,15 @@ struct MistralBitgen
     {
         for (auto &net : ctx->nets) {
             NetInfo *ni = net.second.get();
+            if (getenv("VUP_DEBUG_ROUTING")) {
+                bool feeds_oe = false;
+                for (auto &u : ni->users)
+                    if (u.port == id_OE)
+                        feeds_oe = true;
+                if (feeds_oe)
+                    log_info("  [dbg] net '%s': %d wire(s), %d user(s) - feeds an IO OE\n",
+                             ctx->nameOf(ni), int(ni->wires.size()), int(ni->users.entries()));
+            }
             for (auto &wire : ni->wires) {
                 PipId pip = wire.second.pip;
                 if (pip == PipId())
@@ -100,8 +109,32 @@ struct MistralBitgen
         }
     }
 
+    // Authoritative OE diagnostic: ask nextpnr itself which wire the OE bel pin resolves to, and
+    // whether the routed net actually contains it. Reconstructing pnodes from tile coordinates by
+    // hand produced a wrong answer once already (two coordinate spaces both print as GPIO(x,y)).
+    void debug_oe(CellInfo *ci)
+    {
+        if (!getenv("VUP_DEBUG_OE") || ci->bel == BelId())
+            return;
+        NetInfo *oe = ci->getPort(id_OE);
+        WireId w = ctx->getBelPinWire(ci->bel, id_OE);
+        log_info("  [oe] %s bel=%s OEpin_wire=%s net=%s%s\n", ctx->nameOf(ci), ctx->nameOfBel(ci->bel),
+                 w == WireId() ? "<none>" : ctx->nameOfWire(w), oe ? ctx->nameOf(oe) : "<none>",
+                 (oe && w != WireId() && oe->wires.count(w)) ? "  ROUTE REACHES THE OE PIN"
+                                                            : "  *** net does NOT include the OE pin wire ***");
+    }
+
+    // A pad whose OE is a real driven signal (as opposed to a constant) -- i.e. true bidirectional.
+    bool dyn_oe_cell(CellInfo *ci) const
+    {
+        NetInfo *n = ci->getPort(id_OE);
+        return n != nullptr && n->driver.cell != nullptr && n->name != ctx->id("$PACKER_VCC_NET") &&
+               n->name != ctx->id("$PACKER_GND_NET");
+    }
+
     void write_io_cell(CellInfo *ci, int x, int y, int bi)
     {
+        debug_oe(ci);
         bool is_output = (ci->type == id_MISTRAL_OB || (ci->type == id_MISTRAL_IO && ci->getPort(id_OE) != nullptr));
         auto pos = CycloneV::xy2pos(x, y);
 
@@ -137,11 +170,21 @@ struct MistralBitgen
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::DRIVE_STRENGTH, bi, CycloneV::V3P3_LVTTL_16MA_LVCMOS_2MA);
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::IOCSR_STD, bi, CycloneV::DIS);
 
-            // Output gpios must also bypass things in the associated dqs
+            // Output gpios must also bypass things in the associated dqs -- but NOT bidirectional
+            // ones. Measured: a Quartus build of the identical bidirectional design passes the OE
+            // gate on this board, ours fails, and the ONLY configuration difference between them is
+            // this DQS16 write, which Quartus omits for a pad with a driven OE. The bypass is for a
+            // pure output; forcing it on a bidirectional pad is what kept ours from driving.
             auto dqs = cv->p2p_to(CycloneV::pnode(CycloneV::GPIO, pos, CycloneV::PNONE, bi, -1));
             if (dqs) {
-                cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL, CycloneV::pn2bi(dqs),
-                               CycloneV::SEL_LOCKED_DPA);
+                // A bidirectional pad takes only part of this. Diffing a Quartus build of the same
+                // design pin-for-pin: it sets RB_T9_SEL_EREG_CFF_DELAY on these pins but does NOT
+                // set INPUT_REG4_SEL, which is the input-register select and belongs to a pure
+                // output. (A first cut dropped BOTH and was wrong -- the diff showed Quartus keeping
+                // the delay field.)
+                if (!dyn_oe_cell(ci))
+                    cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL,
+                                   CycloneV::pn2bi(dqs), CycloneV::SEL_LOCKED_DPA);
                 cv->bmux_r_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::RB_T9_SEL_EREG_CFF_DELAY,
                                CycloneV::pn2bi(dqs), 0x1f);
             }
@@ -156,8 +199,26 @@ struct MistralBitgen
         // openflow-test/oeprobe), i.e. nothing routes the OE signal to the pad at all. Both
         // inverter polarities were tried on silicon and neither drove, which is consistent. Fix the
         // routing first (see MISTRAL_GAPS G6); revisit the inversion once OE actually arrives.
-        cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), is_output);
-        cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), !is_output);
+        // With a DRIVEN OE the paired-inverter scheme above (written for a CONSTANT OE) inverts the
+        // arriving signal. VUP_OE_INV selects the polarity so it can be settled on silicon rather
+        // than guessed: unset = legacy behaviour, 0 = pass through, 1 = invert only OEIN.0.
+        NetInfo *oe_net = ci->getPort(id_OE);
+        bool dyn_oe = oe_net != nullptr && oe_net->driver.cell != nullptr &&
+                      oe_net->name != ctx->id("$PACKER_VCC_NET") && oe_net->name != ctx->id("$PACKER_GND_NET");
+        // Ground truth (invdiff against a Quartus build of the same bidirectional design) has the OE
+        // pin wire NOT inverted -- GOUT.078.000.0034: Quartus 0, ours 1 -- so a driven OE passes
+        // through. Default to matching that; VUP_OE_INV overrides. NOTE: this alone does not make
+        // the pad drive (measured), so it is a ground-truth match, not a proven fix.
+        if (dyn_oe) {
+            bool inv = false;
+            if (const char *e = getenv("VUP_OE_INV"))
+                inv = strtoul(e, nullptr, 0) != 0;
+            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), inv);
+            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), false);
+        } else {
+            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), is_output);
+            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), !is_output);
+        }
     }
 
     void write_clkbuf_cell(CellInfo *ci, int x, int y, int bi)

@@ -304,18 +304,49 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    The release phase passing proves **the input path works and `WEAK_PULL_UP_RESISTOR` is honoured on
    silicon** (validating the qsf fix below). But the pad never drives.
 
-   **Root cause — not polarity, routing.** Both `OEIN` inverter polarities were tried on silicon and
-   neither drove. Probing the bitstream directly (`openflow-test/oeprobe`) shows why:
+   **STATUS: still not driving. Routing is NOT the cause — that earlier conclusion is retracted.**
+
+   A `<UNDRIVEN>` verdict from a hand-built pnode probe was wrong: it addressed a different node than
+   the bel pin actually uses. Asking nextpnr itself (`VUP_DEBUG_OE`) gives the authoritative answer:
 
    ```
-   GPIO(78,0) OEIN bi=3 pi=0 -> GOUT.077.000.0024   <UNDRIVEN>
-   GPIO(78,0) OEIN bi=3 pi=1 -> GOUT.077.000.0050   <UNDRIVEN>
+   [oe] SDRAM2_DQ_MISTRAL_IO_PAD_9 bel=MISTRAL_IO.78.0.0 OEpin_wire=GOUT.78.0.34 net=oe  ROUTE REACHES THE OE PIN
    ```
 
-   The packer connects OE in the *netlist*, but nothing routes it to the `GOUT` node the bel pin maps
-   to, so the pad sees no enable. **`pack_tristates()` therefore makes bidirectional IO BUILD, not
-   WORK.** The remaining piece is getting the router to drive `GPIO.OEIN` — a routing problem, larger
-   than the packing was, and the honest next step for G6.
+   and the bitstream contains the arc: `GOUT.078.000.0034 <- TD.078.000.0052`. **OE is routed and
+   emitted.** (`pack_tristates()` needed one fix to get there: `getBelPinsForCellPin()` is
+   `pin_data.at(pin).bel_pins`, an explicit map with no name fallback, so ports created by the packer
+   must be mapped or they route nowhere.)
+
+   **Positive control — the hardware and the test are both fine.** A Quartus build of the *identical*
+   design, same pins, same board, passes every phase:
+
+   ```
+   drive 0xA5A5 -> 0xa5 OK   drive 0x5A5A -> OK   release+pull-up -> 0xff OK   OE IS DYNAMIC
+   ```
+
+   So a pad *can* read back its own driven value; the test is valid; ours is simply wrong somewhere.
+
+   **Differences found and eliminated so far** (each matched to ground truth, none sufficient):
+
+   | difference | ground truth | fixed |
+   |---|---|---|
+   | `DQS16 INPUT_REG4_SEL` on bidirectional pads | Quartus omits it (keeps `RB_T9_SEL_EREG_CFF_DELAY`) | yes — a first cut wrongly dropped *both* |
+   | `OEIN` inverter on the OE pin wire | Quartus 0 (pass through); ours was 1 | yes, now the default |
+
+   Neither alone nor both together make the pad drive. GPIO and DQS16 config now match the working
+   build on the DQ pins, the OE inverter matches, OE is routed and emitted — and it still reads
+   `0xFF` while driving.
+
+   **New instrument: `openflow-test/invdiff`.** Inverter state is `inv_set()`, *not* bmux, so
+   `bmuxdiff` was structurally blind to it — an entire class of configuration difference was
+   invisible to every diff run before this. That is how the OE inversion survived so long, and it is
+   the more reusable finding here.
+
+   **Next step:** the remaining difference is outside GPIO/DQS16 bmux and outside the OE inverter —
+   so diff the *rest*: full `invdiff` (unfiltered), `pramdiff`, and a CRAM diff against `gt_bidir.rbf`,
+   which is now a same-design working donor. That is the transplant-bisection setup that cracked the
+   PLL, and it is available here unchanged.
 
    The speculative inverter change was reverted: with OE unrouted it is unjustified, and a guess left
    in the emission would be indistinguishable from a derived value later.
