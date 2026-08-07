@@ -655,9 +655,33 @@ CNT_PRESET[c]        = taps / 8 + 1
 `taps = PRESET*4 + PH_MUX`; it fitted that point exactly and was **refuted** by the other three. One
 differential pair is enough to form a rule and never enough to trust it.
 
-**Status: bit-exact against ground truth, NOT yet silicon-verified.** Counters cannot measure phase,
-so silicon proof needs a fabric phase detector (sample one output with another at the same frequency
-and report via `vup-telemetry`). That is the acceptance gate before G6 leans on it.
+**Status: SILICON-VERIFIED 2026-08-07.** Counters cannot measure phase, so the detector reports a
+*level* — the same channel class as `locked`. Two PLL outputs at the same frequency, out0 at 0° and
+out1 at φ; sampling out1 on out0's rising edge is deterministic for phase-locked clocks
+(`out1(t) = out0(t − φT/360)`), so it must read **0 for φ<180°** and **1 for φ>180°**:
+
+```
+90deg    out0=12.059 MHz  LOCKED=1  SAMPLED=0  LOAD OK
+270deg   out0=12.059 MHz  LOCKED=1  SAMPLED=1  LOAD OK
+```
+
+Opposite readings across the 180° boundary — a result the "bits match Quartus" check cannot fake.
+
+**The instrument mistake, recorded because it is the reusable part.** The first detector ran the two
+outputs at **96 MHz**, where a quarter period is 2.6 ns — comparable to the fabric routing delay from
+the global network to the flip-flop's D input. Both 90° and 270° read `SAMPLED=0`, which looks
+exactly like "phase shift does nothing". It wasn't a silicon result at all: the detector was
+measuring routing skew. Re-running at **12 MHz** (20.8 ns per quarter, ~7:1 margin over routing)
+gave the clean opposite readings above.
+
+> Before believing a null result, check that the quantity you are perturbing is large compared with
+> the delays in the measurement path. Same failure mode as the REF counter sharing a cmux with the
+> thing under test — the instrument, not the silicon.
+
+**Known limit:** `CNT_PRESET` is 8-bit, so `taps/8 + 1` overflows past ~2040 taps. That bounds
+representable phase at large C dividers (e.g. 90° at 1 MHz off a 480 MHz VCO needs PRESET=121, fine;
+270° needs 361, which does not fit). Not hit by SDRAM-class frequencies, but it is a real bound and
+the emission does not yet check it.
 
 ---
 
