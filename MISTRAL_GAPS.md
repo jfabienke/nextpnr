@@ -355,10 +355,31 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    scripts now reject all-ones/all-zeros readouts outright, because a dead readout that prints
    success is worse than one that prints nothing.
 
-   **Next step:** bisect the pad-tile CRAM specifically — transplant tile (78,0) alone (45 bits),
-   which is far from the HPS readout at (51,80), rather than a column sweep that takes the instrument
-   with it. `gt_bidir.rbf` is a same-design working donor, so this is the same bounded procedure that
-   cracked the PLL spine.
+   **Corpus attempt (2026-08-07), and why tile diffs alone do not work.** Rebuilt the probe on the
+   *slot-1* pins that real cores use, so shipped cores become like-for-like references. Key
+   observation: at a DQ pad tile, **two shipped cores differ from each other by MORE bits than we
+   differ from either** (NeoGeo vs C64: 46; NeoGeo vs ours: 38) — a tile is mostly design-specific
+   routing, so pairwise tile diffs are noise.
+
+   New tool `consensus` filters for signal: bits where **every** reference agrees and ours differs.
+   Over four SDRAM-driving cores (NeoGeo, C64, AtariST, Gameboy) at one pad tile: 25721 bits of
+   agreement, only 10 differing in ours. Across all twelve DQ pad tiles: **49 bits that every working
+   core sets and we do not.** Applying exactly those (`crambits`) and testing: still `0xFF` while
+   driving — build-ID verified, readback alive, so a valid negative.
+
+   Also checked the other reading of "learn from the cores": their **RTL** drives the bus with plain
+   Verilog inference (`assign SDRAM_DQ = oe ? d : 16'bz`), not an explicit IO primitive. So the gap is
+   not coding style — Quartus turns that inference into a working pad and our flow does not.
+
+   **Still unsolved.** What is now known: OE is routed and emitted; GPIO/DQS16 config and the OE
+   inverters match ground truth; 49 cross-core consensus bits are not sufficient. The remaining
+   difference is somewhere the current instruments have not looked — most likely state that is
+   neither bmux, nor inverter, nor pad-tile CRAM.
+
+   **Suggested next step:** stop widening and bisect a *known-good* artifact instead — take
+   `gt_bidir.rbf` (a same-design Quartus build that PASSES) and progressively replace its regions
+   with ours until it breaks. Narrowing from a working bitstream is strictly more informative than
+   patching a broken one, and it was the transplant direction that cracked the PLL.
 
    The speculative inverter change was reverted: with OE unrouted it is unjustified, and a guess left
    in the emission would be indistinguishable from a derived value later.
