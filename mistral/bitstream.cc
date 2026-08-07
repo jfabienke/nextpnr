@@ -104,8 +104,35 @@ struct MistralBitgen
     {
         bool is_output = (ci->type == id_MISTRAL_OB || (ci->type == id_MISTRAL_IO && ci->getPort(id_OE) != nullptr));
         auto pos = CycloneV::xy2pos(x, y);
-        // TODO: configurable pull, IO standard, etc
-        cv->bmux_b_set(CycloneV::GPIO, pos, CycloneV::USE_WEAK_PULLUP, bi, false);
+
+        // qsf instance assignments are parsed (qsf.cc) and copied onto the cell (pack.cc) but were
+        // then IGNORED here -- two builds whose qsf differed by IO_STANDARD / CURRENT_STRENGTH_NEW /
+        // FAST_OUTPUT_REGISTER / WEAK_PULL_UP_RESISTOR produced BYTE-IDENTICAL bitstreams, with no
+        // warning. Every pin got 3.3V LVTTL 16mA regardless. That silence is the expensive part: a
+        // memory bus driven at the wrong strength "builds fine" and fails later looking like an RTL
+        // bug. Honour what we can, and WARN about the rest rather than pretending.
+        bool pullup = false;
+        if (ci->attrs.count(id_WEAK_PULL_UP_RESISTOR)) {
+            std::string v = ci->attrs.at(id_WEAK_PULL_UP_RESISTOR).as_string();
+            pullup = (v == "ON" || v == "on" || v == "1");
+        }
+        cv->bmux_b_set(CycloneV::GPIO, pos, CycloneV::USE_WEAK_PULLUP, bi, pullup);
+
+        // Assignments we parse but cannot yet apply. Warn once per cell+key so a real design does
+        // not drown, but never silently. FAST_*_REGISTER is deliberately NOT faked: it needs IO
+        // register packing (ground truth puts those in the DQS16 block), and consuming the attribute
+        // without the packing would claim an accuracy the flow does not have.
+        static const std::pair<IdString, const char *> unapplied[] = {
+                {id_IO_STANDARD, "IO standard is hardcoded to 3.3V LVTTL"},
+                {id_CURRENT_STRENGTH_NEW, "drive strength is hardcoded to 16mA"},
+                {id_FAST_OUTPUT_REGISTER, "IO output registers are not packed (see MISTRAL_GAPS G6)"},
+                {id_FAST_INPUT_REGISTER, "IO input registers are not packed (see MISTRAL_GAPS G6)"},
+                {id_FAST_OUTPUT_ENABLE_REGISTER, "IO OE registers are not packed (see MISTRAL_GAPS G6)"},
+        };
+        for (auto &u : unapplied)
+            if (ci->attrs.count(u.first))
+                log_warning("IO '%s': qsf assignment %s='%s' is NOT APPLIED - %s\n", ctx->nameOf(ci),
+                            u.first.c_str(ctx), ci->attrs.at(u.first).as_string().c_str(), u.second);
         if (is_output) {
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::DRIVE_STRENGTH, bi, CycloneV::V3P3_LVTTL_16MA_LVCMOS_2MA);
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::IOCSR_STD, bi, CycloneV::DIS);

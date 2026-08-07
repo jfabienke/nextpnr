@@ -405,10 +405,30 @@ constraints this is not academic — its SDRAM pin blocks carry:
 | `WEAK_PULL_UP_RESISTOR` | 5 | forced off; nextpnr writes `USE_WEAK_PULLUP=false` unconditionally |
 | `FAST_INPUT_REGISTER` | 2 | no input register → capture timing |
 
-**Fix.** Consume the attributes in `write_io_cell()` (map `IO_STANDARD`/`CURRENT_STRENGTH_NEW` onto
-the `DRIVE_STRENGTH` bmux enum, `WEAK_PULL_UP_RESISTOR` onto `USE_WEAK_PULLUP`) and, at minimum,
-**warn on any instance assignment that is parsed but not applied** — silence is what makes this
-costly. Implement `set_global_assignment` or warn there too.
+**Severity, measured rather than assumed.** A shipped MiSTer core uses only **two** distinct
+`DRIVE_STRENGTH` values — `0x799` (106 pins) and `0x79b` (23 pins) — and the value we hardcode *is*
+`0x799`, the majority one. (The minimal Quartus reference uses a third, `0x78c`.) So today's builds
+are not uniformly wrong; they are wrong on the minority of pins needing something else — very likely
+the memory bank. That is precisely why this went unnoticed, and why the silence matters more than the
+default.
+
+**Fixed 2026-08-07 (steps 1–2 of 3):**
+- `WEAK_PULL_UP_RESISTOR` is now honoured (was forced `false` unconditionally, overriding 5 real
+  assignments). Verified: the constrained build's bitstream now differs at `GPIO USE_WEAK_PULLUP`.
+- Every parsed-but-unapplied assignment now emits a **warning** naming the attribute, its value, and
+  why it is ignored. Regression-checked: unconstrained designs are byte-identical to before and emit
+  no warnings.
+
+**Still to do (step 3): derive the `DRIVE_STRENGTH` mapping by differential.** The vocabulary is tiny
+(3 values seen across a shipped core and the reference), so build Quartus references varying
+`IO_STANDARD` × `CURRENT_STRENGTH_NEW`, read the emitted value, and build the table — the same method
+that produced the phase-shift encoding 4/4. Do this before trusting a memory bus at speed.
+
+**Deliberately NOT done:** `FAST_OUTPUT_REGISTER` / `FAST_INPUT_REGISTER` / `FAST_OUTPUT_ENABLE_REGISTER`
+are warned about but not consumed. They are not a qsf problem — they need IO-register packing (ground
+truth puts those registers in the **DQS16** block). Consuming the attribute without the packing would
+claim an accuracy the flow does not have. `set_global_assignment` stays a no-op: the assignments in
+play (`FAMILY`, `DEVICE_FILTER_*`, `QIP_FILE`) have no bitstream meaning.
 
 Still unasked, in rough priority for the SDRAM/SVGA line: DDIO for SDR capture; M10K at depth/width
 beyond 1024×16; and M10K true-dual-port (a framebuffer usually wants dual port).
