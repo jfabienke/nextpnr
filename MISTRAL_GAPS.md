@@ -363,9 +363,23 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
 
    New tool `consensus` filters for signal: bits where **every** reference agrees and ours differs.
    Over four SDRAM-driving cores (NeoGeo, C64, AtariST, Gameboy) at one pad tile: 25721 bits of
-   agreement, only 10 differing in ours. Across all twelve DQ pad tiles: **49 bits that every working
-   core sets and we do not.** Applying exactly those (`crambits`) and testing: still `0xFF` while
-   driving — build-ID verified, readback alive, so a valid negative.
+   agreement, only 10 differing in ours. Across all twelve DQ pad tiles: 49 bits that every core sets
+   and we do not. Applying exactly those (`crambits`) and testing: still `0xFF` while driving —
+   build-ID verified, readback alive, so a valid negative.
+
+   ⚠️ **The consensus derivation is WEAK, and the negative result is the only safe thing to take from
+   it.** All four references are MiSTer cores built from the same `sys` framework, so "all four
+   agree" may mean nothing more than *"the MiSTer framework sets this"* — the filter cannot separate
+   "a bidirectional pad needs this" from "every MiSTer build has this". Those 49 bits have **no
+   causal provenance**. They were fine as a probe; they would have been indefensible as a fix, and if
+   the test had passed, the correct response would have been to bisect down to the one or two bits
+   that mattered, not to ship 49 unexplained ones.
+
+   Contrast the PLL spine, which is also empirical: it came from a **differential pair** (same design
+   built with and without the feature), so every bit in the delta is causally attributable to the
+   feature, it was verified end-to-end on silicon, and it is hard-gated in code to the single
+   attested configuration. Consensus across unrelated designs carries none of that force. **Derive
+   candidates differentially, not statistically.**
 
    Also checked the other reading of "learn from the cores": their **RTL** drives the bus with plain
    Verilog inference (`assign SDRAM_DQ = oe ? d : 16'bz`), not an explicit IO primitive. So the gap is
