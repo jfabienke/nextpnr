@@ -252,10 +252,37 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    *phase-shifted* tap specifically is still unexercised: `phase_shift0` is accepted by the frontend
    but no phase-shifted output has been silicon-verified — treat that as the first thing to prove
    here, not as done.
-2. **IO ring completeness:** the module wants bidirectional DQ with output/input registers in the IO
-   cells (and DQM/address/control at speed). nextpnr-mistral's GPIO support covers plain IO
-   (blinky); IO-register packing / DDIO for SDR data capture must be verified — entry point:
-   `mistral/io.cc` + libmistral GPIO bmux config.
+2. **IO ring — MEASURED BLOCKER (2026-08-07), not just "to be verified".** The smallest design that
+   asks the question (16-bit bidirectional DQ + registered address/nWE on the real SDRAM2 pins,
+   `openflow-test/sdrio.v`) **does not build**:
+
+   ```
+   ERROR: Unable to place cell 'oe_$_TBUF__E_9', no BELs remaining to implement cell type '$_TBUF_'
+   ```
+
+   The qsf path is fine — all 16 DQ constrain onto `MISTRAL_IO` bels. The failure is the tristate.
+   Yosys emits *both* 16 `MISTRAL_IO` pads and 16 orphan `$_TBUF_` cells, and inspecting the netlist
+   shows why:
+
+   ```
+   MISTRAL_IO : {I: [63], OE: ['1'], PAD: [3]}    <- output-enable tied to CONSTANT 1
+   $_TBUF_    : {A: [110], E: [111], Y: [70]}     <- the real tristate, stranded in fabric
+   ```
+
+   `iopadmap` matched the inout port and created the pad, but tied `OE` high and left the tristate
+   behind. A permanently-driving pad would fight the SDRAM even if it placed. Adding an explicit
+   `tribuf` pass does not change the counts (16/16), so this is not a missing recipe step.
+
+   **So the open flow cannot currently express a bidirectional bus with a driven output-enable** —
+   a hard blocker for any SDRAM controller, and worth knowing before porting one.
+
+   **Entry point.** `mistral/io.cc` already puts an `OE` pin on the `MISTRAL_IO` bel
+   (`add_bel_pin(bel, id_OE, PORT_IN, ... CycloneV::OEIN, 0)`), so the bel supports it; the missing
+   piece is packing. Either (a) a nextpnr packer that absorbs `$_TBUF_` into the adjacent
+   `MISTRAL_IO`'s `OE` — the same shape as the other packing in `pack.cc`, and inside our fork — or
+   (b) fix the fold upstream in yosys's `iopadmap`. (a) is the cheaper first move.
+
+   Still unverified beyond this: IO-register packing and DDIO for SDR capture.
 3. **Constraint fidelity:** the MiSTer `.qsf` pin set for the SDRAM bank (drive strength, fast
    output register) must survive the qsf path.
 4. **Silicon validation:** MemTest-style pattern check as the acceptance gate, deployed over the
