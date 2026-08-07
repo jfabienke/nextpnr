@@ -4,6 +4,20 @@ Scoped from measurements taken 2026-07-24/25 building the fabi386 i386 core (47,
 DE10-Nano (5CSEBA6U23I7). Synthesis is solved; every remaining blocker is in this repo or libmistral.
 Each item below states what was measured, why it blocks, and the entry point — not a wishlist.
 
+## Status at a glance (2026-08-07)
+
+| gap | what it is | status |
+|---|---|---|
+| **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; fix is a *conditional* trade, automated in `critexp_auto.sh` |
+| **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
+| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **open — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
+| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** (10.066 MHz, `LOCKED=1`). Generalisation beyond the attested pin remains |
+| **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse) |
+| **G6** | SDRAM controller path unproven in the open flow | **open**, mostly leverage; clocking gate lifted by G4, phase-shifted taps still unproven |
+
+Ordering note: sections run G1–G4, then G6, then G5 — G5 is placed last because it is characterization
+with a *negative* result rather than an actionable blocker. Do not reorder without reading G5 first.
+
 ---
 
 ## G1 — Timing-driven placement is ineffective: `criticalityExponent = 7`
@@ -136,101 +150,66 @@ right way to prove the flow on silicon in the meantime.
 
 ---
 
-## G4 — PLL output → clock network is not in the routing graph
+## G4 — PLL: reference-clock delivery and outclk → clock network
 
-**Status 2026-08-07: SOLVED, both halves, on silicon.** A plain `nextpnr-mistral` invocation
-produces a working PLL: `PLL = 10.066 MHz, LOCKED = 1` against a 10.000 MHz request. The reference
-arrives via a `{CLKPIN,n}` cmux entry plus a 56-bit CRAM spine network that libmistral does not
-model; the output leaves via the G4a injector on a *different* cmux gclk instance. Details and the
-full evidence trail in `mistral/PLL_OUTCLK_DESIGN.md`. Remaining work is generalisation, not
-mechanism: the spine table is attested for `PIN_V11 → FPLL(0,14)` only.
+**Status 2026-08-07: SOLVED on silicon, both halves.** A plain `nextpnr-mistral` invocation now
+produces a working PLL on the DE10-Nano: **`PLL = 10.066 MHz, LOCKED = 1`** against a 10.000 MHz
+request (build-ID verified, 30 s window). Remaining work is *generalisation*, not mechanism.
 
-**Status: genuine libmistral chipdb RE residual, not a nextpnr extension.**
+**The mechanism, as implemented.** Two independent halves, both of which had to be right:
 
-**Measured.** The FPLL bel is implemented and works on the input side: `mistral/pll.cc` +
-`pack.cc`/`bitstream.cc` (`2ffa7bc`, direction fix `248c655`). The refclk half routes end-to-end
-(input pin → `MISTRAL_CLKBUF` → GCLK → SCLK → PMUX → PLL) and emits a valid 1.95 MB `.rbf` whose 22 FPLL
-config bmuxes are `fplldump`-verified (M=20, N bypass, C={100,40,10}, analog constants).
+| stage | what the silicon does | how nextpnr emits it |
+|---|---|---|
+| reference **in** | `CMUXVG(42,0) INPUT_SEL[0] = 0x00 → {CLKPIN,1}` — a dedicated-clock-pin cmux entry | bmux |
+| reference **distribution** | 56 CRAM bits: a spine *network* — column 9 rows 9–29, column 15, row 76 across columns 9/12/15/18 | raw CRAM (`mistral/vup_cram.cc`) |
+| analog bias | `PL_AUX_BG_POWERDOWN` on the **unused** `FPLL(0,73)` | bmux |
+| PLL config | integer family N=5 M=48, VCO 480 MHz, `CTRL_OVERRIDE_SETTING=0`, cmux `PLL_FEEDBACK_ENABLE_<gclk>`, no `FBCLK_MUX_2` | bmux |
+| output **out** | `CMUXVG(42,0) INPUT_SEL[1] → {PLLIN,k}`, on a **different gclk instance** than the reference | bmux |
 
-The **output** side has no routing port at any FPLL position — enumerated every port at every pos. libmistral
-stores the PLL-output→clock-tree path (`CMUX_PLLIN` → CMUX → GCLK) as a **bitstream mux, not as routing-graph
-edges**; its `cmux_*_link_table`s are never consumed. So a full `altera_pll` test fails with "No wire found
-for port outclk".
+**Why it took ~25 silicon trials — three errors, all now fixed in code:**
 
-**Fix.** Add the `CMUX_PLLIN`→CMUX→GCLK edges to the libmistral routing graph (upstream: Ravenslofty/mistral).
+1. **`CTRL_OVERRIDE_SETTING` was never emitted.** An escaped `\n` inside a `//` comment swallowed the
+   statement, and it used a setter that no-ops on an `MT_BOOL` field. Its default is 1; every Quartus
+   core clears it. Every negative collected before this fix is *invalidated*, not refuted.
+2. **The reference path was modelled wrongly, and we actively broke the real one.** nextpnr built
+   `pin → CLKBUF → GCLK → SCLK → PMUX → CORECLK0`; the silicon uses a `{CLKPIN,n}` cmux entry plus a
+   spine libmistral does not model at all. Worse, our emission **set** spine bits that block it — so
+   the fix was partly a *removal*, which is why adding configuration never helped.
+3. **Reference and output collided on cmux gclk 0.** With the reference installed there the PLL
+   locked but the fabric counter measured the raw 50 MHz reference. Moving the output to gclk 1 gave
+   the requested 10 MHz.
 
-**Workaround.** The fabric can be clocked directly from an input pin (CLKBUF→GCLK, proven by the refclk
-route), so a **single-clock** core builds today; only multi-clock freq-synthesis needs G4.
+**Scope limit, enforced in code.** The spine table is empirical and attested for **`PIN_V11 →
+FPLL(0,14)` only**. `pack.cc` verifies the reference is driven by that pin and marks the cell
+`PLLCLK_ATTESTED_REF`; the position override, the `{CLKPIN,n}` entry, the bandgap bit and the spine
+all key off that marker. A PLL fed from any other pin falls back to the old modelled path with an
+explicit warning that it is **not** known to work on silicon — an honest failure rather than a spine
+derived for the wrong source. `VUP_PLL_LEGACY=1` restores the previous behaviour throughout;
+`VUP_PLL_POS` / `VUP_CLKPIN_GCLK` override position and reference gclk instance.
 
-**REVISED 2026-08-06 — ground-truth decode changes the mechanism.** New instrument
-`openflow-test/cmuxdump` (fplldump pattern: `bmux_get()` filtered to CMUX blocks, each `INPUT_SEL`
-decoded through the link tables). Swept three independent Quartus-fitted designs with PLL-driven
-clocks — ao486_20170803, ao486_20220914/20240616, and the fitted fabi386 (`f386_mister.rbf`):
+**Remaining work, in priority order:**
 
-- **Zero direct `{PLLIN,k}` INPUT_SEL selections in any design.** The link tables' PLLIN entries are
-  not how Quartus puts a PLL output onto GCLK on this die.
-- The consistent mechanism is **two-level**: `INPUT_SEL = 0x6 → {NCLKPIN_SEL_2, n}` (a per-gclk
-  *selector line*), plus `CLKPIN_SEL_0/_2` bmuxes (observed values `0x1`, `0x5`) choosing what the
-  selector lines carry — i.e. the `CMUX_PLL_SEL_0/1`-style indirection the earlier RE noted in the
-  rmux vocabulary. CMUXVG adds a `CLK_SELECT_C/_D` layer (observed `0x2`).
-- The residual is therefore **narrow and named: the CLKPIN_SEL_x / CLK_SELECT_x value encoding**
-  (which value selects which PLL counter vs. which clock pin). Two values observed so far; the
-  clean derivation is 2–3 targeted Quartus diff builds (same design, only the PLL-counter→GCLK
-  assignment changed) through the existing quartus_jobs pipeline, diffed with `cmuxdump`.
+1. **Derive the (pin, PLL position) → spine rule.** A handful more Quartus references through the now
+   working NAS flow, diffed with `crampatch`/`cramdiff`. Until then only the attested pin is served.
+2. **Upstream it.** The proper home is libmistral's routing model — these spine bits produce *no*
+   bmux difference and *no* change in `route_all_active_links()`, so no public API can express them.
+   File against Ravenslofty/mistral with the bit map from `PLL_OUTCLK_DESIGN.md`.
 
-**RESEARCHED + DESIGNED 2026-08-06 (see `mistral/PLL_OUTCLK_DESIGN.md`).** Second revision: the
-(FPLL, counter) → (cmux, PLLIN line) wiring is **already in libmistral's p2p tables** (`p2pdump`:
-`FPLL(0,0).PLLCOUT[5] → CMUXVG(42,0).PLLIN[0]`, 250 links), and PLLIN line → INPUT_SEL entry is the
-link tables — so the full direct-path configuration is offline-derivable, **no Quartus RE needed for
-v1**. The one remaining unknown is whether the direct INPUT_SEL={PLLIN,k} path works standalone or
-Quartus' CLK_SELECT switchover layer is required; the design makes a cheap silicon blink-test the
-arbiter (V3), falling back to the CLK_SELECT differential only if it fails.
+**Method note — how it was actually cracked.** Sweeping was exhausted (`CLKIN_0_SRC` across its full
+range, six CLKBUF sources, PLL position, both feedback modes, and a byte-identical clone of a working
+tile — all negative) because a sweep can only turn knobs that *have names*, and the answer had none.
+What worked was **differential RE**: a Quartus build of our own probe design as a positive control
+(`PLL = 96.469 MHz, LOCKED = 1`, which made every prior negative trustworthy), with/without pairs to
+isolate the feature's footprint, and transplant bisection — on a probe rebuilt so its readout no
+longer shared hardware with the thing under test. Full evidence trail in
+`mistral/PLL_OUTCLK_DESIGN.md`; tools in `../openflow-test/` (`Makefile`): `pramdiff`, `pramown`,
+`pramapply`, `prampatch`, `crampatch`, `cramdiff`, `pllports`, `pmuxinfo`, `bmuxdiff`, `bmuxhist`.
 
-Implementation stays gated on that value table — emitting guessed selector values would violate the
-"every number from a real command" rule. Entry point once derived: CLKBUF-precedent bel whose
-bitstream emission programs `INPUT_SEL=0x6` + the derived `CLKPIN_SEL_x` value (nextpnr-side only;
-no libmistral graph surgery needed for v1).
-
-### G4a — outclk → clock network: **DONE**
-
-Implemented and offline-verified: the direct `INPUT_SEL={PLLIN,k}` path matches Quartus 1:1, the
-`MISTRAL_PLLCLK` injector bel is in, and B2 (the placer migrating the FPLL out from under a
-pre-assigned injector) is fixed by a post-place `fixup_pllclk_placement()`. nextpnr routes `pllclk`
-using global resources and reports a critical path on it.
-
-### G4b — **the PLL reference path is not in the model at all** (new blocker, needs a decision)
-
-Twelve build-ID-verified silicon trials, every one `PLL=0.000 MHz` with the REF channel alive:
-the CTRL_OVERRIDE fix, the rebuilt 480 MHz recipe, a **byte-identical clone of Apogee's working
-FPLL(89,0)**, six CLKBUF-source variants, and `CLKIN_0_SRC` swept across its full range. What the
-new forensics tools (`pmuxinfo`, `bmuxdiff`, `bmuxhist`, `pmuxdump`) establish against a corpus of
-20 shipped MiSTer cores:
-
-- the FPLL tile config is exonerated — ours is *bit-for-bit* a PLL that runs on this silicon;
-- the reference **never arrives through `CORECLK0`/`PMUX`** in ground truth: the PMUX default
-  (`0x21` = 33) is out of range of its 30 sources, i.e. selects nothing, and **no core overrides
-  it**. We are the only bitstream in the corpus that drives a PMUX;
-- every other FPLL input the model exposes is excluded: `CLKIN[0..3]` and `DB_IN0` come from GPIO
-  positions with **no package pin** on 5CSEBA6U23I7, and `FBLVDS_IN0`'s `CBUF` driver is configured
-  in **zero** of the 20 cores;
-- the board's own clock pin is not among them either — `pinfind V11` → `GPIO(10,17)`, feeding no
-  FPLL CLKIN.
-
-So the path every shipped core uses is not in the routing graph, not an FPLL bmux, and not a bonded
-dedicated pin. **This is a modelling gap of the same kind as G4a, on the input side** — and unlike
-G4a it cannot be closed by deriving a value from tables we already have.
-
-**Options (lead's call):**
-
-1. **RE it from a minimal Quartus reference.** One trivial 50 MHz → N MHz PLL design built on the
-   NAS, diffed with `bmuxdiff` against our own output. The corpus narrows the search to blocks GT
-   writes and we never do: `HPS_CLOCKS(51,80)`, `CMUXVR(42,81)`, `CMUXVG(42,81)`, and the extra
-   CMUXHG/CMUXVG instances at (0,35)/(89,35)/(42,0). A minimal design makes that diff small — the
-   shipped cores are ~85k LAB settings of noise by comparison. **Cheapest path to a real answer.**
-2. **Ship G4a and park G4b.** Single-clock cores build today off a pin-driven CLKBUF→GCLK; only
-   multi-clock frequency synthesis needs the PLL. Record G4b as a measured negative and move to G6.
-3. **Upstream it.** File the finding against Ravenslofty/mistral — the p2p tables genuinely do not
-   contain a usable reference path for FPLL(89,0) on this package.
+**Two traps worth not re-learning:**
+- A *single* differential pair **under-reports**: bits the pair happened to agree on are invisible in
+  it, which is why the first spine table was short by half. Always re-diff the **built artifact**.
+- A build-ID channel only discriminates across **distinct** IDs. Patched/derived bitstreams inherit
+  their base's ID, so for those the reboot is what guarantees the load, not the ID.
 
 ---
 
@@ -254,9 +233,12 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
 - Simpler single-purpose controllers in individual cores (ao486's, various consoles) as references.
 
 **The honest blockers to check (in order):**
-1. **Clocking (ties to G4):** every proven controller phase-shifts the SDRAM clock vs the fabric
-   clock (PLL output tap or -phase clock). Without G4 the open flow has a single pin-driven clock —
-   a low-MHz controller variant may run degraded; full-rate needs the PLL outclk path. G4 first.
+1. **Clocking (was G4-gated — now UNBLOCKED, 2026-08-07):** every proven controller phase-shifts the
+   SDRAM clock vs the fabric clock (PLL output tap or -phase clock). G4 now delivers a locked PLL
+   whose output reaches the fabric, so full-rate clocking is available on the attested pin. The
+   *phase-shifted* tap specifically is still unexercised: `phase_shift0` is accepted by the frontend
+   but no phase-shifted output has been silicon-verified — treat that as the first thing to prove
+   here, not as done.
 2. **IO ring completeness:** the module wants bidirectional DQ with output/input registers in the IO
    cells (and DQM/address/control at speed). nextpnr-mistral's GPIO support covers plain IO
    (blinky); IO-register packing / DDIO for SDR data capture must be verified — entry point:
@@ -267,16 +249,16 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    existing HPS deploy path — the measured verify model already exists (`deploy.rs`).
 
 **Path.** Port the MiSTer `sdram.sv` (smallest proven variant) + its qsf pin block into the open
-flow at conservative clocking → silicon MemTest → raise the clock once G4 lands phase-shifted
-outputs. Success criterion is a silicon-verified memory test through the open flow, not "it routes."
+flow at conservative clocking → silicon MemTest → raise the clock, now that G4 provides a working
+PLL (phase-shifted taps still to be proven). Success criterion is a silicon-verified memory test through the open flow, not "it routes."
 
 **Module design (added 2026-08-06).** Ship the controller as standard slice modules, two variants:
 **16-bit** (one module — the common MiSTer analog-board case) and **32-bit** (dual/ganged modules).
 Nice-to-have features, in priority order:
 1. **Capacity auto-detect** — standard row/col/bank aliasing probe at init (write-pattern address
    folding), reporting detected geometry (32/64/128MB) instead of a build-time parameter.
-2. **Frequency capability probe** — trial the clock ladder (G4-gated) with the self-check as the
-   pass gate per step; report the highest stable rate rather than assuming one.
+2. **Frequency capability probe** — trial the clock ladder (G4 now supplies the PLL) with the
+   self-check as the pass gate per step; report the highest stable rate rather than assuming one.
 3. **Built-in self-check** — a MemTest-class pattern engine (walking bits, address-in-address,
    refresh-retention spot check) exposed as **`vup-telemetry/1` channels** (ADR-0006):
    `sdram.geometry`, `sdram.freq_mhz`, `sdram.selfcheck` as kept registered state — so the same
