@@ -749,6 +749,20 @@ struct MistralPacker
                     r.cell->connectPort(r.port, obuf);
                 }
             }
+            // getBelPinsForCellPin() is pin_data.at(pin).bel_pins -- an EXPLICIT map with no
+            // name-based fallback. Ports created here therefore route nowhere unless mapped, which
+            // is exactly how the first version failed: it built, but silicon showed the pad never
+            // driving and the OEIN node <UNDRIVEN> in the bitstream. io.cc binds I->DATAOUT,
+            // OE->OEIN, O->DATAIN on the bel, so mirror those names here.
+            for (auto &port : io->ports)
+                io->pin_data[port.first];
+            io->pin_data[id_I].bel_pins = {id_I};
+            io->pin_data[id_OE].bel_pins = {id_OE};
+            if (io->ports.count(id_O))
+                io->pin_data[id_O].bel_pins = {id_O};
+
+            log_info("  tristate %s: OE net '%s' (%d user(s)), data net '%s'\n", ctx->nameOf(io),
+                     ctx->nameOf(oe), int(oe->users.entries()), ctx->nameOf(data));
             to_remove.push_back(tb->name);
         }
         for (IdString n : to_remove)

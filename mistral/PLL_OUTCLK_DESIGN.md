@@ -685,6 +685,49 @@ the emission does not yet check it.
 
 ---
 
+## CORRECTION 2026-08-07 (later) — the dedicated pin→PLL edge IS modelled; I misread coordinates
+
+An earlier claim in this document is **wrong** and is corrected here rather than quietly edited:
+
+> ~~"libmistral's p2p CLKIN table does not carry this edge for 5CSEBA6U23I7 — it maps
+> `FPLL(0,14).CLKIN[0]` to `GPIO(32,0)`, while the pin actually sits at `GPIO(10,17)`
+> (`pinfind V11`)."~~
+
+`pinfind` reports **pin-table** coordinates; p2p and bel positions are **tile** coordinates. They are
+different spaces, and comparing across them is what produced that conclusion. nextpnr binds
+`FPGA_CLK1_50` to `bel MISTRAL_IO.32.0.0` — tile **(32,0)** — and p2p says:
+
+```
+GPIO(32,0).COMBOUT -> FPLL( 0, 0).CLKIN[0]
+GPIO(32,0).COMBOUT -> FPLL( 0,14).CLKIN[0]     <- our PLL, the one Quartus also picks
+GPIO(40,0).COMBOUT -> FPLL( 0,14).CLKIN[1]
+GPIO(56,0).COMBOUT -> FPLL( 0,14).CLKIN[2]
+GPIO(64,0).COMBOUT -> FPLL( 0,14).CLKIN[3]
+```
+
+So **the pin → PLL dedicated wiring is fully described**, including which `CLKIN[n]` index each pin
+lands on — which is very likely what `CLKIN_0_SRC` selects. The same table also explains, without any
+Quartus reference, *why* each pin gets the PLL it gets.
+
+**What this does and does not change:**
+
+- The silicon result stands: the PLL runs at 9.996 MHz with `LOCKED=1`. That was measured.
+- `FPLL.CLKIN` is **not a routing node** — `pllports` lists only `CORECLK0`→PMUX among the modelled
+  inputs — so the edge is dedicated wiring selected by configuration, not something the router can
+  target. The "arrives over hardwiring" conclusion survives.
+- **But the earlier retraction was too pessimistic.** I wrote that generalising needs a Quartus
+  reference per (pin × PLL position) because each is a fitter decision. The pin→PLL→`CLKIN[n]`
+  mapping is in fact *derivable offline from p2p*. What remains unmodelled is only the **spine**
+  (the distribution enables), not the endpoint choice.
+- Next experiment, which the retraction wrongly closed off: pick the PLL and `CLKIN_0_SRC` **from
+  p2p** for an arbitrary pin, and see whether the spine is then the only missing piece — and whether
+  it is derivable in turn. That is a much better position than "one table entry per combination".
+
+Lesson worth keeping: two coordinate spaces that both print as `GPIO(x,y)` are an invitation to this
+exact error. Whenever a claim rests on comparing positions, state which space each side is in.
+
+---
+
 ## G4 SOLVED — 2026-08-07. A native nextpnr build drives the fabric from the PLL.
 
 ```
