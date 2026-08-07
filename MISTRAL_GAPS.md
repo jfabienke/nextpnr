@@ -290,17 +290,35 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    The 16-bit bidirectional bus now builds (39 `MISTRAL_IO`). Regression-checked: an output-only
    design is byte-identical to before and unaffected.
 
-   ⚠️ **NOT yet silicon-verified, and one known soft spot.** `write_io_cell()` sets the paired
-   `OEIN` inverters from a static `is_output` flag, and its own comment says those bits are "for
-   constant OE". With a *driven* OE routed in, that handling is unvalidated — it may need to change
-   for dynamic tristate. Build success does not settle it; a bus that drives when it should not is
-   exactly the failure this would produce.
+   **SILICON RESULT (2026-08-07): builds, but the pad never drives — OE is not routed.**
+   `openflow-test/oetest.v` drives 0xA5A5 then 0x5A5A then releases with a weak pull-up, on the real
+   SDRAM2 bus with a module fitted, holding `nCS` high and `CLK` static so the device is inert by
+   construction:
 
-   **Suggested silicon proof (no memory device required):** drive a known pattern with `OE=1` and
-   read the pad back (should match), then set `OE=0` with `WEAK_PULL_UP_RESISTOR ON` (now honoured —
-   see qsf fidelity below) and read again (should be all ones). That separates "OE is dynamic and
-   effective" from "the pad is stuck driving". Hold `SDRAM2_nCS` **deasserted** throughout so no
-   command can ever be accepted by a fitted module.
+   | phase | expected | measured |
+   |---|---|---|
+   | drive `0xA5A5` | `0xA5A5` | `0xFF` ❌ |
+   | drive `0x5A5A` | `0x5A5A` | `0xFF` ❌ |
+   | release + weak pull-up | `0xFFFF` | `0xFF` ✅ |
+
+   The release phase passing proves **the input path works and `WEAK_PULL_UP_RESISTOR` is honoured on
+   silicon** (validating the qsf fix below). But the pad never drives.
+
+   **Root cause — not polarity, routing.** Both `OEIN` inverter polarities were tried on silicon and
+   neither drove. Probing the bitstream directly (`openflow-test/oeprobe`) shows why:
+
+   ```
+   GPIO(78,0) OEIN bi=3 pi=0 -> GOUT.077.000.0024   <UNDRIVEN>
+   GPIO(78,0) OEIN bi=3 pi=1 -> GOUT.077.000.0050   <UNDRIVEN>
+   ```
+
+   The packer connects OE in the *netlist*, but nothing routes it to the `GOUT` node the bel pin maps
+   to, so the pad sees no enable. **`pack_tristates()` therefore makes bidirectional IO BUILD, not
+   WORK.** The remaining piece is getting the router to drive `GPIO.OEIN` — a routing problem, larger
+   than the packing was, and the honest next step for G6.
+
+   The speculative inverter change was reverted: with OE unrouted it is unjustified, and a guess left
+   in the emission would be indistinguishable from a derived value later.
 
    Still unverified beyond this: IO-register packing and DDIO for SDR capture.
 3. **Constraint fidelity:** the MiSTer `.qsf` pin set for the SDRAM bank (drive strength, fast

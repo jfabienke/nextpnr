@@ -149,6 +149,13 @@ struct MistralBitgen
         // There seem to be two mirrored OEIN inversion bits for constant OE for inputs/outputs. This might be to
         // prevent a single bitflip from turning inputs to outputs and messing up other devices on the boards, notably
         // ECP5 does similar. OEIN.0 inverted for outputs; OEIN.1 for inputs
+        //
+        //
+        // NOTE (measured 2026-08-07): for a DRIVEN OE this handling is unvalidated, but it is also
+        // not currently reachable -- the OEIN node is <UNDRIVEN> in the emitted bitstream (probe:
+        // openflow-test/oeprobe), i.e. nothing routes the OE signal to the pad at all. Both
+        // inverter polarities were tried on silicon and neither drove, which is consistent. Fix the
+        // routing first (see MISTRAL_GAPS G6); revisit the inversion once OE actually arrives.
         cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), is_output);
         cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), !is_output);
     }
