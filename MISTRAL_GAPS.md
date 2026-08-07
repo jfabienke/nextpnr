@@ -187,13 +187,26 @@ explicit warning that it is **not** known to work on silicon — an honest failu
 derived for the wrong source. `VUP_PLL_LEGACY=1` restores the previous behaviour throughout;
 `VUP_PLL_POS` / `VUP_CLKPIN_GCLK` override position and reference gclk instance.
 
-**Remaining work, in priority order:**
+**Remaining work — the earlier "derive the rule from a few references" plan is RETRACTED.** Building
+a Quartus reference per DE10-Nano clock pin shows every element of the clock delivery is a per-design
+fitter decision, not a function of the endpoints:
 
-1. **Derive the (pin, PLL position) → spine rule.** A handful more Quartus references through the now
-   working NAS flow, diffed with `crampatch`/`cramdiff`. Until then only the attested pin is served.
-2. **Upstream it.** The proper home is libmistral's routing model — these spine bits produce *no*
-   bmux difference and *no* change in `route_all_active_links()`, so no public API can express them.
-   File against Ravenslofty/mistral with the bit map from `PLL_OUTCLK_DESIGN.md`.
+| pin | PLL position | reference entry | output | feedback |
+|---|---|---|---|---|
+| `V11` | `FPLL(0,14)` | `CMUXVG(42,0)[0] = {CLKPIN,1}` | `CMUXHG(0,35) {PLLIN,14}` | `CMUXVG(42,0) FB_0` |
+| `Y13` | `FPLL(89,0)` | `CMUXVG(42,0)[1] = {CLKPIN,0}` | `CMUXHG(89,35) {PLLIN,6}` | `CMUXVG(42,0) FB_3` |
+| `E11` | `FPLL(0,55)` | `CMUXVG(42,81)[1] = {CLKPIN,1}` | `CMUXHG(0,35) {PLLIN,2}` | `CMUXHG(0,35) FB_1` |
+
+The spine moves too — Y13's clock-region footprint is a **single tile**, where V11's spans eleven
+tiles of column 9 plus column 15 and row 76. A table would need one entry per (pin × PLL position)
+combination.
+
+1. **Upstream it — the only viable route to generality.** Model the spine in libmistral's routing
+   graph so nextpnr can *derive* the path instead of replaying a recorded one. These bits produce no
+   bmux difference and no change in `route_all_active_links()`, so no public API expresses them
+   today. File against Ravenslofty/mistral with the bit maps and the table above.
+2. **Until then the attested guard is the correct posture**, not a stopgap to widen by adding rows.
+   Single-PLL designs on the board clock pin work today; anything else warns and falls back.
 
 **Method note — how it was actually cracked.** Sweeping was exhausted (`CLKIN_0_SRC` across its full
 range, six CLKBUF sources, PLL position, both feedback modes, and a byte-identical clone of a working
