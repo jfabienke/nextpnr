@@ -343,10 +343,22 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    invisible to every diff run before this. That is how the OE inversion survived so long, and it is
    the more reusable finding here.
 
-   **Next step:** the remaining difference is outside GPIO/DQS16 bmux and outside the OE inverter —
-   so diff the *rest*: full `invdiff` (unfiltered), `pramdiff`, and a CRAM diff against `gt_bidir.rbf`,
-   which is now a same-design working donor. That is the transplant-bisection setup that cracked the
-   PLL, and it is available here unchanged.
+   **State after the full diff.** All 16 DQ pads' OE inverters now match ground truth (checked by
+   resolving each pad's OE wire via `VUP_DEBUG_OE`, then `invdiff` on exactly those wires). What
+   remains is **CRAM in the pad tiles** — 45 differing bits in tile (78,0), 10 in (89,6) — which is
+   the same class as the historical dark-IO problem: unmodelled IO pad-activation bits that live in
+   CRAM and are attributed by no bmux.
+
+   A blanket transplant of donor CRAM over columns 55..90 (9689 bits) **destroyed the readout** —
+   `raw 0xffffffff`, `BUILD_ID=0xff` instead of `0xc8`. All-ones made every verdict bit read 1, so
+   the script reported "OE IS DYNAMIC": a false PASS. **Void trial, not a result.** The measurement
+   scripts now reject all-ones/all-zeros readouts outright, because a dead readout that prints
+   success is worse than one that prints nothing.
+
+   **Next step:** bisect the pad-tile CRAM specifically — transplant tile (78,0) alone (45 bits),
+   which is far from the HPS readout at (51,80), rather than a column sweep that takes the instrument
+   with it. `gt_bidir.rbf` is a same-design working donor, so this is the same bounded procedure that
+   cracked the PLL spine.
 
    The speculative inverter change was reverted: with OE unrouted it is unjustified, and a guess left
    in the emission would be indistinguishable from a derived value later.
