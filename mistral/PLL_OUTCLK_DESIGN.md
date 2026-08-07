@@ -628,6 +628,39 @@ So the locking result must be read precisely:
 > transplant that locked also carried the donor's PRAM chains 4/5/10/12/13. The spine flipped that
 > build from dead to locked, so it is **necessary**; it is **not sufficient on its own**.
 
+## G4 — phase-shifted outputs (2026-08-07). Encoding derived and bit-exact vs Quartus.
+
+G6 (SDRAM) needs a memory clock phase-shifted against the fabric clock, and `phase_shift0` was
+accepted by the frontend but never emitted. libmistral *does* name the fields — `CNT_PH_MUX_PRESET`
+and `CNT_PRESET`, both per C-counter — so this was implementation, not RE.
+
+Encoding derived from **four** Quartus references on an otherwise identical design (45/90/180/270°,
+`min_tlm` @ 96 MHz off a 480 MHz VCO, C=5), with defaults confirmed by `fplldump --all`
+(`CNT_PRESET` def = 1, `CNT_PH_MUX_PRESET` def = 0):
+
+```
+taps                 = round(phase_ps / (VCO_period / 8))    // the 8 VCO phase taps
+CNT_PH_MUX_PRESET[c] = taps % 8
+CNT_PRESET[c]        = taps / 8 + 1
+```
+
+| requested | VCO taps | Quartus (C6) | nextpnr (C5) |
+|---|---|---|---|
+| 45° | 5 | `PH_MUX=5, PRESET=1` (default, so absent from the diff) | `PH_MUX=5, PRESET=1` ✓ |
+| 90° | 10 | `PH_MUX=2, PRESET=2` | `PH_MUX=2, PRESET=2` ✓ |
+| 180° | 20 | `PH_MUX=4, PRESET=3` | `PH_MUX=4, PRESET=3` ✓ |
+| 270° | 30 | `PH_MUX=6, PRESET=4` | `PH_MUX=6, PRESET=4` ✓ |
+
+**Why four points and not one.** The first-cut hypothesis from the 90° pair alone was
+`taps = PRESET*4 + PH_MUX`; it fitted that point exactly and was **refuted** by the other three. One
+differential pair is enough to form a rule and never enough to trust it.
+
+**Status: bit-exact against ground truth, NOT yet silicon-verified.** Counters cannot measure phase,
+so silicon proof needs a fabric phase detector (sample one output with another at the same frequency
+and report via `vup-telemetry`). That is the acceptance gate before G6 leans on it.
+
+---
+
 ## G4 SOLVED — 2026-08-07. A native nextpnr build drives the fabric from the PLL.
 
 ```

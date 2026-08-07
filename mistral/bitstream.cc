@@ -237,6 +237,26 @@ struct MistralBitgen
 
     // Parse a frequency string like "50.0 MHz" / "100.0 MHz" into MHz.
     // A period string ("0 ps") or an unrecognised unit yields 0 (== unused).
+    // Phase shift, in picoseconds. altera_pll's phase_shiftN is a period-like quantity ("2604 ps"),
+    // so it needs its own parser: parse_freq_mhz() deliberately returns 0 for ps/ns.
+    static double parse_phase_ps(const std::string &s)
+    {
+        try {
+            size_t idx = 0;
+            double val = std::stod(s, &idx);
+            std::string unit = s.substr(idx);
+            while (!unit.empty() && (unit.front() == ' ' || unit.front() == '\t'))
+                unit.erase(unit.begin());
+            if (unit.rfind("ns", 0) == 0)
+                return val * 1000.0;
+            if (unit.rfind("us", 0) == 0)
+                return val * 1.0e6;
+            return val; // bare number or "ps"
+        } catch (...) {
+            return 0.0;
+        }
+    }
+
     static double parse_freq_mhz(const std::string &s)
     {
         try {
@@ -371,6 +391,39 @@ struct MistralBitgen
                 cv->bmux_b_set(CycloneV::FPLL, pos, CycloneV::DPRIO0_CNT_ODD_DIV_EVEN_DUTY_EN, phys, true);
             // Counter input source: VCO phase 0 (ground truth sets CNT_IN_SRC=0 for active counters).
             cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_IN_SRC, phys, 0);
+
+            // PHASE SHIFT (G6 needs this: every proven SDRAM controller phase-shifts its memory
+            // clock against the fabric clock). Encoding derived from four Quartus references at
+            // 45/90/180/270 degrees on an otherwise identical design, with the field defaults
+            // confirmed by `fplldump --all` (CNT_PRESET def = 1, CNT_PH_MUX_PRESET def = 0):
+            //
+            //     taps                 = round(phase_ps / (VCO period / 8))   // 8 VCO phase taps
+            //     CNT_PH_MUX_PRESET[c] = taps % 8
+            //     CNT_PRESET[c]        = taps / 8 + 1
+            //
+            //   45 deg ->  5 taps -> PH_MUX 5, PRESET 1 (the default, hence absent from the diff)
+            //   90 deg -> 10 taps -> PH_MUX 2, PRESET 2
+            //  180 deg -> 20 taps -> PH_MUX 4, PRESET 3
+            //  270 deg -> 30 taps -> PH_MUX 6, PRESET 4
+            //
+            // The VCO taps this rides on (VCO_PH0..7_EN) are already enabled below. A first-cut
+            // hypothesis of taps = PRESET*4 + PH_MUX fitted the 90 deg point alone and was refuted
+            // by the other three -- hence four points, not one.
+            IdString ph_param = ctx->idf("phase_shift%d", c);
+            if (ci->params.count(ph_param)) {
+                double ph_ps = parse_phase_ps(ci->params.at(ph_param).as_string());
+                if (ph_ps != 0.0) {
+                    double vco_period_ps = 1.0e6 / vco; // vco is MHz
+                    int taps = int(std::lround(ph_ps * 8.0 / vco_period_ps));
+                    int period_taps = 8 * C; // one full output period
+                    taps = ((taps % period_taps) + period_taps) % period_taps; // normalise, allow negative
+                    cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_PH_MUX_PRESET, phys, taps % 8);
+                    cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_PRESET, phys, taps / 8 + 1);
+                    log_info("  C%d phase shift %.0f ps = %d VCO taps (%.1f deg) -> PH_MUX=%d, PRESET=%d\n",
+                             phys, ph_ps, taps, 360.0 * double(taps) / double(period_taps), taps % 8,
+                             taps / 8 + 1);
+                }
+            }
             // Enable this counter's clock output.
             cv->bmux_b_set(CycloneV::FPLL, pos, cout_en[phys], 0, true);
         }
