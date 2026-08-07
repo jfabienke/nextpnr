@@ -365,6 +365,29 @@ before G5 is addressed.
 
 ---
 
+## Capability audit (2026-08-07) — implicit assumptions made explicit
+
+The IO-ring blocker below was found by *asking* rather than assuming. The same treatment applied to
+the other capabilities a video/SDRAM core needs. Each row is one build (and, where it builds, one
+silicon load) — cheap, and it moves items out of "should be fine" before anyone depends on them.
+
+| capability | gate | verdict |
+|---|---|---|
+| **Block RAM (M10K)** | `openflow-test/m10ktest.v` — 1024×16 write, read back, compare | ✅ **PASS ON SILICON.** `DONE=1, ERROR=0`, build-ID verified. Places 2/553 M10K. The framebuffer/line-buffer path is real |
+| **Bidirectional IO (tristate)** | `openflow-test/sdrio.v` | ❌ **BLOCKED** — `$_TBUF_` has no bel; pad emitted with `OE` tied to 1. See G6 item 2 |
+| **Hard multiplier (DSP)** | `openflow-test/gates/g_dsp.v` | ❌ **BLOCKED** — `ERROR: no BELs remaining to implement cell type 'MISTRAL_MUL18X18'`. Synthesis infers it, nextpnr has no bel. Scalers/gamma/audio filters want these |
+| **Two PLLs** | `openflow-test/gates/g_2pll.v` | ❌ **CRASHES** — `Assertion failure: data.bound == nullptr` (`arch.h:345`) during PLL setup. **Pre-existing** (reproduces with `VUP_PLL_LEGACY=1`), not a regression from the G4 work. Blocks any multi-clock core — e.g. SVGA pixel clock + memory clock |
+| **IO output registers** | `openflow-test/gates/g_ioreg.v` | ⚠️ **NOT PACKED** — all 16 FFs stay in fabric; nextpnr's GPIO emission writes only `DRIVE_STRENGTH`, `IOCSR_STD`, `USE_WEAK_PULLUP`. Registers in the IO cell are what SDRAM needs for timing. (Ground truth puts IO registers in the **DQS16** block — `INPUT_REG4_SEL` et al — which is the lead to follow) |
+
+**Two of these are new named gaps** (DSP, two-PLL crash) that no prior document mentioned; both are
+hard blockers for a real video core, and both were found in minutes rather than mid-port.
+
+Still unasked, in rough priority for the SDRAM/SVGA line: DDIO for SDR capture; qsf constraint
+fidelity (does `CURRENT_STRENGTH_NEW` / IO standard / `FAST_OUTPUT_REGISTER` survive the qsf path, or
+is it silently dropped?); M10K at depth/width beyond 1024×16; and M10K true-dual-port.
+
+---
+
 ## Anti-patterns already measured out — do not re-run these
 
 - **router2 congestion cost-schedule tuning.** Aggressive escalation *diverges* (min 2,018 overuse then
