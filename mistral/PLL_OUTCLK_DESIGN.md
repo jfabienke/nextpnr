@@ -733,8 +733,33 @@ the attested configuration.
 
 **Scope of the fix (honest):** the spine table is empirical and gated to the one attested
 configuration — `PIN_V11 → FPLL(0,14)`, behind `VUP_PLL_SPINE` + `VUP_PLL_POS` + `VUP_CLKPIN_GCLK`.
-Generalising needs the (pin, PLL position) → spine rule, which is a handful more Quartus references
-now that the whole harness exists. The proper home remains libmistral's routing model; this is a
+**CORRECTED 2026-08-07 — generalising by table is a DEAD END.** I had estimated this as "a handful
+more Quartus references". Building one per DE10-Nano clock pin shows otherwise: **every element of
+the clock delivery is a per-design fitter decision**, not a function of the endpoints.
+
+| pin | GPIO | PLL position | reference entry | output | feedback |
+|---|---|---|---|---|---|
+| `V11` | (10,17) | `FPLL(0,14)` | `CMUXVG(42,0)[0] = {CLKPIN,1}` | `CMUXHG(0,35) {PLLIN,14}` | `CMUXVG(42,0) FB_0` |
+| `Y13` | (12,19) | `FPLL(89,0)` | `CMUXVG(42,0)[1] = {CLKPIN,0}` | `CMUXHG(89,35) {PLLIN,6}` | `CMUXVG(42,0) FB_3` |
+| `E11` | (10,4) | `FPLL(0,55)` | `CMUXVG(42,81)[1] = {CLKPIN,1}` | `CMUXHG(0,35) {PLLIN,2}` | `CMUXHG(0,35) FB_1` |
+
+The PLL position, the cmux carrying the reference (E11 uses the **top** CMUXVG at (42,81)), the
+instance, the CLKPIN index, the output cmux, and even *which block* holds the feedback enable all
+move together. So does the spine: isolating Y13's with its own with/without pair gives a clock-region
+footprint of a **single tile (6,50)** — no column-9 run at all, where V11's is eleven tiles of column
+9 plus column 15 and row 76.
+
+> A spine table cannot be generalised by collecting references: it would need one per
+> (pin × PLL position) combination, and each is a fitter *decision*. **Upstreaming — modelling the
+> spine in libmistral's routing graph so the path can be DERIVED — is the only viable route to
+> generality**, and the attested guard is the correct posture until then, not a stopgap to widen by
+> adding rows.
+
+These references also corrected an earlier inference: the cmux `PLL_FEEDBACK_ENABLE_x` index is
+**not** "the gclk instance carrying the feedback" (which V11 alone suggested, gclk 0 → `FB_0`). Y13
+puts its reference on gclk 1 and its output on gclk 0 yet uses `FB_3`, and E11 uses `FB_1` on a
+different block entirely. It more likely indexes *which PLL* is fed back — not established, and the
+code comment now says so instead of asserting the wrong rule. The proper home remains libmistral's routing model; this is a
 working interim that proves the mechanism end to end.
 
 ---

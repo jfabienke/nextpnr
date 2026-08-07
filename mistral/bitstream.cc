@@ -461,8 +461,13 @@ struct MistralBitgen
         // opposite: PLL_FEEDBACK_ENABLE_0 = PLL_MCNT0 at the GCLK-root CMUXVG(42,0), and NO
         // FBCLK_MUX_2. Match the reference that matches our use case.
         //
-        // The index is the cmux GCLK INSTANCE carrying the feedback, not a constant: the reference
-        // uses _0 alongside its gclk-0 selection, while this code used to hardcode _3.
+        // The index is NOT a constant, but the rule is NOT YET ESTABLISHED either -- and the first
+        // guess was wrong. From the PIN_V11 reference alone it looked like "the cmux GCLK instance
+        // carrying the feedback" (gclk 0 -> _0). A second reference (PIN_Y13) refutes that: its
+        // reference is on gclk 1 and its output on gclk 0, yet it uses _3. Since that build's PLL is
+        // at FPLL(89,0) while V11's is at FPLL(0,14), the index more likely selects WHICH PLL's MCNT
+        // is fed back -- consistent with the original hardcoded _3 and the fabi386 note. Left as a
+        // knob defaulting to the attested value for our position; do not generalise on one point.
         static const CycloneV::bmux_type_t pll_fb_en[4] = {
                 CycloneV::PLL_FEEDBACK_ENABLE_0, CycloneV::PLL_FEEDBACK_ENABLE_1,
                 CycloneV::PLL_FEEDBACK_ENABLE_2, CycloneV::PLL_FEEDBACK_ENABLE_3};
