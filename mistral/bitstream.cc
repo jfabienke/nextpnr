@@ -116,12 +116,17 @@ struct MistralBitgen
     {
         if (!getenv("VUP_DEBUG_OE") || ci->bel == BelId())
             return;
-        NetInfo *oe = ci->getPort(id_OE);
-        WireId w = ctx->getBelPinWire(ci->bel, id_OE);
-        log_info("  [oe] %s bel=%s OEpin_wire=%s net=%s%s\n", ctx->nameOf(ci), ctx->nameOfBel(ci->bel),
-                 w == WireId() ? "<none>" : ctx->nameOfWire(w), oe ? ctx->nameOf(oe) : "<none>",
-                 (oe && w != WireId() && oe->wires.count(w)) ? "  ROUTE REACHES THE OE PIN"
-                                                            : "  *** net does NOT include the OE pin wire ***");
+        // Report BOTH driven pins. A pad that is configured and routed correctly but drives the wrong
+        // value is a data-path fault, not an OE fault -- so OE alone is not enough to look at.
+        for (IdString pin : {id_OE, id_I, id_O}) {
+            NetInfo *n = ci->getPort(pin);
+            WireId w = ctx->getBelPinWire(ci->bel, pin);
+            log_info("  [io] %s bel=%s %s pin_wire=%s net=%s%s\n", ctx->nameOf(ci), ctx->nameOfBel(ci->bel),
+                     pin.c_str(ctx), w == WireId() ? "<none>" : ctx->nameOfWire(w),
+                     n ? ctx->nameOf(n) : "<none>",
+                     (n && w != WireId() && n->wires.count(w)) ? "  ROUTE REACHES PIN"
+                                                              : "  *** net does NOT include the pin wire ***");
+        }
     }
 
     // A pad whose OE is a real driven signal (as opposed to a constant) -- i.e. true bidirectional.
