@@ -476,7 +476,40 @@ struct MistralBitgen
         // asked for. Apogee's FPLL(89,0) -- our own position, integer family -- is N=5 (3+2), M=48
         // (0x18+0x18), PFD 10 MHz, VCO 480 MHz. Track that: pick N for a 10 MHz PFD, then M for a VCO
         // inside the attested band.
-        const int N = 5, M = 48;                    // PFD = f_ref/5 = 10 MHz
+        // Solve N and M for the REQUESTED outputs instead of pinning them. They used to be fixed at
+        // the attested N=5, M=48 (PFD 10 MHz, VCO 480), which meant a design could only ever get
+        // 480/C -- so 108 MHz (1280x1024 pixel clock) or 135 MHz were simply unreachable, silently.
+        // Quartus varies the VCO per design for exactly this reason; its own two-PLL reference uses
+        // VCO 300 MHz. The search keeps the PFD near the attested 10 MHz and prefers a VCO near the
+        // attested 480, so a solution stays as close to the validated configuration as the requested
+        // frequencies allow. VUP_PLL_FIXED_NM restores the old pinned pair.
+        int N = 5, M = 48;                          // attested fallback: PFD = f_ref/5 = 10 MHz
+        if (!getenv("VUP_PLL_FIXED_NM") && !fout.empty()) {
+            double best = 1e30;
+            for (int n = 1; n <= 32; n++) {
+                double pfd = f_ref / double(n);
+                if (pfd < 5.0 || pfd > 50.0)        // stay in the band the attested recipe sits in
+                    continue;
+                for (int m = 1; m <= 512; m++) {
+                    double v = f_ref * double(m) / double(n);
+                    if (v < 300.0 || v > 1300.0)
+                        continue;
+                    double err = 0;
+                    bool ok = true;
+                    for (double f : fout) {
+                        if (f <= 0)
+                            continue;
+                        long C = std::lround(v / f);
+                        if (C < 1 || C > 511) { ok = false; break; }
+                        err += std::fabs(v / double(C) - f) / f;
+                    }
+                    if (!ok)
+                        continue;
+                    double score = err * 1e6 + std::fabs(pfd - 10.0) * 1e2 + std::fabs(v - 480.0) * 1e-3;
+                    if (score < best) { best = score; N = n; M = m; }
+                }
+            }
+        }
         double vco = f_ref * double(M) / double(N); // 480 MHz -- inside the attested band
         int m_hi = M / 2, m_lo = M - m_hi;
         int n_hi = (N + 1) / 2, n_lo = N - n_hi;    // 3 + 2, as ground truth encodes an odd N
