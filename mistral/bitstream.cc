@@ -232,7 +232,20 @@ struct MistralBitgen
                      (w != WireId() && r0 == w.node) ? "MATCH" : "*** inverter node != OE pin wire ***");
         }
         if (dyn_oe) {
-            bool inv = false;
+            // A DRIVEN OE must be INVERTED at the pad. Verified on silicon: with this the OE gate
+            // passes all three phases (drive 0xA5A5 -> 0xa5, drive 0x5A5A -> 0x5a, release -> 0xff);
+            // without it the pad is enabled exactly when the design wants it released, which presents
+            // as a pad that "never drives".
+            //
+            // Why the obvious ground-truth check misled for a long time: a Quartus build of the same
+            // bidirectional design has this inverter at 0, and we matched it. But Quartus computes
+            // ~oe in the fabric and cancels it here, while we route oe straight through -- so copying
+            // its BIT yields the opposite NET polarity. The invariant is the fabric-to-pad polarity,
+            // not the bit; matching a ground-truth bit is only sound when the upstream logic matches.
+            //
+            // A plain output hides all of this: its OEIN is undriven, so the inversion in the else
+            // branch is what enables the buffer at all and signal polarity never arises.
+            bool inv = true;
             if (const char *e = getenv("VUP_OE_INV"))
                 inv = strtoul(e, nullptr, 0) != 0;
             cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), inv);

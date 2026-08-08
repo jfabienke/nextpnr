@@ -484,6 +484,46 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    **Where that leaves it.** Config, routing endpoints, fabric, encoding and the drive-enable
    mechanism all agree with a build that works -- and ours still does not drive.
 
+   ## SOLVED (2026-08-08) — a driven OE must be INVERTED at the pad
+
+   Native `nextpnr-mistral`, **no env vars**, on silicon:
+
+   ```
+   drive 0xA5A5 -> readback matches : 1   (0xa5)
+   drive 0x5A5A -> readback matches : 1   (0x5a)
+   release, weak pull-up -> 0xFFFF  : 1   (0xff)
+   VERDICT: OE IS DYNAMIC - drives when asked, releases when not
+   ```
+
+   Verified on **DQ pads (inside DQS16 groups)** and on **ordinary LED pads** — so it is the general
+   tristate path, not anything memory-specific. One line: `bool inv = true` for `dyn_oe`.
+
+   Without it, the pad is enabled exactly when the design wants it *released*. That reads as "the pad
+   never drives", which is what sent this investigation down a very long wrong path: every reading
+   was `0xff` while driving (pad released, pull-up wins) and `0x00` on release (pad enabled, driving
+   the phase-2 value of `0x0000`). Both were faithful measurements of an inverted enable.
+
+   **The methodological lesson, and it is the expensive one.** A Quartus build of the same
+   bidirectional design has this inverter at **0**, and we matched it — twice, deliberately, citing
+   ground truth. That bit-level match was *correct and useless*: Quartus computes `~oe` in the fabric
+   and cancels it at the pad, while we route `oe` straight through, so copying its bit produces the
+   opposite **net** polarity. The invariant is the fabric-to-pad polarity, not the bit.
+
+   > **Matching a ground-truth bit is only sound when the upstream logic matches too.** Where the
+   > vendor is free to absorb an inversion into the fabric, the bit is a *consequence* of its
+   > placement, not a spec. Compare net semantics, not bits.
+
+   This also explains why a plain output always worked: its OEIN is undriven, so the inversion is
+   what enables the buffer at all and signal polarity never arises. That asymmetry is exactly why
+   plain outputs passed while every tristate failed.
+
+   **What actually found it:** narrowing to a minimal tristate on one ordinary pad — no SDRAM, no
+   DQS16, no HPS. The A/B pair (tristate vs plain output) showed *zero* pad-config difference, which
+   pointed at the inverter, and our-build-vs-Quartus on the same minimal RTL put the OE node's
+   inverter difference in a list short enough to read.
+
+   ### The route there (kept — every one of these is a real elimination)
+
    **THE AXIS WAS WRONG: it is the TRISTATE path, not the DQ pads (2026-08-08).** LED7 is lit on
    silicon, so ordinary output pads (`MISTRAL_OB`) driven by our flow work. Moving the tristate onto
    those same ordinary LED pads -- DQ left `input`-only, no DQS16 involved -- reproduces the failure
