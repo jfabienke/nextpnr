@@ -14,11 +14,18 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
 | **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
-| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` remains |
+| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED on silicon** — tristate pads drive/release, and a **full 32 MB MemTest passes with 0 errors** on slot 2 @ 50 MHz. Remaining: frequency probe + a performance controller |
 | **G7** | **DSP / `MISTRAL_MUL18X18` entirely unimplemented** | **OPEN — hard blocker.** yosys *emits* the cell; the mistral backend has **zero** references to it. Any design with an 18×18 multiply cannot build |
 | **G8** | two PLLs in one design abort the tool | **LARGELY DISSOLVED.** The need was misdiagnosed: Quartus **merges** same-reference PLLs into ONE physical PLL with multiple counters (`Total PLLs: 1/6` for a two-instance design), and our flow already does that shape — **10 MHz + 25 MHz from one PLL, both `LOCKED=1` on silicon**. Two *independent* FPLLs now place and route; only one locks, because the reference spine exists for one position. Rarely needed |
+
+> **Caution on "SOLVED".** G4 carried that label for a day while two defects sat inside it, each
+> fatal to the first real core that tried to use it: attestation failed for any **buffered** clock
+> (the ordinary shape, since synthesis inserts a `CLKBUF`), so the spine was never emitted and the
+> PLL never locked; and N/M were pinned, so every design silently got 480/C — asking for 108 MHz
+> produced 120 MHz with no warning. Both were found only by using the feature for a real purpose.
+> A gap closed against one probe design is closed against one probe design.
 
 ### Confirmed capabilities (measured — these are NOT gaps)
 
