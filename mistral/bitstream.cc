@@ -219,12 +219,31 @@ struct MistralBitgen
         // pin wire NOT inverted -- GOUT.078.000.0034: Quartus 0, ours 1 -- so a driven OE passes
         // through. Default to matching that; VUP_OE_INV overrides. NOTE: this alone does not make
         // the pad drive (measured), so it is a ground-truth match, not a proven fix.
+        if (getenv("VUP_DEBUG_OE")) {
+            // Does the node we set the OE inverter on actually EQUAL the node the OE route reaches?
+            // A plain output works because OEIN is undriven and the inversion alone enables the
+            // buffer -- so a wrong node would go unnoticed there and only bite a driven OE.
+            auto r0 = find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0);
+            auto r1 = find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1);
+            WireId w = ctx->getBelPinWire(ci->bel, id_OE);
+            log_info("  [oein] %s inv_node0=%s inv_node1=%s  OEpin_wire=%s  %s\n", ctx->nameOf(ci),
+                     r0 ? cv->rn2s(r0).c_str() : "<none>", r1 ? cv->rn2s(r1).c_str() : "<none>",
+                     w == WireId() ? "<none>" : ctx->nameOfWire(w),
+                     (w != WireId() && r0 == w.node) ? "MATCH" : "*** inverter node != OE pin wire ***");
+        }
         if (dyn_oe) {
             bool inv = false;
             if (const char *e = getenv("VUP_OE_INV"))
                 inv = strtoul(e, nullptr, 0) != 0;
             cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), inv);
-            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), false);
+            // OEIN.1 must be INVERTED for a driven OE. Ground truth, and the one difference left:
+            // invdiff against a Quartus build of the same design flags exactly 16 inverter nodes
+            // (donor 1, ours 0) and they are precisely the 16 OEIN.1 nodes of the 16 bidirectional
+            // pads -- nothing else. These never show up in a routing diff because OEIN.1 is a config
+            // inverter, not a routed node, which is why an earlier pass wrote them off as unused.
+            // A plain output hides the whole issue: its OEIN is undriven, so the OEIN.0 inversion
+            // alone enables the buffer and OEIN.1 never matters.
+            cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), true);
         } else {
             cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 0), is_output);
             cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::OEIN, bi, 1), !is_output);

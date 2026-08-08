@@ -484,7 +484,36 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    **Where that leaves it.** Config, routing endpoints, fabric, encoding and the drive-enable
    mechanism all agree with a build that works -- and ours still does not drive.
 
-   **The one thing never tested: whether ANY output pad works in our flow.** All our telemetry goes
+   **THE AXIS WAS WRONG: it is the TRISTATE path, not the DQ pads (2026-08-08).** LED7 is lit on
+   silicon, so ordinary output pads (`MISTRAL_OB`) driven by our flow work. Moving the tristate onto
+   those same ordinary LED pads -- DQ left `input`-only, no DQS16 involved -- reproduces the failure
+   **identically** (`s0 = 0xff`). So:
+
+   * plain output (`MISTRAL_OB`) -> **works**
+   * tristate / driven OE (`MISTRAL_IO` + OE) -> **fails**, on ordinary GPIO and on DQ pads alike
+
+   Every DQ- and DQS16-specific line of enquiry above was chasing the wrong axis. The bug is in our
+   own tristate emission, which also means it is reproducible with a *tiny* design and no memory bus.
+
+   Also settled: `SDRAM2_nCS` really is held high by our bitstreams (plain outputs work), so the
+   "device held inert by construction" argument does hold for our builds.
+
+   **`OEIN.1` inversion -- ground-truth match, not a fix.** `find_rnode(GPIO, pos, OEIN, bi, {0,1})`
+   was verified to resolve to exactly the wire the OE route reaches (`MATCH` for every pad), so there
+   is no node mismatch. But invdiff against the Quartus build flags exactly **16** inverter nodes
+   (donor 1, ours 0) and they are precisely the 16 `OEIN.1` nodes of the 16 bidirectional pads --
+   nothing else. These never appear in a routing diff because `OEIN.1` is a config inverter, not a
+   routed node, which is why an earlier pass wrongly wrote them off as unused. Now emitted as
+   inverted: the inverter delta drops 44 -> 28 and the pads match the donor exactly. **Silicon still
+   fails**, so this is a ground-truth match kept for correctness, not a proven fix. A plain output
+   hides the issue entirely: its OEIN is undriven, so the `OEIN.0` inversion alone enables the buffer
+   and `OEIN.1` never matters.
+
+   **Next:** a minimal Quartus differential on a *tristate ordinary pad* -- a handful of pins, no
+   SDRAM, no DQS16. Same method as before but on a design small enough that the delta should be a
+   handful of bits rather than a haystack.
+
+   **Superseded:** whether ANY output pad works in our flow. All our telemetry goes
    over HPS `gp`, never through a pad, so no output pad has ever been verified end to end. If this is
    general rather than DQ-specific, it is a far bigger and more tractable clue. The board's user LEDs
    are driven by these designs (`LED = {done, ok0, ok1, ok2, 4'd0}`, so LED7 should be lit whenever
