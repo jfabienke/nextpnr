@@ -139,11 +139,25 @@ bool Arch::pllclk_pos_is_vertical(uint32_t cmux_pos) const
     return false;
 }
 
-bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkChoice> &out) const
+bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkChoice> &out,
+                         const std::set<uint32_t> &taken_fpll,
+                         const std::set<std::pair<uint32_t, int>> &taken_gclk) const
 {
     // Prefer FPLL(0,0): the ground-truth network-refclk PLL with a PROVEN fabric MCNT feedback
     // path via CMUXVG(42,0) PLL_FEEDBACK_ENABLE_3. (0,14)/(0,31)/(0,55) are HSSI-adjacent fPLLs
     // whose feedback wiring is transceiver-side (p2p-verified) — silicon round 4 froze on (0,14).
+    // FPLL(0,0) is preferred and that is LOAD-BEARING, however odd it looks: the silicon-verified
+    // G4 configuration is "picks computed for (0,0), then the PLL relocated to (0,14)". Two tidier
+    // arrangements were tried and BOTH killed the PLL on silicon (LOCKED=0, 0 edges):
+    //   * making BelId()'s sentinel unrepresentable (z = 0xFFFF), and
+    //   * simply excluding (0,0) here so pack lands on (0,14) directly.
+    // The dependency is real but not yet understood -- most likely the injector re-pick that runs
+    // after relocation lands on a different (counter, cmux, gclk) than the chooser would pick
+    // directly, and only one of them works. Do not "clean this up" without re-verifying on silicon.
+    //
+    // Note (0,0) collides bit-for-bit with the default BelId() that means "unplaced", so a PLL left
+    // there is placed a second time elsewhere. Today the relocation to (0,14) masks that; a second
+    // PLL gets a different position from the taken_fpll set below.
     std::vector<CycloneV::pos_t> order;
     for (auto fp : cyclonev->fpll_get_pos())
         if (uint32_t(fp) == uint32_t(CycloneV::xy2pos(0, 0)))
@@ -152,8 +166,12 @@ bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkCho
             order.push_back(fp);
     for (auto fp : order) {
         uint32_t fpll_pos = uint32_t(fp);
+        if (taken_fpll.count(fpll_pos))          // already claimed by an earlier PLL in this design
+            continue;
         std::vector<PllClkChoice> picks;
-        std::set<std::pair<uint32_t, int>> used_gclk;
+        // Seed with the gclk instances earlier PLLs took: two PLLs driving the same global clock
+        // instance would have the second overwrite the first's INPUT_SEL.
+        std::set<std::pair<uint32_t, int>> used_gclk = taken_gclk;
         std::set<int> used_counter;
         for (int i = 0; i < nclk; i++) {
             bool found = false;
@@ -236,21 +254,37 @@ void Arch::fixup_pllclk_placement()
     // that libmistral's p2p CLKIN table does not carry for this package. Position is therefore
     // load-bearing, and this knob makes it sweepable on silicon.
     const char *pos_env = getenv("VUP_PLL_POS");
+    // Only the PLL that actually owns the attested reference may be relocated to the attested
+    // position. This loop used to move EVERY PLL cell there, which is fine while a design has one
+    // PLL and wrong the moment it has two: the second PLL was dragged off the position pack chose
+    // for it, and its injector then had no dedicated wiring to the gclk it had been paired with.
+    bool attested_only = false;
     if (!pos_env && !getenv("VUP_PLL_LEGACY")) {
         // Only claim the attested position when pack confirmed the attested reference pin; see the
         // guard in pack.cc. Otherwise leave the placer's choice alone rather than emit a spine
         // derived for a different clock source.
         for (auto &cell : cells)
-            if (is_pll_cell(cell.second->type) && cell.second->attrs.count(id_PLLCLK_ATTESTED_REF))
+            if (is_pll_cell(cell.second->type) && cell.second->attrs.count(id_PLLCLK_ATTESTED_REF)) {
                 pos_env = "0,14";
+                attested_only = true;
+            }
     }
     if (pos_env) {
         int px = -1, py = -1;
         if (sscanf(pos_env, "%d,%d", &px, &py) == 2) {
+            bool relocated_one = false;
             for (auto &cell : cells) {
                 CellInfo *ci = cell.second.get();
                 if (!is_pll_cell(ci->type))
                     continue;
+                if (attested_only && !ci->attrs.count(id_PLLCLK_ATTESTED_REF))
+                    continue;                 // a second PLL keeps the position pack gave it
+                if (relocated_one) {
+                    log_warning("VUP_PLL_POS: '%s' left where pack put it - (%d,%d) is already taken "
+                                "by another PLL\n",
+                                nameOf(ci), px, py);
+                    continue;
+                }
                 // create_fpll() calls add_bel(x, y, id_MISTRAL_FPLL, id_altera_pll): MISTRAL_FPLL is
                 // the bel NAME, altera_pll is its TYPE, and bel_by_block_idx matches on type.
                 BelId target = bel_by_block_idx(px, py, id_altera_pll, 0);
@@ -259,10 +293,19 @@ void Arch::fixup_pllclk_placement()
                                 px, py, nameOf(ci));
                     continue;
                 }
-                if (ci->bel != BelId())
-                    unbindBel(ci->bel);
-                bindBel(target, ci, STRENGTH_LOCKED);
-                log_info("VUP_PLL_POS: '%s' relocated to FPLL(%d,%d)\n", nameOf(ci), px, py);
+                CellInfo *occupant = getBoundBelCell(target);
+                if (occupant != nullptr && occupant != ci) {
+                    log_warning("VUP_PLL_POS: FPLL(%d,%d) already holds '%s'; leaving '%s' in place\n", px, py,
+                                nameOf(occupant), nameOf(ci));
+                    continue;
+                }
+                if (ci->bel != target) {
+                    if (ci->bel != BelId())
+                        unbindBel(ci->bel);
+                    bindBel(target, ci, STRENGTH_LOCKED);
+                    log_info("VUP_PLL_POS: '%s' relocated to FPLL(%d,%d)\n", nameOf(ci), px, py);
+                }
+                relocated_one = true;
             }
         } else {
             log_warning("VUP_PLL_POS: expected \"x,y\", got \"%s\" - ignored\n", pos_env);

@@ -346,12 +346,19 @@ struct Arch : BaseArch<ArchRanges>
         data.bound = cell;
         cell->bel = bel;
         cell->belStrength = strength;
+        if (getenv("VUP_TRACE_PLL") && cell->type == id_altera_pll)
+            fprintf(stderr, "  [trace] bind   '%s' -> FPLL(%d,%d) strength=%d\n", cell->name.c_str(this),
+                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
+                     int(strength));
         update_bel(bel);
     }
     void unbindBel(BelId bel) override
     {
         auto &data = bel_data(bel);
         NPNR_ASSERT(data.bound != nullptr);
+        if (getenv("VUP_TRACE_PLL") && data.bound->type == id_altera_pll)
+            fprintf(stderr, "  [trace] unbind '%s' from FPLL(%d,%d)\n", data.bound->name.c_str(this),
+                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)));
         data.bound->bel = BelId();
         data.bound->belStrength = STRENGTH_NONE;
         data.bound = nullptr;
@@ -502,7 +509,12 @@ struct Arch : BaseArch<ArchRanges>
         int phys_counter;
         int sel;
     };
-    bool pllclk_choose(int nclk, uint32_t &fpll_pos, std::vector<PllClkChoice> &out) const; // pll.cc
+    // A design may instantiate several PLLs (a video core wants a pixel clock and a memory clock),
+    // so the caller threads through what earlier PLLs already claimed: without it every PLL picks
+    // the same FPLL position and the second bindBel trips an assertion. pll.cc
+    bool pllclk_choose(int nclk, uint32_t &fpll_pos, std::vector<PllClkChoice> &out,
+                       const std::set<uint32_t> &taken_fpll = {},
+                       const std::set<std::pair<uint32_t, int>> &taken_gclk = {}) const;
     void fixup_pllclk_placement();                                                          // pll.cc
     std::map<uint64_t, uint8_t> pllclk_sel_map;
     static uint64_t pllclk_key(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst)

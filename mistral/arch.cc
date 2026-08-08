@@ -215,8 +215,15 @@ bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
             return true;
         Loc pl = getBelLocation(pll_it->second->bel);
         int counter = int(ci->attrs.at(id_PLLCLK_COUNTER).as_int64());
-        return pllclk_lookup(uint32_t(CycloneV::xy2pos(pl.x, pl.y)), counter, uint32_t(bel.pos),
-                             data.block_index) >= 0;
+        bool okp = pllclk_lookup(uint32_t(CycloneV::xy2pos(pl.x, pl.y)), counter, uint32_t(bel.pos),
+                                 data.block_index) >= 0;
+        if (!okp && explain_invalid)
+            log_info("  [pllclk] %s invalid: its PLL '%s' is at FPLL(%d,%d) counter C%d, no dedicated "
+                     "wiring to cmux(%d,%d) gclk %d\n",
+                     ci->name.c_str(this), pll_it->second->name.c_str(this), pl.x, pl.y, counter,
+                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
+                     data.block_index);
+        return okp;
     }
     return true;
 }

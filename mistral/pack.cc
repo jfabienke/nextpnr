@@ -493,6 +493,11 @@ struct MistralPacker
 
     void setup_fplls()
     {
+        // Allocation state shared across every PLL in the design. Without this each PLL picks the
+        // same FPLL position and the second bindBel trips `data.bound == nullptr` (arch.h) -- an
+        // abort, not a placement error. Real cores routinely want two PLLs (pixel + memory clock).
+        std::set<uint32_t> taken_fpll;
+        std::set<std::pair<uint32_t, int>> taken_gclk;
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
             if (ci->type != id_altera_pll)
@@ -547,10 +552,22 @@ struct MistralPacker
                 // counter and both cells are pre-bound (LOCKED). Refusal is loud, never a guess.
                 uint32_t fpll_pos = 0;
                 std::vector<Arch::PllClkChoice> picks;
-                if (!ctx->pllclk_choose(int(injectors.size()), fpll_pos, picks))
+                if (!ctx->pllclk_choose(int(injectors.size()), fpll_pos, picks, taken_fpll, taken_gclk))
                     log_error("altera_pll '%s': no FPLL position has dedicated global-cmux wiring for "
-                              "%d output clock(s)\n",
-                              ctx->nameOf(ci), int(injectors.size()));
+                              "%d output clock(s)%s\n",
+                              ctx->nameOf(ci), int(injectors.size()),
+                              taken_fpll.empty() ? "" : " (the free ones are already used by another PLL)");
+                taken_fpll.insert(fpll_pos);
+                // The first PLL is the one that may be relocated to the attested position (0,14) by
+                // the post-place pass in pll.cc, so no later PLL may claim that bel either -- nor
+                // (0,0), which collides with the "unplaced" sentinel and is only survivable because
+                // the relocation moves the first PLL off it.
+                if (taken_fpll.size() == 1) {
+                    taken_fpll.insert(uint32_t(CycloneV::xy2pos(0, 14)));
+                    taken_fpll.insert(uint32_t(CycloneV::xy2pos(0, 0)));
+                }
+                for (auto &pk : picks)
+                    taken_gclk.insert({pk.cmux_pos, pk.inst});
                 // NOTE: a default BelId() is (pos 0, z 0), which is a REAL bel id in tile (0,0) —
                 // FPLL(0,0) can be exactly that — so "found" needs an explicit flag, not a sentinel.
                 BelId pll_bel;
