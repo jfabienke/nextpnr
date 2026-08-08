@@ -1237,6 +1237,13 @@ struct Router2
                                     std::min(1e9, wd.hist_cong_cost + (wd.curr_cong - 1) * hist_cong_weight);
                         already_updated_wires.insert(w.first);
                         ++overused_wires;
+                        // NEXTPNR_ROUTER2_DUMP_OVERUSE=<iter>: name the still-overused wires at that
+                        // iteration. When the router stalls at a small, stubborn overuse count, the
+                        // question is always WHICH wires -- a single resource class stuck is a very
+                        // different bug from diffuse congestion.
+                        if (getenv("NEXTPNR_ROUTER2_DUMP_OVERUSE"))
+                            log_info("      [overuse] %s cong=%d net '%s'\n", ctx->nameOfWire(w.first),
+                                     wd.curr_cong, ctx->nameOf(nets_by_udata.at(i)));
                     }
                     failed_nets.insert(i);
                 }

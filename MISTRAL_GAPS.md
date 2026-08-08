@@ -27,6 +27,34 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 > produced 120 MHz with no warning. Both were found only by using the feature for a real purpose.
 > A gap closed against one probe design is closed against one probe design.
 
+### G2 root cause found: the router cannot converge, and it is LAB input routing (2026-08-08)
+
+A 32k-cell design (`fmaxgen 64`) **never routes**. It reached **iteration 5,960** oscillating at
+40–41 overused wires before being killed; a fresh run sat at 30 overused after 90 s. This is the
+base router, not `--tmg-ripup`, and it explains both the build-time explosion and much of the poor
+Fmax at scale.
+
+Eliminated:
+* **Not congestion tuning.** `--router2-curr-cong-mult 4` and `--router2-hist-cong 3` made it
+  *worse* (43 overused at iter 392 vs 30 at 191). Cost pressure cannot create a wire.
+* **Not the PLL or global clock.** Same design clocked straight from the pin: still churning,
+  62 overused at iter 536.
+
+**What is actually stuck** (`NEXTPNR_ROUTER2_DUMP_OVERUSE=1`): *every* overused wire is a `TD.*`
+node — the per-LAB data input muxes — and *every* stuck net is a **carry chain**
+(`ALUT_ARITH_CO_CI…`), all at `cong=2`, spread across many tiles rather than one hotspot.
+
+**Why they cannot resolve.** `check_lab_input_count` (lab.cc) says it plainly: TD signals could be
+shared between ALMs, but that "will need careful handling and **LUT permutation during routing**" —
+which is not implemented. Without permutation each net is pinned to a specific ALM input pin,
+reachable only by a subset of TD wires, so two nets can deadlock on one TD with no legal
+alternative. The conservative `count <= 42` placement check does not prevent it, because the
+constraint is *which* TD each net needs, not how many.
+
+**So Tier 1's binding constraint is LUT input permutation in the router**, not the placer's
+criticality exponent (G1) and not the delay estimate (G5). Those are real, but they are tuning on
+top of a router that cannot legalise dense arithmetic.
+
 ### Timing model vs silicon — first calibration (2026-08-08)
 
 Every Fmax number in G1/G2/G5 comes from nextpnr's own model, which had never been checked against
