@@ -18,7 +18,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED on silicon** — tristate pads drive/release, and a **full 32 MB MemTest passes with 0 errors** on slot 2 @ 50 MHz. Remaining: frequency probe + a performance controller |
 | **G7** | **DSP / `MISTRAL_MUL18X18` entirely unimplemented** | **OPEN — hard blocker.** yosys *emits* the cell; the mistral backend has **zero** references to it. Any design with an 18×18 multiply cannot build |
-| **G8** | two PLLs in one design abort the tool | **OPEN.** Uncaught assertion `data.bound == nullptr` (`arch.h:345`) — both PLLs bind the same bel. Real cores routinely need a pixel clock *and* a memory clock |
+| **G8** | two PLLs in one design abort the tool | **LARGELY DISSOLVED.** The need was misdiagnosed: Quartus **merges** same-reference PLLs into ONE physical PLL with multiple counters (`Total PLLs: 1/6` for a two-instance design), and our flow already does that shape — **10 MHz + 25 MHz from one PLL, both `LOCKED=1` on silicon**. Two *independent* FPLLs now place and route; only one locks, because the reference spine exists for one position. Rarely needed |
 
 ### Confirmed capabilities (measured — these are NOT gaps)
 
