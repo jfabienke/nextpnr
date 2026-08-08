@@ -412,7 +412,46 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    derived, but note it makes the *input* worse in isolation, which is itself the lead: our pad
    configuration is wrong in a way `IOCSR_STD` was partially masking.
 
-   **Next session:** bisect DOWN from `gt_bidir.rbf` (a same-design Quartus build that PASSES),
+   **Bisected down from the working Quartus build (2026-08-08). Every bitstream-difference
+   hypothesis is now eliminated, and that is the useful result.**
+
+   `bin/cramunmod` rebuilds a device from only what mistral can express -- every non-default bmux,
+   every active routing link, every inverter -- and diffs against the real CRAM. Residue: donor 18
+   bits, ours 38, *exactly* the number of settings the tool's own dispatch failed to apply. **mistral
+   models both bitstreams completely.** There is no unmodelled-pad-bit mechanism; the PLL-spine
+   analogy does not transfer. Do not go looking for one.
+
+   All four stores compared, every difference tested on silicon:
+
+   | store | difference | verdict |
+   |---|---|---|
+   | CRAM | fully modelled; pad config matches | no donor-only GPIO/DQS16 settings exist |
+   | PRAM | 44x `DRIVE_STRENGTH`, 4x `INPUT_REG4_SEL` | donor + OUR drive strength PASSES => innocent |
+   | ORAM | `JTAG_ID` only (`optdiff`) | donor's oram into our build: no change |
+   | inverters | 44 GOUT nodes | all on nodes neither build routes to |
+
+   Routing endpoints are identical -- the shared OE net lands on the *same 16* `GOUT` nodes in both
+   builds, and the data nodes match. Only the fabric-side `TD` source differs, and seed 3 (which
+   picks a donor-like `TD` index) fails **identically**. The failure is seed-invariant: systematic to
+   the flow, not a placement accident.
+
+   **Measurement confounds -- both self-inflicted, recorded so they are not repeated.** With no
+   effective pull-up, a "released" reading is just residual charge from the previous phase: two builds
+   in identical release states read `0x00` and `0xff`. And a probe whose data pin is a *constant* is
+   degenerate -- yosys folds the readback, and drive-high vs release are indistinguishable under a
+   pull-up. The earlier "OE works" reading rests on float readings and is **not firm**.
+
+   **What is solid:** same harness, same pins -- the Quartus build reproduces the driven data; ours
+   reads `0xff` for `0xA5A5`, `0x5A5A` and `0x0000`.
+
+   **Where that leaves it.** The bitstreams agree everywhere the model can see, yet behave
+   differently. So the difference is either outside the model's vocabulary entirely (not CRAM -- that
+   is now excluded) or it is in the fabric logic feeding the pad rather than the pad itself. The
+   untested one is the fabric: nothing has yet confirmed that our LAB actually presents the intended
+   data at the pad's input. That is the next thing to check, and it needs an observation channel that
+   does not go through the pad -- route the data into the HPS `gp` telemetry alongside the pad.
+
+   **Superseded:** bisect DOWN from `gt_bidir.rbf` (a same-design Quartus build that PASSES),
    replacing its regions with ours until it breaks. Narrowing from a working artifact is strictly
    more informative than patching a broken one, and it is the direction that cracked the PLL.
 
