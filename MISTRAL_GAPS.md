@@ -16,7 +16,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
-| **G6** | bidirectional IO, then the SDRAM controller path | **slice 1 SOLVED on silicon** — tristate pads drive and release (DQ *and* ordinary pads). Remaining: controller port + MemTest |
+| **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–2 SOLVED on silicon** — tristate pads drive/release, and a real SDRAM **write/read round-trip** on slot 2 @ 50 MHz, confirmed against a bus-capacitance control. Remaining: full MemTest + a performance controller |
 | **G7** | **DSP / `MISTRAL_MUL18X18` entirely unimplemented** | **OPEN — hard blocker.** yosys *emits* the cell; the mistral backend has **zero** references to it. Any design with an 18×18 multiply cannot build |
 | **G8** | two PLLs in one design abort the tool | **OPEN.** Uncaught assertion `data.bound == nullptr` (`arch.h:345`) — both PLLs bind the same bel. Real cores routinely need a pixel clock *and* a memory clock |
 
@@ -577,7 +577,29 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    hides the issue entirely: its OEIN is undriven, so the `OEIN.0` inversion alone enables the buffer
    and `OEIN.1` never matters.
 
-   **Next:** a minimal Quartus differential on a *tristate ordinary pad* -- a handful of pins, no
+   ### Slice 2 — a real SDRAM round-trip (2026-08-08)
+
+   `openflow-test/sdram1.v`: a minimal controller (plain Verilog, not a port of MiSTer's
+   SystemVerilog `sdram.sv` — that would have tested yosys, not our flow), slot 2, 50 MHz straight
+   from `FPGA_CLK1_50` so the slice isolates the SDRAM path. Result: **wrote `0xA53C` to the real
+   chip and read it back.**
+
+   `sdram2.v` is the control, because a single round-trip is exactly the shape of result that can be
+   a false pass: a floating DQ bus holds the last value driven onto it, so **capacitance alone would
+   reproduce the pattern**. It writes `0xA53C` to column 0, *then* `0x5AC3` to column 8, then reads
+   column 0. Reading `0xA53C` back — not the decoy — is what makes this a real result.
+
+   Facts worth keeping: slot 2 has **no CKE and no DQM** pins (tied high/low on the dual-SDRAM
+   board), so those eight signals are the entire interface; `SDRAM2_CLK` is driven inverted for setup
+   margin. This slice is also the first that drives the bus for real, so the "held inert by
+   construction" safety argument no longer applies — SDRAM has no NVM, so the worst case is garbage
+   data, not damaged hardware.
+
+   **Next:** walking-pattern MemTest across all 32 MB, then a frequency probe against the 166 MHz
+   ceiling measured for this slot with MemTest256, then a performance controller (jtframe or
+   MiSTer `sdram.sv`).
+
+   **Superseded:** a minimal Quartus differential on a *tristate ordinary pad* -- a handful of pins, no
    SDRAM, no DQS16. Same method as before but on a design small enough that the delta should be a
    handful of bits rather than a haystack.
 
