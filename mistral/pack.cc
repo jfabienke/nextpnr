@@ -663,9 +663,38 @@ struct MistralPacker
             NetInfo *refnet = ci->getPort(id_refclk);
             bool attested_pin = false;
             if (refnet != nullptr && refnet->driver.cell != nullptr) {
+                // Walk back through clock buffers to the pad. Synthesis normally inserts a
+                // MISTRAL_CLKBUF (and may insert a CLKENA) between the pin and the PLL -- that is
+                // the ordinary shape for a clock -- and the LOC lives on the IO cell, not on the
+                // buffer. Checking only the immediate driver meant attestation FAILED for every
+                // buffered clock, so the reference spine was never emitted and the PLL could not
+                // lock. It only ever passed for a PLL fed directly by a pad.
                 CellInfo *drv = refnet->driver.cell;
-                if (drv->attrs.count(id_LOC) && drv->attrs.at(id_LOC).as_string() == "PIN_V11")
+                for (int hops = 0; hops < 8 && drv != nullptr && !drv->attrs.count(id_LOC); hops++) {
+                    if (!ctx->is_clkbuf_cell(drv->type))
+                        break;
+                    NetInfo *up = drv->getPort(id_A);
+                    if (up == nullptr || up->driver.cell == nullptr)
+                        break;
+                    drv = up->driver.cell;
+                }
+                if (drv != nullptr && drv->attrs.count(id_LOC) && drv->attrs.at(id_LOC).as_string() == "PIN_V11")
                     attested_pin = true;
+            }
+            if (!attested_pin && getenv("VUP_DEBUG_ATTEST")) {
+                if (refnet == nullptr)
+                    log_info("  [attest] '%s' has no refclk net\n", ctx->nameOf(ci));
+                else if (refnet->driver.cell == nullptr)
+                    log_info("  [attest] refclk net '%s' has no driver cell\n", ctx->nameOf(refnet));
+                else {
+                    CellInfo *drv = refnet->driver.cell;
+                    log_info("  [attest] refclk net '%s' driver '%s' type '%s' port '%s'; LOC=%s\n",
+                             ctx->nameOf(refnet), ctx->nameOf(drv), drv->type.c_str(ctx),
+                             refnet->driver.port.c_str(ctx),
+                             drv->attrs.count(id_LOC) ? drv->attrs.at(id_LOC).as_string().c_str() : "<absent>");
+                    for (auto &a : drv->attrs)
+                        log_info("  [attest]   attr %s = %s\n", a.first.c_str(ctx), a.second.as_string().c_str());
+                }
             }
             if (!attested_pin && !getenv("VUP_PLL_LEGACY"))
                 log_warning("altera_pll '%s': reference is not the attested board clock pin (PIN_V11); "
