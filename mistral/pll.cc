@@ -158,11 +158,13 @@ bool Arch::pllclk_choose(int nclk, uint32_t &fpll_pos_out, std::vector<PllClkCho
     // Note (0,0) collides bit-for-bit with the default BelId() that means "unplaced", so a PLL left
     // there is placed a second time elsewhere. Today the relocation to (0,14) masks that; a second
     // PLL gets a different position from the taken_fpll set below.
+    // FPLL(0,0) is excluded: its BelId is {pos = xy2pos(0,0) = 0, z = 0}, bit-for-bit the default
+    // BelId() that means "unplaced". A cell left there reads as unplaced, so the placer places it a
+    // second time elsewhere while the original bel stays marked occupied -- which is what stopped
+    // two PLLs from ever placing, and what the old "B2" note in this file was describing.
     std::vector<CycloneV::pos_t> order;
     for (auto fp : cyclonev->fpll_get_pos())
-        if (uint32_t(fp) == uint32_t(CycloneV::xy2pos(0, 0)))
-            order.insert(order.begin(), fp);
-        else
+        if (uint32_t(fp) != uint32_t(CycloneV::xy2pos(0, 0)))
             order.push_back(fp);
     for (auto fp : order) {
         uint32_t fpll_pos = uint32_t(fp);
