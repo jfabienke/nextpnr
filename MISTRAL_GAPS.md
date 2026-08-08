@@ -27,6 +27,37 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 > produced 120 MHz with no warning. Both were found only by using the feature for a real purpose.
 > A gap closed against one probe design is closed against one probe design.
 
+### A partial fix for G2, and a trap found while testing it (2026-08-08)
+
+**`MISTRAL_LAB_INPUT_LIMIT` makes the packing threshold sweepable**, and lowering it converts an
+unroutable design into a routable one:
+
+| LAB input limit | routes? | router iterations | build |
+|---|---|---|---|
+| **42** (default) | **never** — churned to iteration 5,960 | 1281+ | ∞ |
+| **34** | **yes** | **41** | **64 s** |
+| 26 | yes | 64 | — |
+
+Utilisation is *identical* (35% COMB either way), so on this design it costs no area — it only
+spreads the packing. Silicon-verified functionally correct at 32 chains, checksum MATCH, and the
+bitstream differs from the default-limit one so the change is really taking effect. This is a
+mitigation, not the fix; LUT input permutation in the router is still the real answer.
+
+**The trap.** A large design that finally routed then died in signoff on
+`NPNR_ASSERT(o != outputs.end())` (delay.cc) — no timing model for an arc. Downgrading that to a
+warning "so the bitstream can be emitted" seemed obviously right, and it is **wrong**:
+
+| design | missing-arc warnings | silicon |
+|---|---|---|
+| 32 chains | 0 | **MATCH** |
+| 64 chains | 2 | **WRONG ANSWER** |
+
+The correlation is exact. libmistral has no timing circuit for those arcs
+(`GIN.10.29.31 -> H6.10.29.16`, `V2.9.9.9 -> H6.10.9.6`, both into H6) because they are very likely
+**not physically valid** — the routing graph is offering pips that do not exist. **That assertion is
+a correctness guard, not a reporting gap.** It has been restored, with the evidence in a comment so
+nobody "fixes" it again. The real fix is to stop the router using such arcs.
+
 ### G2 root cause found: the router cannot converge, and it is LAB input routing (2026-08-08)
 
 A 32k-cell design (`fmaxgen 64`) **never routes**. It reached **iteration 5,960** oscillating at

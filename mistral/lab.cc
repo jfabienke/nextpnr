@@ -547,7 +547,15 @@ bool Arch::check_lab_input_count(uint32_t lab) const
     for (int i = 0; i < 10; i++) {
         count += lab_data.alms.at(i).unique_input_count;
     }
-    return (count <= 42);
+    // The 42 is conservative on COUNT but says nothing about WHICH TD wire each net needs, and the
+    // router has no LUT input permutation to resolve a clash -- so dense arithmetic can be placed
+    // into a LAB that cannot legally route (measured: a 32k-cell design stalls forever at ~40
+    // overused TD wires, all on carry chains). MISTRAL_LAB_INPUT_LIMIT makes the threshold sweepable
+    // so the trade between density and routability can be measured rather than guessed.
+    static const int limit = getenv("MISTRAL_LAB_INPUT_LIMIT")
+                                     ? atoi(getenv("MISTRAL_LAB_INPUT_LIMIT"))
+                                     : 42;
+    return (count <= limit);
 }
 
 bool Arch::check_mlab_groups(uint32_t lab) const

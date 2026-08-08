@@ -385,6 +385,16 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
             auto o = std::find_if(
                     outputs.begin(), outputs.end(),
                     [&](std::pair<mistral::CycloneV::rnode_t, int> output) { return output.first == dst.node; });
+            // DO NOT downgrade this assertion to a warning. It was tried: making it non-fatal let
+            // a 32k-cell design produce a bitstream that ROUTED, ran, and computed the WRONG answer
+            // on silicon, while the same design with zero such arcs was correct. The correlation was
+            // exact -- 0 missing arcs -> MATCH, 2 missing arcs -> WRONG.
+            //
+            // libmistral has no timing circuit for these arcs because they are very likely not
+            // physically valid: the routing graph is offering pips that do not exist (seen:
+            // GIN.10.29.31 -> H6.10.29.16 and V2.9.9.9 -> H6.10.9.6, both into H6). So this is a
+            // CORRECTNESS guard, not a reporting gap. The real fix is to stop the router using such
+            // arcs -- see MISTRAL_GAPS G2 -- not to look away and emit broken hardware.
             NPNR_ASSERT(o != outputs.end());
 
             output_wave[edge].clear();
