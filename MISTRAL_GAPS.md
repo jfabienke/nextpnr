@@ -16,7 +16,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
-| **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–2 SOLVED on silicon** — tristate pads drive/release, and a real SDRAM **write/read round-trip** on slot 2 @ 50 MHz, confirmed against a bus-capacitance control. Remaining: full MemTest + a performance controller |
+| **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED on silicon** — tristate pads drive/release, and a **full 32 MB MemTest passes with 0 errors** on slot 2 @ 50 MHz. Remaining: frequency probe + a performance controller |
 | **G7** | **DSP / `MISTRAL_MUL18X18` entirely unimplemented** | **OPEN — hard blocker.** yosys *emits* the cell; the mistral backend has **zero** references to it. Any design with an 18×18 multiply cannot build |
 | **G8** | two PLLs in one design abort the tool | **OPEN.** Uncaught assertion `data.bound == nullptr` (`arch.h:345`) — both PLLs bind the same bel. Real cores routinely need a pixel clock *and* a memory clock |
 
@@ -595,9 +595,23 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    construction" safety argument no longer applies — SDRAM has no NVM, so the worst case is garbage
    data, not damaged hardware.
 
-   **Next:** walking-pattern MemTest across all 32 MB, then a frequency probe against the 166 MHz
-   ceiling measured for this slot with MemTest256, then a performance controller (jtframe or
-   MiSTer `sdram.sv`).
+   ### Slice 3 — full 32 MB MemTest (2026-08-08)
+
+   `openflow-test/sdram3.v` walks all **16.7 M words** twice (write pass, then read/verify) at
+   50 MHz. **0 errors.** Data is address-dependent (`addr[15:0] ^ 0xA5A5`) rather than a constant, so
+   a location that aliases to another address returns the *wrong* value instead of a plausible one —
+   a constant pattern passes happily on a bus with stuck or swapped address lines. Refresh matters at
+   this scale and did not in slice 2: a pass takes seconds and rows decay in 64 ms, so an AUTO REFRESH
+   goes out every 16 words (~190 cycles) against the 7.8 µs the part requires.
+
+   **The scale test earned its keep immediately.** The first run failed with errors from address 0,
+   and the cause was in the probe, not the flow: `{4'b0100, a[8:0]}` puts the auto-precharge flag on
+   **A11, not A10**, so it was never asserted — the row stayed open and every subsequent `ACTIVATE`
+   violated the protocol. Slice 2 passed with the same intent because it used the literal `13'h400`
+   and only ever touched one row. **A single-word round-trip cannot see that class of bug.**
+
+   **Next:** frequency probe against the 166 MHz ceiling measured for this slot with MemTest256, then
+   a performance controller (jtframe or MiSTer `sdram.sv`).
 
    **Superseded:** a minimal Quartus differential on a *tristate ordinary pad* -- a handful of pins, no
    SDRAM, no DQS16. Same method as before but on a design small enough that the delta should be a
