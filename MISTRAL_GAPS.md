@@ -463,12 +463,36 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    (arch.cc:61, bitstream.cc:60) and never configures HMC, but the donor has **zero** non-default HMC
    settings, so there is nothing to copy.
 
-   **Where that leaves it.** The bitstreams agree everywhere the model can see, yet behave
-   differently. So the difference is either outside the model's vocabulary entirely (not CRAM -- that
-   is now excluded) or it is in the fabric logic feeding the pad rather than the pad itself. The
-   untested one is the fabric: nothing has yet confirmed that our LAB actually presents the intended
-   data at the pad's input. That is the next thing to check, and it needs an observation channel that
-   does not go through the pad -- route the data into the HPS `gp` telemetry alongside the pad.
+   **Quartus data-path differential, 2026-08-08 (`/projects/qio_in` on the NAS).** Same design built
+   twice, identical except the DQ pads are `inout` and driven in one and `input`-only in the other.
+   The causal set for "what it takes to drive a pad" is exactly two things:
+
+   * `GPIO DRIVE_STRENGTH` -- already proven innocent on silicon
+   * `DQS16 RB_T9_SEL_EREG_CFF_DELAY` -- and we emit **44 entries, byte-identical to the donor**
+
+   So every mechanism Quartus uses to make a pad drive is one we already emit correctly.
+
+   *Build gotcha:* `cp -r` of a project carries the old `min_pll.rbf`, and `--flow compile`
+   regenerates only the `.sof`. The first diff came back all-zeros off a stale file. Convert
+   explicitly with `quartus_cpf -c min_pll.sof min_pll.rbf` and check the timestamp before trusting
+   a diff.
+
+   **The "mistral rmux encoding is wrong" theory is dead too.** `cramunmod` reconstructs the donor's
+   CRAM from bmux settings + routing links + inverters with *zero* unexplained bits, so mistral
+   writes exactly the bits Quartus writes for the same logical links.
+
+   **Where that leaves it.** Config, routing endpoints, fabric, encoding and the drive-enable
+   mechanism all agree with a build that works -- and ours still does not drive.
+
+   **The one thing never tested: whether ANY output pad works in our flow.** All our telemetry goes
+   over HPS `gp`, never through a pad, so no output pad has ever been verified end to end. If this is
+   general rather than DQ-specific, it is a far bigger and more tractable clue. The board's user LEDs
+   are driven by these designs (`LED = {done, ok0, ok1, ok2, 4'd0}`, so LED7 should be lit whenever
+   `done` is set) and cost one glance at the hardware to check.
+
+   *Safety note:* if no output pad drives in our flow, then `SDRAM2_nCS` is NOT actually being held
+   high by our bitstreams, and the "device held inert by construction" argument does not hold for
+   them. It still holds for the Quartus builds, which do drive.
 
    **Superseded:** bisect DOWN from `gt_bidir.rbf` (a same-design Quartus build that PASSES),
    replacing its regions with ours until it breaks. Narrowing from a working artifact is strictly
