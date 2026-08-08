@@ -444,6 +444,25 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    **What is solid:** same harness, same pins -- the Quartus build reproduces the driven data; ours
    reads `0xff` for `0xA5A5`, `0x5A5A` and `0x0000`.
 
+   **FABRIC PROVEN CORRECT ON SILICON (2026-08-08).** A probe latches the *very net* that feeds the
+   pad's data pin -- verified in the synthesis JSON to be the same net the `$_TBUF_` A ports use, not
+   a duplicated copy -- and reports it over HPS `gp`, a channel that never touches the pad. Result,
+   same build and same run: `raw 0xe18a5ff0` -> **fab = `0xa5`** while the pad reads back `0xff`.
+
+   So the LAB produces the intended data on the correct net, and the pad does not reflect it. The
+   fault is strictly **between the LAB output and the pad**. This is also the first independent
+   observation channel in this investigation: it proves the `0xff` readings are real pad behaviour,
+   not an artifact of broken fabric.
+
+   (First attempt at this probe was inconclusive through a bug of mine: `t` free-runs and wraps, so
+   `t == 1000` fires in *every* phase and the last write landed in phase 2 where `drv` is `0x0000` --
+   a correct fabric yields `0x00` there. Fixed with a one-shot latch. Beware equally that gating the
+   latch on `phase` lets yosys constant-fold it into a meaningless pass.)
+
+   HMC is not the answer either: nextpnr references `hmc_get_bypass` only for *name resolution*
+   (arch.cc:61, bitstream.cc:60) and never configures HMC, but the donor has **zero** non-default HMC
+   settings, so there is nothing to copy.
+
    **Where that leaves it.** The bitstreams agree everywhere the model can see, yet behave
    differently. So the difference is either outside the model's vocabulary entirely (not CRAM -- that
    is now excluded) or it is in the fabric logic feeding the pad rather than the pad itself. The
