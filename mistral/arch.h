@@ -338,6 +338,8 @@ struct Arch : BaseArch<ArchRanges>
     std::vector<IdString> getBelPins(BelId bel) const override;
 
     bool isBelLocationValid(BelId bel, bool explain_invalid = false) const override;
+    // CLKBUF and PLLCLK bels alias the same physical CMUX*G CLKOUT; at most one may be used.
+    bool global_sibling_occupied(BelId bel, IdString other_type) const;
 
     void bindBel(BelId bel, CellInfo *cell, PlaceStrength strength) override
     {

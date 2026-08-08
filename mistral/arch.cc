@@ -192,6 +192,23 @@ IdStringList Arch::getBelName(BelId bel) const
     return IdStringList(ids);
 }
 
+// Is the bel that models the SAME physical global-clock output, under the other bel type, in use?
+bool Arch::global_sibling_occupied(BelId bel, IdString other_type) const
+{
+    int idx = bel_data(bel).block_index;
+    Loc loc = getBelLocation(bel);
+    for (BelId b : getBelsByTile(loc.x, loc.y)) {
+        if (b == bel)
+            continue;
+        auto &bd = bel_data(b);
+        if (bd.type != other_type || bd.block_index != idx)
+            continue;
+        if (getBoundBelCell(b) != nullptr)
+            return true;
+    }
+    return false;
+}
+
 bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
 {
     auto &data = bel_data(bel);
@@ -201,7 +218,19 @@ bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
     } else if (data.type == id_MISTRAL_FF) {
         return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
                is_lab_ctrlset_legal(data.lab_data.lab) && check_mlab_groups(data.lab_data.lab);
+    } else if (data.type == id_MISTRAL_CLKENA) {
+        // A CLKBUF bel and a PLLCLK bel at the same (tile, index) drive the SAME physical
+        // CMUX*G CLKOUT -- create_clkbuf and create_pllclk both bind that port. They are two models
+        // of one wire, so at most one may be used. Without this the placer happily binds both and
+        // global routing then aborts trying to bind that wire to a second net
+        // (w2n_entry == nullptr), which is what stopped two PLLs from routing.
+        // An EMPTY bel is always valid -- the question is only whether what is bound here conflicts.
+        if (getBoundBelCell(bel) == nullptr)
+            return true;
+        return !global_sibling_occupied(bel, id_MISTRAL_PLLCLK);
     } else if (data.type == id_MISTRAL_PLLCLK) {
+        if (getBoundBelCell(bel) != nullptr && global_sibling_occupied(bel, id_MISTRAL_CLKENA))
+            return false;
         // A PLLCLK bel is legal only where the dedicated PLL->cmux wiring exists for its source
         // PLL counter (pllclk_sel_map). If the source PLL is not placed yet, defer (valid); the
         // pair converges as the placer binds both.

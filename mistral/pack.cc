@@ -817,6 +817,42 @@ struct MistralPacker
             log_info("Packed %d tristate buffer(s) into MISTRAL_IO OE.\n", int(to_remove.size()));
     }
 
+    // A clock buffer sitting on a PLL output is redundant and actively harmful. The PLLCLK injector
+    // spliced in by setup_fplls IS the global driver -- its Q binds the cmux CLKOUT (GCLK root) --
+    // so a downstream CLKBUF claims a SECOND global root for the same signal. Worse, CLKBUF and
+    // PLLCLK bels model the same physical CLKOUT, so the two can be placed on top of each other and
+    // global routing then aborts binding that wire to a second net. Synthesis inserts these buffers
+    // routinely, which is why it bit as soon as a design had two PLLs.
+    void bypass_pll_clkbufs()
+    {
+        std::vector<IdString> dead;
+        for (auto &cell : ctx->cells) {
+            CellInfo *cb = cell.second.get();
+            if (cb->type != id_MISTRAL_CLKBUF)
+                continue;
+            NetInfo *in = cb->getPort(id_A);
+            NetInfo *out = cb->getPort(id_Q);
+            if (in == nullptr || out == nullptr || in->driver.cell == nullptr)
+                continue;
+            if (in->driver.cell->type != id_MISTRAL_PLLCLK)
+                continue;
+            std::vector<PortRef> users;
+            for (auto &u : out->users)
+                users.push_back(u);
+            for (auto &u : users) {
+                u.cell->disconnectPort(u.port);
+                u.cell->connectPort(u.port, in);
+            }
+            cb->disconnectPort(id_A);
+            cb->disconnectPort(id_Q);
+            dead.push_back(cb->name);
+            log_info("  bypassed redundant clock buffer '%s' on PLL output net '%s'\n", ctx->nameOf(cb),
+                     ctx->nameOf(in));
+        }
+        for (IdString n : dead)
+            ctx->cells.erase(n);
+    }
+
     void run()
     {
         init_constant_nets();
@@ -827,6 +863,7 @@ struct MistralPacker
         constrain_lutram();
         setup_m10ks();
         setup_fplls();
+        bypass_pll_clkbufs();
     }
 };
 }; // namespace

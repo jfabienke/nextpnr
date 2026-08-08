@@ -196,6 +196,15 @@ struct MistralGlobalRouter
             if (drv == nullptr)
                 continue;
             if (drv->type.in(id_MISTRAL_CLKENA, id_MISTRAL_CLKBUF, id_MISTRAL_PLLCLK)) {
+                if (getenv("VUP_DEBUG_GLOBALS")) {
+                    WireId sw = ctx->getNetinfoSourceWire(ni);
+                    NetInfo *owner = (sw == WireId()) ? nullptr : ctx->getBoundWireNet(sw);
+                    log_info("  [glb] net '%s' drv '%s' (%s) src wire %s%s\n", ctx->nameOf(ni), ctx->nameOf(drv),
+                             drv->type.c_str(ctx), sw == WireId() ? "<none>" : ctx->nameOfWire(sw),
+                             (owner != nullptr && owner != ni)
+                                     ? (std::string("  *** ALREADY OWNED BY '") + ctx->nameOf(owner) + "' ***").c_str()
+                                     : "");
+                }
                 route_clk_net(ni);
                 continue;
             }
