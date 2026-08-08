@@ -168,7 +168,12 @@ struct MistralBitgen
                             u.first.c_str(ctx), ci->attrs.at(u.first).as_string().c_str(), u.second);
         if (is_output) {
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::DRIVE_STRENGTH, bi, CycloneV::V3P3_LVTTL_16MA_LVCMOS_2MA);
-            cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::IOCSR_STD, bi, CycloneV::DIS);
+            // IOCSR_STD is for a PURE output. Causal differential (same design built twice in
+            // Quartus, bidirectional bus vs the same pins as plain outputs -- the ONLY difference):
+            // the plain-output build sets IOCSR_STD=0x209, the bidirectional build does NOT. We were
+            // setting it on every output-capable pad, bidirectional included.
+            if (!dyn_oe_cell(ci))
+                cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::IOCSR_STD, bi, CycloneV::DIS);
 
             // Output gpios must also bypass things in the associated dqs -- but NOT bidirectional
             // ones. Measured: a Quartus build of the identical bidirectional design passes the OE

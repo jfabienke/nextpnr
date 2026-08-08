@@ -390,10 +390,31 @@ tier, and the SVGA-VRAM direction (Slot-2 SDRAM as a framebuffer).
    difference is somewhere the current instruments have not looked — most likely state that is
    neither bmux, nor inverter, nor pad-tile CRAM.
 
-   **Suggested next step:** stop widening and bisect a *known-good* artifact instead — take
-   `gt_bidir.rbf` (a same-design Quartus build that PASSES) and progressively replace its regions
-   with ours until it breaks. Narrowing from a working bitstream is strictly more informative than
-   patching a broken one, and it was the transplant direction that cracked the PLL.
+   **Differential attempt (2026-08-08) — the right method, one causal finding, still not driving.**
+   Built the same design twice in Quartus, bidirectional bus vs the same pins as plain outputs, the
+   *only* difference between them. Delta:
+
+   ```
+   IOCSR_STD = 0x209   set by the PLAIN-OUTPUT build, ABSENT in the BIDIRECTIONAL one
+   ```
+
+   So a bidirectional pad must not have `IOCSR_STD` set, and we were setting it on every
+   output-capable pad. That is causally grounded — unlike the 49 consensus bits — and it is now
+   conditioned on `dyn_oe_cell()`.
+
+   **Silicon: the reading CHANGED for the first time in many trials.** The released phase went from
+   `0xFF` (pull-up holding the bus) to `0x00`. So `IOCSR_STD` is genuinely part of the pad's input
+   path — removing it altered input behaviour rather than enabling the output. The pad still does not
+   drive.
+
+   **Stopped here by a pre-committed stop rule** (small causal candidate applied, pad still dead →
+   stop rather than grind). The change is kept because it matches ground truth and is causally
+   derived, but note it makes the *input* worse in isolation, which is itself the lead: our pad
+   configuration is wrong in a way `IOCSR_STD` was partially masking.
+
+   **Next session:** bisect DOWN from `gt_bidir.rbf` (a same-design Quartus build that PASSES),
+   replacing its regions with ours until it breaks. Narrowing from a working artifact is strictly
+   more informative than patching a broken one, and it is the direction that cracked the PLL.
 
    The speculative inverter change was reverted: with OE unrouted it is unjustified, and a guess left
    in the emission would be indistinguishable from a derived value later.
