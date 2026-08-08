@@ -6,34 +6,41 @@ Each item below states what was measured, why it blocks, and the entry point —
 
 ## Status at a glance (2026-08-08)
 
-Two of the six are now closed on silicon. What blocks a real core is no longer the fabric
-primitives — it is G3 (HPS hard IP) and the timing/router work.
+The **IO and clocking primitives are now proven on silicon** (G4, G6 slice 1). What blocks a real
+core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent entirely** (G7).
 
 | gap | what it is | status |
 |---|---|---|
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — now the largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
-| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase-shifted taps verified (90°/270°). Generalisation beyond the attested pin (`PIN_V11 → FPLL(0,14)`) remains |
+| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
+| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
-| **G6** | bidirectional IO, then the SDRAM controller path | **slice 1 SOLVED on silicon** — tristate pads drive and release correctly (DQ *and* ordinary pads). Remaining: controller port + MemTest |
+| **G6** | bidirectional IO, then the SDRAM controller path | **slice 1 SOLVED on silicon** — tristate pads drive and release (DQ *and* ordinary pads). Remaining: controller port + MemTest |
+| **G7** | **DSP / `MISTRAL_MUL18X18` entirely unimplemented** | **OPEN — hard blocker.** yosys *emits* the cell; the mistral backend has **zero** references to it. Any design with an 18×18 multiply cannot build |
+| **G8** | two PLLs in one design abort the tool | **OPEN.** Uncaught assertion `data.bound == nullptr` (`arch.h:345`) — both PLLs bind the same bel. Real cores routinely need a pixel clock *and* a memory clock |
 
-### Smaller gaps, found by capability audit (2026-08-07/08)
+### Confirmed capabilities (measured — these are NOT gaps)
 
-Not numbered, to avoid renumbering the sections above. Each is measured, not suspected.
+| item | evidence |
+|---|---|
+| M10K block RAM | **works on silicon**, 1024×16. Other geometries and true dual port untested |
+| single PLL, multiple outputs | **works on silicon**, incl. phase-shifted taps (G4) |
+| tristate / bidirectional pads | **works on silicon**, DQ and ordinary pads (G6 slice 1) |
+| plain output pads | **works on silicon** |
+
+### Fidelity gaps (real, but they do not stop a design building or driving)
 
 | item | status | entry point |
 |---|---|---|
-| M10K block RAM | **works on silicon** (1024×16). Other geometries and true dual port untested | — |
-| DSP / `MISTRAL_MUL18X18` | **unsupported** — no bel, no emission | needs both |
-| two PLLs in one design | **crashes nextpnr.** Pre-existing (reproduces with `VUP_PLL_LEGACY=1`); not blocking, since multi-output single-PLL is proven | `mistral/pll.cc` |
 | IO registers (`FAST_*_REGISTER`) | **not packed.** Deliberately not faked — ground truth puts them in the DQS16 block; warns instead of pretending | `bitstream.cc` |
-| `IO_STANDARD` / `CURRENT_STRENGTH_NEW` | **parsed, then ignored** — `DRIVE_STRENGTH` is hardcoded to `V3P3_LVTTL_16MA`. Proven **not** to affect driving, so it is fidelity, not function. Now warns rather than failing silently | `bitstream.cc:~170` |
-| `USE_OPEN_DRAIN` | Quartus sets it on some pads; we **never emit it**. Consequence unmeasured | `bitstream.cc` |
-| DDIO | untested | — |
+| `IO_STANDARD` / `CURRENT_STRENGTH_NEW` | **parsed, then ignored** — `DRIVE_STRENGTH` hardcoded to `V3P3_LVTTL_16MA`. **Proven not to affect driving.** Warns rather than failing silently | `bitstream.cc:~170` |
+| `USE_OPEN_DRAIN` | Quartus sets it on some pads; we never emit it. **Consequence unmeasured** | `bitstream.cc` |
+| DDIO | **untested** — unclassified until someone measures it | — |
 
-Ordering note: sections run G1–G4, then G6, then G5 — G5 is placed last because it is characterization
-with a *negative* result rather than an actionable blocker. Do not reorder without reading G5 first.
+Ordering note: sections run G1–G4, then G6, G7, G8, then G5 — G5 is placed last because it is
+characterization with a *negative* result rather than an actionable blocker. Do not reorder without
+reading G5 first.
 
 ---
 
@@ -621,6 +628,55 @@ Nice-to-have features, in priority order:
   **Measured: `beta = 0.5` (default) never routes the dense core; `beta ≤ 0.40` routes it to overuse 0 and
   emits a `.rbf`.** The knob is coarse — 0.25/0.35/0.40 produce byte-identical placements; only 0.45 differs.
   A defensible upstream change is lowering the default, or making it utilisation-dependent.
+
+## G7 — DSP is not implemented at all (`MISTRAL_MUL18X18`)
+
+**Status: added 2026-08-08. Hard blocker for most real cores.**
+
+**Measured.** yosys emits the cell and the backend does not know it exists:
+
+```
+$ yosys -p 'synth_intel_alm -family cyclonev' (18x18 registered multiply)
+   MISTRAL_MUL18X18: 1        <- emitted by synthesis
+
+$ rg 'MUL18X18|DSP' nextpnr/mistral/*.cc *.h
+   (no matches)               <- no bel, no packing rule, no emission
+```
+
+**Why it blocks.** Any design containing an 18×18 multiply fails. That is not an edge case: arcade
+and console cores use DSPs for audio mixing, scaling and arithmetic throughout. A core can sometimes
+be forced to LUT-based multipliers, at a large area cost, but nothing in the flow does that today.
+
+**Entry point.** Needs the full chain — bel definition in `arch.cc`, a packing rule for
+`MISTRAL_MUL18X18`, and bitstream emission. libmistral models the DSP blocks, so the device data
+should already be there; this is nextpnr-side work.
+
+---
+
+## G8 — two PLLs in one design abort the tool
+
+**Status: added 2026-08-08. Pre-existing (reproduces with `VUP_PLL_LEGACY=1`), so it is not a
+regression from the G4 work.**
+
+**Measured.** `openflow-test/gates/g_2pll.v` — two `altera_pll` instances, a pixel clock and a memory
+clock, the ordinary arrangement for a video core:
+
+```
+Info:   PLL clock injector 'p2$pllclk[0]': outclk[0] -> FPLL(0,0) C5 -> cmux(42,0) gclk 1
+libc++abi: terminating due to uncaught exception of type assertion_failure:
+    Assertion failure: data.bound == nullptr (mistral/arch.h:345)
+```
+
+Both PLLs are assigned the same bel, and the second bind trips the assertion. Note it **aborts**
+rather than reporting a placement error — the crash is a second, separate defect.
+
+**Why it blocks.** Real cores routinely need two independent clocks. Single-PLL-multi-output covers
+some of those cases (proven in G4) but not designs needing genuinely independent VCOs.
+
+**Entry point.** `mistral/pll.cc` — the position assignment and clock-injector logic pick a fixed
+`FPLL` position and gclk instance instead of allocating a free one per PLL.
+
+---
 
 ## G5 — the placer's delay estimate is congestion-blind (and naive recalibration BACKFIRES)
 
