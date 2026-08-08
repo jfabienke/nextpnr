@@ -4,16 +4,33 @@ Scoped from measurements taken 2026-07-24/25 building the fabi386 i386 core (47,
 DE10-Nano (5CSEBA6U23I7). Synthesis is solved; every remaining blocker is in this repo or libmistral.
 Each item below states what was measured, why it blocks, and the entry point — not a wishlist.
 
-## Status at a glance (2026-08-07)
+## Status at a glance (2026-08-08)
+
+Two of the six are now closed on silicon. What blocks a real core is no longer the fabric
+primitives — it is G3 (HPS hard IP) and the timing/router work.
 
 | gap | what it is | status |
 |---|---|---|
-| **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; fix is a *conditional* trade, automated in `critexp_auto.sh` |
+| **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **open — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
-| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** (10.066 MHz, `LOCKED=1`). Generalisation beyond the attested pin remains |
-| **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse) |
-| **G6** | SDRAM controller path unproven in the open flow | **open**, mostly leverage; clocking gate lifted by G4, phase-shifted taps still unproven |
+| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — now the largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
+| **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon** — 9.996 MHz vs 10.000 requested, `LOCKED=1`, phase-shifted taps verified (90°/270°). Generalisation beyond the attested pin (`PIN_V11 → FPLL(0,14)`) remains |
+| **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
+| **G6** | bidirectional IO, then the SDRAM controller path | **slice 1 SOLVED on silicon** — tristate pads drive and release correctly (DQ *and* ordinary pads). Remaining: controller port + MemTest |
+
+### Smaller gaps, found by capability audit (2026-08-07/08)
+
+Not numbered, to avoid renumbering the sections above. Each is measured, not suspected.
+
+| item | status | entry point |
+|---|---|---|
+| M10K block RAM | **works on silicon** (1024×16). Other geometries and true dual port untested | — |
+| DSP / `MISTRAL_MUL18X18` | **unsupported** — no bel, no emission | needs both |
+| two PLLs in one design | **crashes nextpnr.** Pre-existing (reproduces with `VUP_PLL_LEGACY=1`); not blocking, since multi-output single-PLL is proven | `mistral/pll.cc` |
+| IO registers (`FAST_*_REGISTER`) | **not packed.** Deliberately not faked — ground truth puts them in the DQS16 block; warns instead of pretending | `bitstream.cc` |
+| `IO_STANDARD` / `CURRENT_STRENGTH_NEW` | **parsed, then ignored** — `DRIVE_STRENGTH` is hardcoded to `V3P3_LVTTL_16MA`. Proven **not** to affect driving, so it is fidelity, not function. Now warns rather than failing silently | `bitstream.cc:~170` |
+| `USE_OPEN_DRAIN` | Quartus sets it on some pads; we **never emit it**. Consequence unmeasured | `bitstream.cc` |
+| DDIO | untested | — |
 
 Ordering note: sections run G1–G4, then G6, then G5 — G5 is placed last because it is characterization
 with a *negative* result rather than an actionable blocker. Do not reorder without reading G5 first.
@@ -226,11 +243,15 @@ longer shared hardware with the thing under test. Full evidence trail in
 
 ---
 
-## G6 — SDRAM (board-module) controller path: unproven in the open flow, but mostly leverage
+## G6 — bidirectional IO (SOLVED), then the SDRAM controller path
 
-**Status: added 2026-08-06. Not a nextpnr feature gap like G3/G4 — a flow-capability gap: nothing has
-ever driven the MiSTer SDRAM module through the open flow, and it is the cheapest route to real
-fabric-accessible memory (no HPS needed).**
+**Status: added 2026-08-06. Slice 1 — bidirectional/tristate IO — is SOLVED on silicon as of
+2026-08-08: pads drive when asked and release when not, on DQ pads and ordinary pads alike (see
+"SOLVED" below for the fix and the methodology lesson). Remaining: port a controller and run MemTest.**
+
+Not a nextpnr feature gap like G3/G4 — a flow-capability gap: nothing had ever driven the MiSTer
+SDRAM module through the open flow, and it is the cheapest route to real fabric-accessible memory
+(no HPS needed).
 
 **Why it matters.** G3 (FPGA2SDRAM/HPS bridges) is the largest blocker for DDR — but the MiSTer
 ecosystem's **SDRAM modules sit on plain FPGA GPIO banks** (user pins), so a fabric SDR-SDRAM
