@@ -27,6 +27,29 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 > produced 120 MHz with no warning. Both were found only by using the feature for a real purpose.
 > A gap closed against one probe design is closed against one probe design.
 
+### Timing model vs silicon — first calibration (2026-08-08)
+
+Every Fmax number in G1/G2/G5 comes from nextpnr's own model, which had never been checked against
+hardware. `openflow-test/fmaxtest.v` + `fmaxgen` (Rust) build a design whose timing failure is
+*observable* — cascaded add+xor-shift stages, N iterations, checksum compared against a golden value
+— clocked from the PLL at a requested frequency. Sweep until the answer goes wrong and that is the
+true Fmax.
+
+| design | nextpnr (post-route) | silicon | model error |
+|---|---|---|---|
+| 1 chain, ~0.5k cells | ~37 MHz | MATCH 45, WRONG 52 | **~30% pessimistic** |
+| 32 chains, ~16k cells | ~31 MHz | MATCH 40, WRONG 60 | **~60% pessimistic** |
+
+**The model is pessimistic, and its error GROWS with design size.** So part of the reported Fmax
+collapse is a reporting artifact: a design reported at 6.22 MHz is running meaningfully faster than
+that on silicon. It does not close the gap — 108/135 MHz is still far away — but it means tuning
+against the reported number is tuning against a figure that is wrong by a size-dependent amount,
+which is exactly the failure mode G5 already documents (a *better-fitting* model made routed Fmax
+*worse*).
+
+**Take the LAST `Max frequency` line.** nextpnr prints one after placement and one after routing;
+reading the first gave ~58 MHz against a routed ~37 and briefly inverted the conclusion.
+
 ### Confirmed capabilities (measured — these are NOT gaps)
 
 | item | evidence |
