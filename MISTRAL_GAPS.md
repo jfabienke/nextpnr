@@ -91,21 +91,31 @@ constraint is *which* TD each net needs, not how many.
 criticality exponent (G1) and not the delay estimate (G5). Those are real, but they are tuning on
 top of a router that cannot legalise dense arithmetic.
 
-### G3 SAFETY — accessing an HPS bridge before enabling it HANGS the board hard (2026-08-09)
+### G3 SAFETY — the lwh2f write HANGS the whole HPS; do NOT retest on silicon until fixed offline (2026-08-09, corrected)
 
-`devmem 0xFF200000` (the lwh2f window) with the bridge still in reset stalls the ARM on an AXI
-transaction that can never complete. It hung the HPS so hard the board stopped responding to **ping**,
-not just SSH -- a power cycle is the only recovery. A `timeout` wrapper does NOT help: the process is
-stuck in an uninterruptible kernel bus access.
+`devmem 0xFF200000` (an lwh2f write) hangs the ENTIRE HPS: the board stops answering ping, not just
+SSH, and stays down. Established across two attempts:
 
-**Before ANY devmem to 0xFF20_0000 (lwh2f) or an f2sdram port, de-assert the bridge reset from the
-HPS first.** Either:
-- `echo 1 > /sys/class/fpga_bridge/*/enable` if the socfpga bridge class is present, or
-- clear the reset bit directly: reset-manager `brgmodrst` at `0xFFD0501C` -- bit0 hps2fpga, bit1
-  lwhps2fpga, bit2 fpga2hps (write to CLEAR the reset = enable). `devmem 0xFFD0501C 32 0` releases all.
+- **It is NOT a disabled bridge.** Read `brgmodrst` (0xFFD0501C) = `0x00000000` and
+  `/sys/class/fpga_bridge/*/name+state` = lwhps2fpga **enabled**, right after boot. Enabling it
+  changed nothing; the write still wedges. (The first session's "bridge in reset" guess was WRONG.)
+- **A reboot watchdog does NOT recover it.** Arming a detached `sleep 45; reboot -f` on the device
+  BEFORE the write did not fire -- the hung AXI access wedges the L3 interconnect GLOBALLY, so even
+  another process/core cannot run. Only a physical power-cycle recovers the board.
+- The `gp` mpu telemetry (0xFF706014) reads fine in the same core, so the FPGA is configured and the
+  mpu interface works; it is specifically the lwh2f AXI **write handshake** that never completes.
 
-This is not a bug in the lwh2f/f2sdram bels -- both build and route -- it is a bring-up-order fact.
-The silicon test must enable the bridge, THEN access it.
+**Prime suspect: the bridge clock.** The lwh2f `clk` bel pin is a DCMUX (clock) node. The minimal RTL
+tied it to FPGA_CLK1_50 through ordinary fabric, and clocked its AXI FSM on the same. If that clock
+is not actually delivered to the bridge's fabric-side interface as a real (GCLK-routed) clock, the
+bridge's internal AXI state machine never advances, so awready/wready/bvalid are never sampled and the
+HPS master waits forever. This is an OFFLINE design question (route the bridge clock properly; verify
+the fabric AXI slave against the bridge's expected timing), NOT something to keep hammering on silicon.
+
+**RULE: no further lwh2f (or f2sdram) silicon access until the fabric-side interface is proven to
+complete a handshake in a way that cannot wedge the bus.** The bels themselves build and route
+correctly; this is a fabric-interface bring-up problem, and every failed attempt costs a physical
+power-cycle with no auto-recovery.
 
 ### Timing model vs silicon — first calibration (2026-08-08)
 
