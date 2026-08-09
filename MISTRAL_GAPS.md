@@ -91,6 +91,22 @@ constraint is *which* TD each net needs, not how many.
 criticality exponent (G1) and not the delay estimate (G5). Those are real, but they are tuning on
 top of a router that cannot legalise dense arithmetic.
 
+### G3 SAFETY — accessing an HPS bridge before enabling it HANGS the board hard (2026-08-09)
+
+`devmem 0xFF200000` (the lwh2f window) with the bridge still in reset stalls the ARM on an AXI
+transaction that can never complete. It hung the HPS so hard the board stopped responding to **ping**,
+not just SSH -- a power cycle is the only recovery. A `timeout` wrapper does NOT help: the process is
+stuck in an uninterruptible kernel bus access.
+
+**Before ANY devmem to 0xFF20_0000 (lwh2f) or an f2sdram port, de-assert the bridge reset from the
+HPS first.** Either:
+- `echo 1 > /sys/class/fpga_bridge/*/enable` if the socfpga bridge class is present, or
+- clear the reset bit directly: reset-manager `brgmodrst` at `0xFFD0501C` -- bit0 hps2fpga, bit1
+  lwhps2fpga, bit2 fpga2hps (write to CLEAR the reset = enable). `devmem 0xFFD0501C 32 0` releases all.
+
+This is not a bug in the lwh2f/f2sdram bels -- both build and route -- it is a bring-up-order fact.
+The silicon test must enable the bridge, THEN access it.
+
 ### Timing model vs silicon — first calibration (2026-08-08)
 
 Every Fmax number in G1/G2/G5 comes from nextpnr's own model, which had never been checked against
