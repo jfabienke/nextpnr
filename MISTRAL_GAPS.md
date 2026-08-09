@@ -27,6 +27,34 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 > produced 120 MHz with no warning. Both were found only by using the feature for a real purpose.
 > A gap closed against one probe design is closed against one probe design.
 
+### G2 resolved into three distinct mechanisms (2026-08-09)
+
+Investigating the wide-HPS and arithmetic deadlocks together showed "G2" is not one bug:
+
+1. **Non-critical nets ignore legality congestion (FIXED, opt-in).** router2 scales BOTH
+   present-overuse and history congestion by `crit_weight`, so a non-critical net (crit_weight
+   floors ~0.05) barely feels a congested wire and never accumulates enough history to detour --
+   it oscillates at 1-2 overused wires with capacity free. `--router2-present-cong-floor` floors
+   the criticality applied to legality (default 0 = unchanged, byte-identical). This is a real
+   router correctness improvement but does NOT resolve (2) or (3).
+
+2. **Dense arithmetic carry chains: pin-FIXED, not permutable.** In adder mode the ALM inputs D0/D1
+   are hardwired to E/F, so the TD each net needs is fixed -- the contention is a genuine resource
+   conflict, and LUT input permutation cannot help. The lever is `MISTRAL_LAB_INPUT_LIMIT` (reduce
+   packing density), which already routes the 32k design.
+
+3. **Wide HPS interface: local fan-out congestion at the bridge tile.** ~68 signals radiate from one
+   point (the bridge at 52,43); the wires physically nearest it are few. Measured: 465 escape wires
+   exist (7x the demand in aggregate), so it is not a hard capacity limit -- but every specific
+   source->sink path funnels through the same near-bridge wires. Congestion floor (both terms,
+   every seed), local-reg readies (not VCC), and seed sweeps ALL still stall at 1 overused wire.
+   The fix is a narrower interface or placement-level spreading of the consuming FFs -- not a
+   router-cost change. (This is why the sim-proven lwh2f slave still cannot go to silicon: its 48
+   ID-bus bits trip exactly this.)
+
+Also established: router2 has **no pin-swap infrastructure**, so router-time LUT permutation would
+be a large cross-arch build -- and (2) shows it would not help the case it was assumed to fix.
+
 ### A partial fix for G2, and a trap found while testing it (2026-08-08)
 
 **`MISTRAL_LAB_INPUT_LIMIT` makes the packing threshold sweepable**, and lowering it converts an
@@ -87,7 +115,7 @@ reachable only by a subset of TD wires, so two nets can deadlock on one TD with 
 alternative. The conservative `count <= 42` placement check does not prevent it, because the
 constraint is *which* TD each net needs, not how many.
 
-**So Tier 1's binding constraint is LUT input permutation in the router**, not the placer's
+**CORRECTION (2026-08-09): there are THREE distinct deadlock mechanisms, and LUT permutation is neither necessary nor sufficient — see below.** Original hypothesis:, not the placer's
 criticality exponent (G1) and not the delay estimate (G5). Those are real, but they are tuning on
 top of a router that cannot legalise dense arithmetic.
 
