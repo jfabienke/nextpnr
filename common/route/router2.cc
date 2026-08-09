@@ -466,7 +466,12 @@ struct Router2
         auto &nd = nets.at(net->udata);
         float base_cost = cfg.get_base_cost(ctx, wire, pip, crit_weight);
         int overuse = wd.curr_cong;
-        float hist_cost = 1.0f + crit_weight * (wd.hist_cong_cost - 1.0f);
+        // Legality (present + accumulated-history congestion) must pressure ALL nets, not just
+        // timing-critical ones. Both terms were scaled by crit_weight, so a non-critical net felt
+        // neither present overuse NOR the history that negotiated-congestion accumulates -- it never
+        // learned to avoid a contested wire and oscillated forever. Floor the criticality for both.
+        float legality_crit = std::max(crit_weight, cfg.present_cong_floor);
+        float hist_cost = 1.0f + legality_crit * (wd.hist_cong_cost - 1.0f);
         float bias_cost = 0;
         float resource_hist_cost = 0.0f;
         float resource_present_cost = 0.0f;
@@ -475,7 +480,9 @@ struct Router2
             overuse -= 1;
             source_uses = nd.wires.at(wire).second;
         }
-        float present_cost = 1.0f + overuse * curr_cong_weight * crit_weight;
+        // Present overuse is a LEGALITY constraint: floor the criticality applied to it so even
+        // non-critical nets are pushed off currently-overused wires (see Config::present_cong_floor).
+        float present_cost = 1.0f + overuse * curr_cong_weight * legality_crit;
         if (pip != PipId()) {
             Loc pl = ctx->getPipLocation(pip);
             bias_cost = cfg.bias_cost_factor * (base_cost / int(net->users.entries())) *
@@ -1859,6 +1866,7 @@ Router2Cfg::Router2Cfg(Context *ctx)
         estimate_weight = ctx->setting<float>("router2/estimateWeight", 1.25f);
     }
     crit_weight_floor = ctx->setting<float>("router2/critWeightFloor", 0.05f);
+    present_cong_floor = ctx->setting<float>("router2/presentCongFloor", 0.0f);
     max_iter = ctx->setting<int>("router2/maxIter", 0);
     perf_profile = ctx->setting<bool>("router2/perfProfile", false);
     if (ctx->settings.count(ctx->id("router2/heatmap")))

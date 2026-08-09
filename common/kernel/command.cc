@@ -402,6 +402,9 @@ po::options_description CommandHandler::getGeneralOptions()
                           "router2 A* delay estimate weight (float, default: 1.25)");
     general.add_options()("router2-crit-weight-floor", po::value<float>(),
                           "router2 minimum criticality weight applied to congestion cost (float, default: 0.05)");
+    general.add_options()("router2-present-cong-floor", po::value<float>(),
+                          "router2 minimum criticality applied to PRESENT-overuse (legality) cost; 1.0 = full "
+                          "congestion pressure for all nets (float, default: 0.0)");
     general.add_options()("router2-max-iter", po::value<int>(),
                           "router2 maximum congestion iterations before giving up (int, default: 0 = unlimited)");
 
@@ -551,6 +554,9 @@ void CommandHandler::setupContext(Context *ctx)
     if (vm.count("router2-crit-weight-floor"))
         ctx->settings[ctx->id("router2/critWeightFloor")] =
                 std::to_string(vm["router2-crit-weight-floor"].as<float>());
+    if (vm.count("router2-present-cong-floor"))
+        ctx->settings[ctx->id("router2/presentCongFloor")] =
+                std::to_string(vm["router2-present-cong-floor"].as<float>());
     if (vm.count("router2-max-iter"))
         ctx->settings[ctx->id("router2/maxIter")] = std::to_string(vm["router2-max-iter"].as<int>());
 

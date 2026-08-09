@@ -59,6 +59,16 @@ struct Router2Cfg
     // critical arcs to respect present/historical congestion (up to 1.0 = full).
     float crit_weight_floor;
 
+    // Minimum criticality weight applied to PRESENT (current-overuse) congestion specifically.
+    // Present overuse is a LEGALITY constraint, not a timing one -- every net must vacate an
+    // overused wire regardless of its criticality. But the cost multiplies present congestion by
+    // crit_weight, so a non-critical net (crit_weight ~= floor 0.05) barely feels a congested wire
+    // (~2.5% penalty) and will oscillate forever rather than take an available detour -- measured on
+    // wide HPS interfaces that deadlock at 1-2 overused wires with 7x spare capacity. This floor
+    // decouples legality pressure from timing: present congestion uses max(crit_weight, this).
+    // Default 0 keeps the historical behaviour; 1.0 makes present-overuse pressure full for all nets.
+    float present_cong_floor = 0.0f;
+
     // Maximum number of congestion iterations before giving up (0 = unlimited).
     int max_iter;
 
