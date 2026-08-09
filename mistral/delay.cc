@@ -399,6 +399,14 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
             //
             // What IS established is the silicon correlation above, so keep the guard while the
             // cause is found. See MISTRAL_GAPS G2.
+            if (o == outputs.end()) {
+                // Name the collision before dying: which source does dst's mux ACTUALLY select?
+                auto actual = cyclonev->rnode_get_selected_source(dst.node);
+                fprintf(stderr,
+                        "FATAL: signoff arc %s -> %s, but the dst mux is programmed to select %s\n",
+                        nameOfWire(src), nameOfWire(dst),
+                        actual ? mistral::CycloneV::rn2s(actual).c_str() : "<nothing>");
+            }
             NPNR_ASSERT(o != outputs.end());
 
             output_wave[edge].clear();

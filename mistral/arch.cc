@@ -435,6 +435,14 @@ WireId Arch::add_wire(int x, int y, IdString name, uint64_t flags)
     }
 }
 
+void Arch::block_wire(WireId w)
+{
+    auto it = wires.find(w);
+    if (it == wires.end())
+        return;
+    it->second.flags |= WireInfo::BLOCKED;
+}
+
 void Arch::reserve_route(WireId src, WireId dst)
 {
     auto &dst_data = wires.at(dst);

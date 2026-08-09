@@ -122,6 +122,10 @@ struct WireInfo
     // if the RESERVED_ROUTE mask is set in flags, then only wires_uphill[flags&0xFF] may drive this wire - used for
     // control set preallocations
     static const uint64_t RESERVED_ROUTE = 0x100;
+    // No pip may target this wire at all. Used for the PLL reference-clock spine: those routing
+    // muxes are programmed by raw CRAM writes at bitstream time, so any fabric net routed through
+    // them is silently clobbered -- measured as a wrong answer on silicon (MISTRAL_GAPS G2/G4).
+    static const uint64_t BLOCKED = 0x200;
 };
 
 // This transforms a WireIds, and adds the mising half of the pair to create a PipId
@@ -384,6 +388,7 @@ struct Arch : BaseArch<ArchRanges>
     bool wires_connected(WireId src, WireId dst) const;
     // Only allow src, and not any other wire, to drive dst
     void reserve_route(WireId src, WireId dst);
+    void block_wire(WireId w); // no pip may use this wire (see WireInfo::BLOCKED)
 
     // -------------------------------------------------
 
@@ -406,6 +411,13 @@ struct Arch : BaseArch<ArchRanges>
     {
         WireId dst(pip.dst);
         const auto &dst_data = wires.at(dst);
+        if ((dst_data.flags & WireInfo::BLOCKED) != 0)
+            return true;
+        {
+            auto sit = wires.find(WireId(pip.src));
+            if (sit != wires.end() && (sit->second.flags & WireInfo::BLOCKED) != 0)
+                return true;
+        }
         if ((dst_data.flags & WireInfo::RESERVED_ROUTE) != 0) {
             if (WireId(pip.src) != dst_data.wires_uphill.at(dst_data.flags & 0xFF))
                 return true;

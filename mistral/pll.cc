@@ -255,6 +255,65 @@ void Arch::fixup_pllclk_placement()
     // source: FPGA_CLK1_50~input" -- a hardwired pin->PLL path that needs no bitstream config and
     // that libmistral's p2p CLKIN table does not carry for this package. Position is therefore
     // load-bearing, and this knob makes it sweepable on silicon.
+    // The reference-clock spine (bitstream.cc) programs 35 routing muxes by RAW CRAM writes at
+    // bitstream time. The router does not know those nodes are claimed, so a large design routes
+    // fabric nets through them and the spine write silently clobbers the net -- measured on silicon
+    // as a wrong answer, and at signoff as an arc whose mux selects nothing (MISTRAL_GAPS G2).
+    // Reserve every node the spine's 56 bits touch (decoded with openflow-test/spineown) whenever
+    // the spine will be emitted.
+    if (!getenv("VUP_PLL_LEGACY")) {
+        bool attested = false;
+        for (auto &cell : cells)
+            if (is_pll_cell(cell.second->type) && cell.second->attrs.count(id_PLLCLK_ATTESTED_REF))
+                attested = true;
+        if (attested) {
+            static const struct { const char *t; int x, y, z; } spine_nodes[] = {
+        {"SCLK", 15, 0, 14},
+        {"HCLK", 0, 1, 4},
+        {"GOUT", 9, 29, 48},
+        {"GOUT", 9, 29, 50},
+        {"H6", 10, 9, 6},
+        {"H6", 10, 9, 14},
+        {"H6", 10, 29, 16},
+        {"H6", 10, 76, 2},
+        {"H6", 10, 76, 12},
+        {"H6", 16, 9, 9},
+        {"H6", 16, 9, 15},
+        {"H6", 19, 76, 7},
+        {"V2", 9, 7, 17},
+        {"V2", 9, 9, 17},
+        {"V2", 9, 11, 17},
+        {"V2", 9, 13, 17},
+        {"V2", 9, 15, 17},
+        {"V2", 9, 17, 17},
+        {"V2", 9, 19, 17},
+        {"V2", 9, 21, 17},
+        {"V2", 9, 23, 17},
+        {"V2", 9, 25, 17},
+        {"V2", 9, 27, 17},
+        {"V4", 9, 72, 8},
+        {"TD", 9, 9, 15},
+        {"TD", 9, 17, 29},
+        {"TD", 9, 19, 29},
+        {"TD", 9, 21, 29},
+        {"TD", 9, 23, 29},
+        {"TD", 9, 25, 29},
+        {"TD", 9, 27, 29},
+        {"TD", 9, 76, 9},
+        {"TD", 15, 9, 13},
+        {"TD", 16, 9, 40},
+        {"TD", 18, 76, 13}
+            };
+            int blocked = 0;
+            for (auto &n : spine_nodes) {
+                auto rn = CycloneV::rnode(cyclonev->rnode_type_lookup(n.t), n.x, n.y, n.z);
+                WireId w; w.node = rn;
+                if (wires.count(w)) { block_wire(w); blocked++; }
+            }
+            log_info("PLL spine: reserved %d routing nodes for the reference clock\n", blocked);
+        }
+    }
+
     const char *pos_env = getenv("VUP_PLL_POS");
     // Only the PLL that actually owns the attested reference may be relocated to the attested
     // position. This loop used to move EVERY PLL cell there, which is fine while a design has one
