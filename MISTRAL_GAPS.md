@@ -52,11 +52,16 @@ warning "so the bitstream can be emitted" seemed obviously right, and it is **wr
 | 32 chains | 0 | **MATCH** |
 | 64 chains | 2 | **WRONG ANSWER** |
 
-The correlation is exact. libmistral has no timing circuit for those arcs
-(`GIN.10.29.31 -> H6.10.29.16`, `V2.9.9.9 -> H6.10.9.6`, both into H6) because they are very likely
-**not physically valid** — the routing graph is offering pips that do not exist. **That assertion is
-a correctness guard, not a reporting gap.** It has been restored, with the evidence in a comment so
-nobody "fixes" it again. The real fix is to stop the router using such arcs.
+The correlation is exact, so the assertion is a **correctness guard, not a reporting gap**, and it
+has been restored with the evidence in a comment so nobody "fixes" it again.
+
+**The cause is still open, and the obvious explanation is disproven.** The first guess was that the
+routing graph offers pips that do not physically exist. Checked directly for both arcs
+(`GIN.10.29.31 -> H6.10.29.16`, `V2.9.9.9 -> H6.10.9.6`): the destination lists the source among its
+18 mux sources, *and* the source lists the destination among its targets — forward and backward
+tables agree, so these are legitimate edges. The gap is inside
+`rnode_timing_build_circuit`, not in the graph. Next step is to find what makes those two arcs
+different from the thousands that model fine.
 
 ### G2 root cause found: the router cannot converge, and it is LAB input routing (2026-08-08)
 

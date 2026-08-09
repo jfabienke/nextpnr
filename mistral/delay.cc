@@ -390,11 +390,15 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
             // on silicon, while the same design with zero such arcs was correct. The correlation was
             // exact -- 0 missing arcs -> MATCH, 2 missing arcs -> WRONG.
             //
-            // libmistral has no timing circuit for these arcs because they are very likely not
-            // physically valid: the routing graph is offering pips that do not exist (seen:
-            // GIN.10.29.31 -> H6.10.29.16 and V2.9.9.9 -> H6.10.9.6, both into H6). So this is a
-            // CORRECTNESS guard, not a reporting gap. The real fix is to stop the router using such
-            // arcs -- see MISTRAL_GAPS G2 -- not to look away and emit broken hardware.
+            // WHY these arcs have no timing circuit is NOT yet known. A first guess -- that the
+            // routing graph offers pips that do not physically exist -- was checked and is WRONG:
+            // for both observed arcs (GIN.10.29.31 -> H6.10.29.16, V2.9.9.9 -> H6.10.9.6) the
+            // destination lists the source among its 18 mux sources AND the source lists the
+            // destination among its targets, so forward and backward tables agree and the edges are
+            // legitimate. The gap is in rnode_timing_build_circuit, not in the graph.
+            //
+            // What IS established is the silicon correlation above, so keep the guard while the
+            // cause is found. See MISTRAL_GAPS G2.
             NPNR_ASSERT(o != outputs.end());
 
             output_wave[edge].clear();
