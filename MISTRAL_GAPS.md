@@ -159,6 +159,36 @@ work that gates the whole HPS interface and Fmax. Narrowing the ID echo would ro
 if the master's real id does not fit, so it is not worth a manual-power-cycle gamble. Do the G2
 router legalisation, then one sim-backed silicon test.
 
+### IO registers — the COMPLETE bit-level model (2026-08-09, Quartus differentials qrbase/qrout/qrall + qireg/qoereg)
+
+All three register types live in the **DQS16** block, per DQ bit; nothing changes in the GPIO block.
+
+| register | settings (per bit) | notes |
+|---|---|---|
+| **input** (capture) | `RB_FIFO_WCLK_EN=1`, `RB_FIFO_WCLK_INV=1` | the DQS16 read-FIFO stage does it; FF **relocated** from fabric (count preserved) |
+| **output** (launch) | `OUTREG_OUTPUT_SEL=SEL_SDR`, `OUTREG_POWER_UP_STATE=<FF init>` | power-up state literally encodes the FF's init value (verified: A5A5 → 8 bits set) |
+| **OE** | `OEREG_OUTPUT_SEL=SEL_1X`, `OEREG_POWER_UP_STATE=<init>` | |
+| shared clock enables | `OEREG_HR_CLK_EN=1`, `RBOE_LVL_FR_CLK_EN=1` | one pair per registered pin (out/OE bank) |
+| **removed** | `RB_T9_SEL_EREG_CFF_DELAY` | the unregistered-path delay setting is *replaced* by the register path |
+
+**Clock delivery is ROUTING, not config** — `BCLK → BCLKB → XCLKB1` along the IO edge, fanning to
+each DQ tile; all links present in the routing model (`route_all_active_links` sees them). So
+nextpnr needs to route the capture/launch clock to XCLKB sinks, not to poke unmodelled CRAM.
+
+**Data path**: with the output register on, the pad's fabric data feed disappears (`TD → GOUT`
+routes gone at the DQ tile) — the DQS16 OUTREG drives the pad directly, and the fabric net feeds the
+DQS16 register input instead. Symmetrically, a registered input is read from the FIFO output, not
+the raw pad GIN.
+
+**Also observed**: `INPUT_PATH_CE_IN` appears when all three registers combine on the *combinational*
+oetest baseline but not the registered one — semantics not yet pinned; treat as open.
+
+Implementation plan (all ground truth now in hand): DQS16 register bel pins (data in/out + XCLKB
+clock sinks), a pack rule that relocates pad-adjacent FFs (single-fanout, same-clock legality),
+emission per the table, and the RB_T9 removal. Verify at 50 MHz first (registers should be
+transparent to function), then the 135 MHz phase sweep — `sdram135clean.v` is the ready-made
+acceptance test.
+
 ### Timing model vs silicon — first calibration (2026-08-08)
 
 Every Fmax number in G1/G2/G5 comes from nextpnr's own model, which had never been checked against
