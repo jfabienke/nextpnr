@@ -209,8 +209,10 @@ the SVGA VRAM controller should use); `constraints/slot2_ioreg.qsf` carries the 
 
 Silicon: `sdreg50.rbf` (registered MemTest @50, BUILD_ID C1, 16 in + 34 out + 16 OE packed) —
 full 32 MB, 0 errors: registers functionally transparent. `sdreg135` (BUILD_ID C2): **MEMTEST
-PASS @135 MHz** — the configuration that failed at EVERY phase without registers. G6 is closed at
-VRAM speed; the C2 phase sweep maps the working window (see openflow-test).
+PASS @135 MHz at ALL EIGHT swept SDRAM-clock phases (0–6482 ps, full 7407 ps period, reboot
+between trials)** — the configuration that failed at EVERY phase without registers. The window is
+the whole period: registered launch+capture removed the fabric-routing variance, so margin at
+135 MHz is full-cycle. G6 is CLOSED at VRAM speed.
 
 ### Timing model vs silicon — first calibration (2026-08-08)
 
