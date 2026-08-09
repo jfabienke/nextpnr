@@ -287,6 +287,12 @@ struct MistralGlobalRouter
             backwards_bfs_route(net, usr.index, 1000000, true,
                                 [&](PipId pip) { return (is_relaxed_sink(usr.value) || global_pip_filter(pip)); });
         log_info("    routed net '%s' using global resources\n", ctx->nameOf(net));
+        if (getenv("VUP_DEBUG_HPSCLK")) {
+            for (auto &u : net->users)
+                if (std::string(u.port.c_str(ctx)) == "clk")
+                    log_info("      [hpsclk] net '%s' drives a 'clk' pin on cell '%s' (%s)\n",
+                             ctx->nameOf(net), ctx->nameOf(u.cell), u.cell->type.c_str(ctx));
+        }
     }
 
     void operator()()

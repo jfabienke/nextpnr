@@ -91,31 +91,32 @@ constraint is *which* TD each net needs, not how many.
 criticality exponent (G1) and not the delay estimate (G5). Those are real, but they are tuning on
 top of a router that cannot legalise dense arithmetic.
 
-### G3 SAFETY — the lwh2f write HANGS the whole HPS; do NOT retest on silicon until fixed offline (2026-08-09, corrected)
+### G3 SAFETY — NO reliable auto-recovery for an HPS hang; verify the AXI slave in SIMULATION first (2026-08-09)
 
-`devmem 0xFF200000` (an lwh2f write) hangs the ENTIRE HPS: the board stops answering ping, not just
-SSH, and stays down. Established across two attempts:
+Hard-won facts, do not relearn them on the hardware:
 
-- **It is NOT a disabled bridge.** Read `brgmodrst` (0xFFD0501C) = `0x00000000` and
-  `/sys/class/fpga_bridge/*/name+state` = lwhps2fpga **enabled**, right after boot. Enabling it
-  changed nothing; the write still wedges. (The first session's "bridge in reset" guess was WRONG.)
-- **A reboot watchdog does NOT recover it.** Arming a detached `sleep 45; reboot -f` on the device
-  BEFORE the write did not fire -- the hung AXI access wedges the L3 interconnect GLOBALLY, so even
-  another process/core cannot run. Only a physical power-cycle recovers the board.
-- The `gp` mpu telemetry (0xFF706014) reads fine in the same core, so the FPGA is configured and the
-  mpu interface works; it is specifically the lwh2f AXI **write handshake** that never completes.
+- An lwh2f/f2sdram AXI access that does not complete wedges the WHOLE HPS: no ping, no SSH. Recovery
+  is a physical power-cycle.
+- **A software `reboot -f` watchdog does NOT recover it** -- the hung AXI access wedges the L3
+  interconnect globally, so no other process/core runs.
+- **The HARDWARE watchdog (`/dev/watchdog`, dw_wdt) does NOT reliably recover it either.** Validated
+  directly: armed (opened, not petted), it fired at ~68 s and took the board down -- but the board
+  did NOT cleanly reboot afterwards (still down minutes later, needed a manual power-cycle). The
+  watchdog reset is not a clean cold boot here.
 
-**Prime suspect: the bridge clock.** The lwh2f `clk` bel pin is a DCMUX (clock) node. The minimal RTL
-tied it to FPGA_CLK1_50 through ordinary fabric, and clocked its AXI FSM on the same. If that clock
-is not actually delivered to the bridge's fabric-side interface as a real (GCLK-routed) clock, the
-bridge's internal AXI state machine never advances, so awready/wready/bvalid are never sampled and the
-HPS master waits forever. This is an OFFLINE design question (route the bridge clock properly; verify
-the fabric AXI slave against the bridge's expected timing), NOT something to keep hammering on silicon.
+**Conclusion: there is NO safe way to iterate lwh2f/f2sdram on silicon by trial and error.** Every
+imperfect AXI handshake costs a manual power-cycle. So the fabric-side AXI slave MUST be proven in
+SIMULATION (iverilog/verilator testbench with an AXI-3 master model, single write + read) before any
+silicon attempt. Only load a design whose handshake is simulation-proven.
 
-**RULE: no further lwh2f (or f2sdram) silicon access until the fabric-side interface is proven to
-complete a handshake in a way that cannot wedge the bus.** The bels themselves build and route
-correctly; this is a fabric-interface bring-up problem, and every failed attempt costs a physical
-power-cycle with no auto-recovery.
+**What IS established and correct (build/route level, board-independent):**
+- both HPS bels (`create_hps_lwh2f`, `create_hps_f2sdram`) build, place and route;
+- pin directions are auto-derived from rnode type (GOUT->PORT_IN, GIN->PORT_OUT) -- verified;
+- the bridge `clk` reaches the bel clk pin through the global clock network (VUP_DEBUG_HPSCLK);
+- DCE removes the bridge unless its outputs are observed -- keep them wired to gp.
+
+The remaining unknown is purely the AXI handshake (prime suspects: BID/RID must echo AWID/ARID; the
+wide ID buses also hit the G2 router deadlock and must be narrowed). Resolve it in simulation.
 
 ### Timing model vs silicon — first calibration (2026-08-08)
 
