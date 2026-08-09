@@ -13,7 +13,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 |---|---|---|
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: lwh2f SILICON-VERIFIED; f2sdram bel built | **lwh2f WORKS ON SILICON** — full 12-bit AXI-3, read AND write, no hang. ARM `devmem 0xFF200000` writes reach the fabric (counted exactly) and reads return fabric data; gp telemetry and AXI read data agree. First working HPS bridge through the open flow. Remaining: f2sdram config-bits + HPS applycfg |
+| **G3** | HPS hard IP: lwh2f SILICON-VERIFIED; f2sdram bel built | **lwh2f WORKS ON SILICON** — full 12-bit AXI-3, read AND write, no hang. ARM `devmem 0xFF200000` writes reach the fabric (counted exactly) and reads return fabric data; gp telemetry and AXI read data agree. First working HPS bridge through the open flow. **f2sdram READ silicon-verified 2026-08-10** (ARM-planted DDR3 pattern read back exactly; protocol/cfg/address-unit all pinned — see the f2sdram section). Remaining: the write direction, sim-proven, one silicon run |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. **CLOSED 2026-08-09: IO-register packing implemented and silicon-verified** — registered MemTest passes @50 (transparency, 0 errors) AND **@135 MHz** (BUILD_ID C2), the frequency that failed at every phase without registers. Pack rule + DQS16 emission in nextpnr (`pack_io_registers`), qsf `FAST_*_REGISTER`-gated; controllers need the pad-launch-stage RTL shape (`sdramreg_tmpl.v`). |
@@ -158,6 +158,41 @@ blocked on unknown design correctness (that is proven) -- it is blocked on the S
 work that gates the whole HPS interface and Fmax. Narrowing the ID echo would route but risks a hang
 if the master's real id does not fit, so it is not worth a manual-power-cycle gamble. Do the G2
 router legalisation, then one sim-backed silicon test.
+
+### f2sdram (DDR3 upload path) — READ SILICON-VERIFIED (2026-08-10)
+
+**The fabric read a pattern the ARM planted in DDR3, exactly, on the first silicon attempt**
+(`openflow-test/f2s_avmm.v`, BUILD_ID F5): ARM writes `CAFEF00D_5EED0001` at byte `0x2000_0000`
+(core-reserved region — MiSTer Linux boots `mem=511M`, everything >=512MB is core memory), rings a
+doorbell through gp, the core issues one Avalon read and the captured 64-bit word pages back
+`0001/5EED/F00D/CAFE` over gp. Everything below is thereby proven at once:
+
+- **Protocol = MiSTer's generated `sysmem.sv`** (the Rosetta stone, fetched from Template_MiSTer):
+  64-bit Avalon port command word `cmd_data = {18'b0, BURSTCOUNT[7:0], 3'b0, ADDRESS[28:0], write,
+  read}`, `cmd_valid = read|write`, `waitrequest = ~cmd_ready`, data on `rd_data[63:0]`/`rd_valid`,
+  `wr_data = {2'b0, BE[7:0], 16'b0, DATA[63:0]}`, `wr_valid` unused in Avalon mode, `wrack_ready`
+  tied 1. **ADDRESS is in 64-bit words** (byte>>3) — confirmed on silicon by the planted pattern.
+- **cfg mechanism (Quartus ground truth, qf2s_off/a/b differential on the NAS):** the `cfg_*`
+  inputs are not routed and produce ZERO bmux/pram bits — Quartus ties them via the **inverter
+  store on the undriven HPS-boundary GOUT nodes** (tiles (51,60)/(51,61)/(51,62); `inv = ~bit`;
+  the p2r table names every node). Constant `GP_IN` bits are tied the same way. OUR flow routes
+  fabric constants to those GOUTs instead — **silicon shows that works too** (the read test ran
+  with routed-constant cfg). Canonical single-64-bit-port values: `cfg_port_width=12'h001`,
+  `cfg_cport_type=12'h003`, everything else 0 (Avalon, fifo0<->cport0).
+- **HPS-side enable costs nothing:** MiSTer Main releases every f2sdram port reset at core load —
+  `fpgaportrst (0xFFC25080) = 0x3FFF` measured. No applycfg work needed under MiSTer.
+- **Fan-out lesson extended:** even a 4-bit compare directly on gp GIN wires deadlocked the router
+  (1 overused H6 by the GP tile). One register stage on the whole 32-bit gp input (single FF load
+  per GIN) fixes it — same pipeline law as lwh2f_work.v. This is the RTL rule for EVERY HPS input.
+- Hang-risk note: unlike lwh2f (HPS masters into fabric), f2sdram is a fabric-side FIFO master —
+  a dead port leaves the FSM in its (sim-proven) timeout path and the SoC stays alive, which
+  silicon confirmed (board remained reachable throughout).
+
+**Remaining:** the WRITE direction — same design, second doorbell (0xE) writes
+`0BADC0DE_D00D2BAD` at byte `0x2000_0010`, ARM verifies via devmem. Sim gate PASSED (model checks
+data/BE/address and the dead-port timeout); silicon run pending a board power-cycle (the board
+hung on a plain reboot BEFORE the write core was ever loaded — md5 discipline confirms nothing
+was flashed; unrelated to the test).
 
 ### IO registers — the COMPLETE bit-level model (2026-08-09, Quartus differentials qrbase/qrout/qrall + qireg/qoereg)
 
