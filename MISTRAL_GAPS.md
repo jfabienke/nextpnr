@@ -13,7 +13,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 |---|---|---|
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: only `mpu_general_purpose` modelled | **OPEN — largest item.** Blocks deploying the real core (needs FPGA2SDRAM + h2f/f2h bridges) |
+| **G3** | HPS hard IP: only `mpu_general_purpose` has a bel | **SCOPED, implementation begun.** libmistral models ALL HPS interfaces; port dump confirms lwh2f at (52,43) with the full AXI-3 slave (2 MB window) and FPGA2SDRAM at (52,53) with 6 cmd + 4 rd + 4 wr ports. Plan: lwh2f bel first (testable with `devmem 0xFF200000`), then f2sdram (needs the HPS-side applycfg dance MiSTer Main performs) |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED on silicon** — tristate pads drive/release, and a **full 32 MB MemTest passes with 0 errors** on slot 2 @ 50 MHz. Remaining: frequency probe + a performance controller |
