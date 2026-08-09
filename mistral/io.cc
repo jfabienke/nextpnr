@@ -35,6 +35,21 @@ void Arch::create_gpio(int x, int y)
             add_bel_pin(bel, id_I, PORT_IN, get_port(CycloneV::GPIO, x, y, z, CycloneV::DATAOUT, 0));
             add_bel_pin(bel, id_OE, PORT_IN, get_port(CycloneV::GPIO, x, y, z, CycloneV::OEIN, 0));
             add_bel_pin(bel, id_O, PORT_OUT, get_port(CycloneV::GPIO, x, y, z, CycloneV::DATAIN, 0));
+            // IO-register support (MISTRAL_GAPS "IO registers"). All three registers live in the
+            // DQS16 block, inline in the pad data path -- nothing moves, only which tap the fabric
+            // uses and where the clock is routed:
+            //  - OREG: the REGISTERED input tap. Ground truth (qrbase vs qrall routediff at the DQ
+            //    tiles): the fabric reads IOINTDQDIN[base+3] instead of the combinational
+            //    IOINTDQDIN[base+1] -- through hmc_get_bypass that is exactly DATAIN[3] vs DATAIN[0].
+            //  - ICLK/OCLK: the register clock sinks, the per-pad DCMUX nodes (GPIO CLKIN[0] /
+            //    CLKOUT[0]). Clock delivery is pure ROUTING (BCLK->BCLKB->XCLKB1->XCLKB2B->TD->
+            //    TDMUX->DCMUX, all modelled links); the router reaches them like any sink.
+            if (has_port(CycloneV::GPIO, x, y, z, CycloneV::DATAIN, 3))
+                add_bel_pin(bel, id_OREG, PORT_OUT, get_port(CycloneV::GPIO, x, y, z, CycloneV::DATAIN, 3));
+            if (has_port(CycloneV::GPIO, x, y, z, CycloneV::CLKIN, 0))
+                add_bel_pin(bel, id_ICLK, PORT_IN, get_port(CycloneV::GPIO, x, y, z, CycloneV::CLKIN, 0));
+            if (has_port(CycloneV::GPIO, x, y, z, CycloneV::CLKOUT, 0))
+                add_bel_pin(bel, id_OCLK, PORT_IN, get_port(CycloneV::GPIO, x, y, z, CycloneV::CLKOUT, 0));
         }
         bel_data(bel).block_index = z;
     }

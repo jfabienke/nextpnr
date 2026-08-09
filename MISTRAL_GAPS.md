@@ -16,7 +16,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G3** | HPS hard IP: lwh2f SILICON-VERIFIED; f2sdram bel built | **lwh2f WORKS ON SILICON** — full 12-bit AXI-3, read AND write, no hang. ARM `devmem 0xFF200000` writes reach the fabric (counted exactly) and reads return fabric data; gp telemetry and AXI read data agree. First working HPS bridge through the open flow. Remaining: f2sdram config-bits + HPS applycfg |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
-| **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. Full packing is a large feature (DQS16 in/out register bel + clock-network routing + pack rule), so the pragmatic path for SVGA is porting a proven controller (jtframe / MiSTer `sdram.sv`). So VRAM-speed SDRAM depends on IO-register packing (or a ported performance controller that uses it) |
+| **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. **CLOSED 2026-08-09: IO-register packing implemented and silicon-verified** — registered MemTest passes @50 (transparency, 0 errors) AND **@135 MHz** (BUILD_ID C2), the frequency that failed at every phase without registers. Pack rule + DQS16 emission in nextpnr (`pack_io_registers`), qsf `FAST_*_REGISTER`-gated; controllers need the pad-launch-stage RTL shape (`sdramreg_tmpl.v`). |
 | **G7** | DSP / `MISTRAL_MUL18X18` | **SOLVED on silicon** — 5000 multiplies through a real DSP block match a golden checksum. Bel + packing + emission (mistral/dsp.cc); operand→lane mapping silicon-derived (last six B lanes are REVERSED); ground truth's odd `DATA_INV` masks decoded as Quartus cancelling its own routing inversions. Combinational 18×18 only; registered/accumulate modes remain |
 | **G8** | two PLLs in one design abort the tool | **LARGELY DISSOLVED.** The need was misdiagnosed: Quartus **merges** same-reference PLLs into ONE physical PLL with multiple counters (`Total PLLs: 1/6` for a two-instance design), and our flow already does that shape — **10 MHz + 25 MHz from one PLL, both `LOCKED=1` on silicon**. Two *independent* FPLLs now place and route; only one locks, because the reference spine exists for one position. Rarely needed |
 
@@ -175,19 +175,42 @@ All three register types live in the **DQS16** block, per DQ bit; nothing change
 each DQ tile; all links present in the routing model (`route_all_active_links` sees them). So
 nextpnr needs to route the capture/launch clock to XCLKB sinks, not to poke unmodelled CRAM.
 
-**Data path**: with the output register on, the pad's fabric data feed disappears (`TD → GOUT`
-routes gone at the DQ tile) — the DQS16 OUTREG drives the pad directly, and the fabric net feeds the
-DQS16 register input instead. Symmetrically, a registered input is read from the FIFO output, not
-the raw pad GIN.
-
 **Also observed**: `INPUT_PATH_CE_IN` appears when all three registers combine on the *combinational*
 oetest baseline but not the registered one — semantics not yet pinned; treat as open.
 
-Implementation plan (all ground truth now in hand): DQS16 register bel pins (data in/out + XCLKB
-clock sinks), a pack rule that relocates pad-adjacent FFs (single-fanout, same-clock legality),
-emission per the table, and the RB_T9 removal. Verify at 50 MHz first (registers should be
-transparent to function), then the 135 MHz phase sweep — `sdram135clean.v` is the ready-made
-acceptance test.
+**IMPLEMENTED AND SILICON-VERIFIED (2026-08-09).** The registers are inline stages between the
+fabric-facing IOINT ports and the pad-facing PHYDDIO ports of the HMC path every DQ pad routes
+through — nothing physically relocates. Refinements the final routediff forced on the model above:
+
+- The TD→GOUT pad-data feed does NOT disappear for a registered output (an earlier reading of the
+  qrall diff said it did): same GOUT sink, the fabric just delivers FF.D instead of FF.Q.
+- The registered INPUT tap is `IOINTDQDIN[base+3]` where combinational is `[base+1]` (Quartus) /
+  `[base+0]` (ours) — through `hmc_get_bypass` that is exactly GPIO `DATAIN[3]` vs `DATAIN[0]`.
+- Register clocks are per-pad DCMUX nodes (GPIO `CLKIN[0]` / `CLKOUT[0]`), reached by ROUTING:
+  `SCLKB2→BCLK→BCLKB→XCLKB1→XCLKB2B→TD→TDMUX→DCMUX`, or the shorter `XCLKB2A→TCLK→DCMUX` which
+  Quartus itself uses for some pads and our router picks for all — silicon-proven either way.
+- POWER_UP_STATE is NET SEMANTICS, not a bit copy: OUTREG stores the intended pad value (power-up
+  = pack-time inversion parity — the 3 inverted command pads power up 1 = NOP, not LMR); OEREG
+  sits AFTER our dyn-OE rnode inverter so it stores ~OE (power-up = ~V_init, matching Quartus's
+  bits because it computes ~oe in fabric — same shape, hence same bit).
+
+Implementation (this repo): `io.cc` bel pins OREG/ICLK/OCLK; `pack.cc pack_io_registers()` — gated
+on qsf `FAST_INPUT/OUTPUT/OUTPUT_ENABLE_REGISTER` (or `VUP_IOREG=1` = pack everything legal),
+plain-DFF legality (no ENA/ACLR/SCLR/SLOAD), register DUPLICATION when the FF's Q has other users
+(Quartus-style), and a walk through the surviving pad-side MISTRAL_NOT with the parity folded into
+a re-materialised inverter LUT; `bitstream.cc` emits the table above per DQS16 lane (lane =
+`p2p_to(GPIO PNONE)`) and drops RB_T9 for registered pads. A requested-but-illegal pack WARNS and
+keeps the fabric path — never silently.
+
+RTL must be pack-shaped: default assignments infer SCLR/SLOAD, which the DQS16 registers cannot
+host, so a controller needs a dedicated PAD-LAUNCH STAGE of unconditional plain DFFs plus an
+unconditional capture FF. `openflow-test/sdramreg_tmpl.v` is the reference shape (and the shape
+the SVGA VRAM controller should use); `constraints/slot2_ioreg.qsf` carries the assignments.
+
+Silicon: `sdreg50.rbf` (registered MemTest @50, BUILD_ID C1, 16 in + 34 out + 16 OE packed) —
+full 32 MB, 0 errors: registers functionally transparent. `sdreg135` (BUILD_ID C2): **MEMTEST
+PASS @135 MHz** — the configuration that failed at EVERY phase without registers. G6 is closed at
+VRAM speed; the C2 phase sweep maps the working window (see openflow-test).
 
 ### Timing model vs silicon — first calibration (2026-08-08)
 

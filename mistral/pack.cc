@@ -839,6 +839,259 @@ struct MistralPacker
             log_info("Packed %d tristate buffer(s) into MISTRAL_IO OE.\n", int(to_remove.size()));
     }
 
+    // IO-register packing (MISTRAL_GAPS "IO registers"). The three IO registers are inline stages
+    // in the DQS16 block between the fabric-facing IOINT ports and the pad-facing PHYDDIO ports --
+    // there is no separate register bel to place. Packing therefore means: delete the pad-adjacent
+    // fabric FF, hand its D-side net to the pad, route its clock to the per-pad DCMUX sink, and mark
+    // the pad so write_io_cell emits the DQS16 config. Legality is deliberately strict: a plain
+    // posedge DFF (ENA/ACLR/SCLR/SLOAD all inactive), single fanout, real clock net.
+    //
+    // Gate: the qsf FAST_INPUT_REGISTER / FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER
+    // instance assignments (copied onto the cell by prepare_io), or VUP_IOREG=1 to pack every legal
+    // pad. A requested-but-illegal pack warns and falls back to the fabric FF -- never silently.
+    bool plain_dff(CellInfo *ff, bool allow_inv_d = false)
+    {
+        if (ff == nullptr || ff->type != id_MISTRAL_FF)
+            return false;
+        // Control set must be inactive: ENA high, ACLR high (active-low), SCLR/SLOAD low.
+        auto st = [&](IdString p) { return ff->get_pin_state(p); };
+        if (ff->getPort(id_ENA) != nullptr && st(id_ENA) != PIN_1)
+            return false;
+        if (ff->getPort(id_ACLR) != nullptr && st(id_ACLR) != PIN_1)
+            return false;
+        if (ff->getPort(id_SCLR) != nullptr && st(id_SCLR) != PIN_0)
+            return false;
+        if (ff->getPort(id_SLOAD) != nullptr && st(id_SLOAD) != PIN_0)
+            return false;
+        NetInfo *clk = ff->getPort(id_CLK);
+        if (clk == nullptr || clk->driver.cell == nullptr || st(id_CLK) != PIN_SIG)
+            return false;
+        NetInfo *d = ff->getPort(id_DATAIN);
+        if (d == nullptr)
+            return false;
+        // An absorbed inverter on D (PIN_INV, common for mostly-1 signals) is packable for
+        // out/OE registers: the packer re-materialises the inversion as a MISTRAL_NOT LUT.
+        CellPinState dst = ff->get_pin_state(id_DATAIN);
+        if (dst != PIN_SIG && !(allow_inv_d && dst == PIN_INV))
+            return false;
+        return true;
+    }
+
+    // Resolve the FF behind a pad's out/OE driver. Synthesis stores mostly-1 signals INVERTED and,
+    // because pads have no hard inverter option, a MISTRAL_NOT survives between FF and pad (the
+    // LAB-absorbed variant shows up as PIN_INV on the FF's D instead). Walk one optional NOT and
+    // fold both inversions into a single parity: the intended pad value V = reg(D ^ parity).
+    struct PadDrv
+    {
+        CellInfo *ff = nullptr;
+        CellInfo *pad_not = nullptr; // surviving inverter between FF and pad, if any
+        bool parity = false;         // 1 -> pad value is the INVERSE of what reg(D net) gives
+    };
+    PadDrv resolve_pad_ff(NetInfo *net)
+    {
+        PadDrv r;
+        CellInfo *drv = (net != nullptr) ? net->driver.cell : nullptr;
+        if (drv != nullptr && drv->type == id_MISTRAL_NOT) {
+            NetInfo *a = drv->getPort(id_A);
+            if (a == nullptr || a->driver.cell == nullptr)
+                return r;
+            r.pad_not = drv;
+            r.parity = !r.parity;
+            drv = a->driver.cell;
+        }
+        if (!plain_dff(drv, /*allow_inv_d=*/true))
+            return r;
+        if (drv->get_pin_state(id_DATAIN) == PIN_INV)
+            r.parity = !r.parity;
+        r.ff = drv;
+        return r;
+    }
+
+    // The D-side net a packed out/OE register must present to the pad: the FF's D net, re-inverted
+    // through a real LUT when the folded parity is odd (MISTRAL_NOT places as a LUT).
+    NetInfo *ioreg_pad_d(CellInfo *io, const PadDrv &pd, const char *tag)
+    {
+        NetInfo *d = pd.ff->getPort(id_DATAIN);
+        if (!pd.parity)
+            return d;
+        CellInfo *inv = ctx->createCell(ctx->idf("%s$ioreg_%s_inv", ctx->nameOf(io), tag), id_MISTRAL_NOT);
+        inv->addInput(id_A);
+        inv->addOutput(id_Q);
+        NetInfo *q = ctx->createNet(ctx->idf("%s$ioreg_%s_inv_q", ctx->nameOf(io), tag));
+        inv->connectPort(id_A, d);
+        inv->connectPort(id_Q, q);
+        return q;
+    }
+
+    bool attr_on(CellInfo *ci, IdString attr)
+    {
+        if (!ci->attrs.count(attr))
+            return false;
+        std::string v = ci->attrs.at(attr).as_string();
+        return v == "ON" || v == "on" || v == "1";
+    }
+
+    // Attach the register clock net to the pad cell on `port` (ICLK or OCLK), mapped to the
+    // matching bel pin. Both out and OE registers clock from the one CLKOUT[0] DCMUX, so a second
+    // caller must agree on the net.
+    bool attach_ioreg_clock(CellInfo *io, IdString port, NetInfo *clk)
+    {
+        if (io->ports.count(port)) {
+            NetInfo *have = io->getPort(port);
+            if (have != clk) {
+                log_warning("IO '%s': %s already carries clock '%s', cannot also clock from '%s'\n", ctx->nameOf(io),
+                            port.c_str(ctx), ctx->nameOf(have), ctx->nameOf(clk));
+                return false;
+            }
+            return true;
+        }
+        io->addInput(port);
+        io->connectPort(port, clk);
+        io->pin_data[port].bel_pins = {port};
+        return true;
+    }
+
+    void pack_io_registers()
+    {
+        bool force_all = getenv("VUP_IOREG") != nullptr;
+        int packed_in = 0, packed_out = 0, packed_oe = 0;
+        std::vector<IdString> dead_ffs;      // input FFs: always deleted (their Q moved to the pad)
+        pool<IdString> absorbed_ffs;         // out/OE FFs: deleted only if the pad was the last user
+        for (auto &cell : ctx->cells) {
+            CellInfo *io = cell.second.get();
+            if (!ctx->is_io_cell(io->type))
+                continue;
+            bool want_in = force_all || attr_on(io, id_FAST_INPUT_REGISTER);
+            bool want_out = force_all || attr_on(io, id_FAST_OUTPUT_REGISTER);
+            bool want_oe = force_all || attr_on(io, id_FAST_OUTPUT_ENABLE_REGISTER);
+            if (!want_in && !want_out && !want_oe)
+                continue;
+            // The registers live in the pad's associated DQS16; a pad without one (and an unplaced
+            // pad) cannot pack. pack_io() has already LOC-bound every top-level pin's bel.
+            if (io->bel == BelId()) {
+                if (!force_all)
+                    log_warning("IO '%s': FAST_*_REGISTER requested but the pad has no bound bel\n", ctx->nameOf(io));
+                continue;
+            }
+            int pad_bi = ctx->bel_data(io->bel).block_index;
+            if (!ctx->cyclonev->p2p_to(
+                        CycloneV::pnode(CycloneV::GPIO, CycloneV::pos_t(io->bel.pos), CycloneV::PNONE, pad_bi, -1))) {
+                if (!force_all)
+                    log_warning("IO '%s': FAST_*_REGISTER requested but the pad has no associated DQS16\n",
+                                ctx->nameOf(io));
+                continue;
+            }
+
+            // OUTPUT register: pad I driven by a plain DFF. The pad re-sources its data from the
+            // FF's D net and captures it in the DQS16 OUTREG instead -- same D, same clock, same
+            // value. If the FF's Q has other fabric users the FF simply STAYS for them (register
+            // duplication, exactly what Quartus does for a driver with feedback like drv_r <=
+            // drv_r + 1); if the pad was its only user it becomes dead and is swept afterwards.
+            if (want_out) {
+                PadDrv pd = resolve_pad_ff(io->getPort(id_I));
+                if (pd.ff != nullptr) {
+                    NetInfo *clk = pd.ff->getPort(id_CLK);
+                    if (attach_ioreg_clock(io, id_OCLK, clk)) {
+                        NetInfo *d = ioreg_pad_d(io, pd, "out");
+                        io->disconnectPort(id_I);
+                        io->connectPort(id_I, d);
+                        absorbed_ffs.insert(pd.ff->name);
+                        if (pd.pad_not != nullptr)
+                            absorbed_ffs.insert(pd.pad_not->name);
+                        io->params[id_IOREG_OUT] = 1;
+                        // Intended pad value at power-up: the FF inits to 0, so V_init = parity.
+                        io->params[id_IOREG_OUT_INIT] = pd.parity ? 1 : 0;
+                        packed_out++;
+                        log_info("  IO-reg out: '%s' registers D net '%s' (FF '%s'%s)\n", ctx->nameOf(io),
+                                 ctx->nameOf(d), ctx->nameOf(pd.ff), pd.parity ? ", inverted" : "");
+                    }
+                } else if (!force_all) {
+                    log_warning("IO '%s': FAST_OUTPUT_REGISTER requested but the driver is not a packable plain "
+                                "DFF -- keeping the fabric path\n",
+                                ctx->nameOf(io));
+                }
+            }
+
+            // OE register: same shape on the OE port. A single fabric OE FF fanning out to a whole
+            // bus packs as one OEREG per pad, all fed from the FF's D net.
+            if (want_oe) {
+                PadDrv pd = resolve_pad_ff(io->getPort(id_OE));
+                if (pd.ff != nullptr) {
+                    NetInfo *clk = pd.ff->getPort(id_CLK);
+                    if (attach_ioreg_clock(io, id_OCLK, clk)) {
+                        NetInfo *d = ioreg_pad_d(io, pd, "oe");
+                        io->disconnectPort(id_OE);
+                        io->connectPort(id_OE, d);
+                        absorbed_ffs.insert(pd.ff->name);
+                        if (pd.pad_not != nullptr)
+                            absorbed_ffs.insert(pd.pad_not->name);
+                        io->params[id_IOREG_OE] = 1;
+                        io->params[id_IOREG_OE_INIT] = pd.parity ? 1 : 0;
+                        packed_oe++;
+                        log_info("  IO-reg OE: '%s' registers D net '%s' (FF '%s'%s)\n", ctx->nameOf(io),
+                                 ctx->nameOf(d), ctx->nameOf(pd.ff), pd.parity ? ", inverted" : "");
+                    }
+                } else if (!force_all) {
+                    log_warning("IO '%s': FAST_OUTPUT_ENABLE_REGISTER requested but the OE driver is not a packable "
+                                "plain DFF -- keeping the fabric path\n",
+                                ctx->nameOf(io));
+                }
+            }
+
+            // INPUT register: pad O feeding exactly one plain DFF's D. The pad then presents the
+            // FF's Q net on the REGISTERED tap (bel pin OREG = DATAIN[3] = the DQS16 read-FIFO
+            // output) and the fabric FF disappears.
+            if (want_in) {
+                NetInfo *onet = io->getPort(id_O);
+                CellInfo *ff = nullptr;
+                if (onet != nullptr && onet->users.entries() == 1) {
+                    auto &usr = *onet->users.begin();
+                    if (usr.port == id_DATAIN && plain_dff(usr.cell))
+                        ff = usr.cell;
+                }
+                if (ff != nullptr) {
+                    NetInfo *q = ff->getPort(id_Q);
+                    NetInfo *clk = ff->getPort(id_CLK);
+                    if (q != nullptr && attach_ioreg_clock(io, id_ICLK, clk)) {
+                        ff->disconnectPort(id_Q);
+                        for (auto &p : ff->ports)
+                            if (p.second.net != nullptr)
+                                ff->disconnectPort(p.first);
+                        io->disconnectPort(id_O);
+                        io->connectPort(id_O, q);
+                        io->pin_data[id_O].bel_pins = {id_OREG};
+                        dead_ffs.push_back(ff->name);
+                        io->params[id_IOREG_IN] = 1;
+                        packed_in++;
+                        log_info("  IO-reg in: '%s' absorbed FF '%s' (Q net '%s')\n", ctx->nameOf(io), ctx->nameOf(ff),
+                                 ctx->nameOf(q));
+                    }
+                } else if (!force_all) {
+                    log_warning("IO '%s': FAST_INPUT_REGISTER requested but the pad does not feed exactly one "
+                                "packable plain DFF -- keeping the fabric FF\n",
+                                ctx->nameOf(io));
+                }
+            }
+        }
+        for (IdString n : dead_ffs)
+            ctx->cells.erase(n);
+        // Sweep out/OE FFs whose Q lost its last user to the packing; keep the duplicated ones.
+        for (IdString n : absorbed_ffs) {
+            if (!ctx->cells.count(n))
+                continue;
+            CellInfo *ff = ctx->cells.at(n).get();
+            NetInfo *q = ff->getPort(id_Q);
+            if (q != nullptr && q->users.entries() > 0)
+                continue;
+            for (auto &p : ff->ports)
+                if (p.second.net != nullptr)
+                    ff->disconnectPort(p.first);
+            ctx->cells.erase(n);
+        }
+        if (packed_in + packed_out + packed_oe > 0)
+            log_info("Packed IO registers: %d input, %d output, %d OE.\n", packed_in, packed_out, packed_oe);
+    }
+
     // A clock buffer sitting on a PLL output is redundant and actively harmful. The PLLCLK injector
     // spliced in by setup_fplls IS the global driver -- its Q binds the cmux CLKOUT (GCLK root) --
     // so a downstream CLKBUF claims a SECOND global root for the same signal. Worse, CLKBUF and
@@ -881,6 +1134,7 @@ struct MistralPacker
         pack_constants();
         pack_io();
         pack_tristates();
+        pack_io_registers();
         constrain_carries();
         constrain_lutram();
         setup_m10ks();

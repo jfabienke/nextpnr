@@ -157,20 +157,19 @@ struct MistralBitgen
         cv->bmux_b_set(CycloneV::GPIO, pos, CycloneV::USE_WEAK_PULLUP, bi, pullup);
 
         // Assignments we parse but cannot yet apply. Warn once per cell+key so a real design does
-        // not drown, but never silently. FAST_*_REGISTER is deliberately NOT faked: it needs IO
-        // register packing (ground truth puts those in the DQS16 block), and consuming the attribute
-        // without the packing would claim an accuracy the flow does not have.
+        // not drown, but never silently. FAST_*_REGISTER is handled by pack_io_registers(); a
+        // requested-but-unpacked register warns there, not here.
         static const std::pair<IdString, const char *> unapplied[] = {
                 {id_IO_STANDARD, "IO standard is hardcoded to 3.3V LVTTL"},
                 {id_CURRENT_STRENGTH_NEW, "drive strength is hardcoded to 16mA"},
-                {id_FAST_OUTPUT_REGISTER, "IO output registers are not packed (see MISTRAL_GAPS G6)"},
-                {id_FAST_INPUT_REGISTER, "IO input registers are not packed (see MISTRAL_GAPS G6)"},
-                {id_FAST_OUTPUT_ENABLE_REGISTER, "IO OE registers are not packed (see MISTRAL_GAPS G6)"},
         };
         for (auto &u : unapplied)
             if (ci->attrs.count(u.first))
                 log_warning("IO '%s': qsf assignment %s='%s' is NOT APPLIED - %s\n", ctx->nameOf(ci),
                             u.first.c_str(ctx), ci->attrs.at(u.first).as_string().c_str(), u.second);
+        bool reg_in = ci->params.count(id_IOREG_IN);
+        bool reg_out = ci->params.count(id_IOREG_OUT);
+        bool reg_oe = ci->params.count(id_IOREG_OE);
         if (is_output) {
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::DRIVE_STRENGTH, bi, CycloneV::V3P3_LVTTL_16MA_LVCMOS_2MA);
             // IOCSR_STD is for a PURE output. Causal differential (same design built twice in
@@ -195,8 +194,51 @@ struct MistralBitgen
                 if (!dyn_oe_cell(ci))
                     cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL,
                                    CycloneV::pn2bi(dqs), CycloneV::SEL_LOCKED_DPA);
-                cv->bmux_r_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::RB_T9_SEL_EREG_CFF_DELAY,
-                               CycloneV::pn2bi(dqs), 0x1f);
+                // The unregistered-path delay setting is REPLACED by the register path: every
+                // registered ground-truth pair (qrbase->qrout, ->qrall) REMOVES it. Writing it on a
+                // registered pad would reinstate the combinational delay chain alongside the OUTREG.
+                if (!(reg_out || reg_oe))
+                    cv->bmux_r_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::RB_T9_SEL_EREG_CFF_DELAY,
+                                   CycloneV::pn2bi(dqs), 0x1f);
+            }
+        }
+        // IO registers (MISTRAL_GAPS "IO registers -- the COMPLETE bit-level model"): the packed
+        // registers are the DQS16 inline stages; this is the whole per-bit configuration. Ground
+        // truth: qrbase/qrout/qrall + qireg_off/on differentials, values confirmed on this board's
+        // Quartus install.
+        if (reg_in || reg_out || reg_oe) {
+            auto dqs = cv->p2p_to(CycloneV::pnode(CycloneV::GPIO, pos, CycloneV::PNONE, bi, -1));
+            if (!dqs)
+                log_error("IO '%s': IO register packed but the pad has no associated DQS16\n", ctx->nameOf(ci));
+            auto dp = CycloneV::pn2p(dqs);
+            int dbi = CycloneV::pn2bi(dqs);
+            if (reg_in) {
+                // The read-FIFO stage IS the input register; the fabric reads DATAIN[3] (bound to
+                // bel pin OREG by the packer) instead of DATAIN[0].
+                cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::RB_FIFO_WCLK_EN, dbi, 1);
+                cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::RB_FIFO_WCLK_INV, dbi, 1);
+            }
+            if (reg_out) {
+                cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_OUTPUT_SEL, dbi, CycloneV::SEL_SDR);
+                // OUTREG_POWER_UP_STATE = the intended pad value at power-up. FFs init to 0, so
+                // this is exactly the pack-time inversion parity (a pad whose data arrived through
+                // an inverter powered up HIGH in the fabric version, and must keep doing so).
+                uint32_t out_init = ci->params.count(id_IOREG_OUT_INIT) ? ci->params.at(id_IOREG_OUT_INIT).as_int64() : 0;
+                cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::OUTREG_POWER_UP_STATE, dbi, out_init);
+            }
+            if (reg_oe) {
+                cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OEREG_OUTPUT_SEL, dbi, CycloneV::SEL_1X);
+                // NET-SEMANTICS derivation (not a bit copy): our driven-OE inversion is the rnode
+                // inverter at the OEIN GOUT -- BEFORE this register -- so the OEREG stores ~V and
+                // its power-up value is ~V_init. Quartus arrives at the same bits from the same
+                // shape (it computes ~oe in fabric). With the usual V_init=0 the pad powers up
+                // RELEASED, the safe state.
+                uint32_t oe_init = ci->params.count(id_IOREG_OE_INIT) ? ci->params.at(id_IOREG_OE_INIT).as_int64() : 0;
+                cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::OEREG_POWER_UP_STATE, dbi, oe_init ? 0 : 1);
+            }
+            if (reg_out || reg_oe) {
+                cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::OEREG_HR_CLK_EN, dbi, 1);
+                cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::RBOE_LVL_FR_CLK_EN, dbi, 1);
             }
         }
         // There seem to be two mirrored OEIN inversion bits for constant OE for inputs/outputs. This might be to
