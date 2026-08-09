@@ -503,6 +503,7 @@ struct Arch : BaseArch<ArchRanges>
     void create_clkbuf(int x, int y);                  // globals.cc
     void create_control(int x, int y);                 // globals.cc
     void create_hps_mpu_general_purpose(int x, int y); // globals.cc
+    void create_hps_lwh2f(int x, int y);               // globals.cc (G3)
     void create_fpll(int x, int y);                    // pll.cc
 
     // G4: PLL outclk -> global clock network (see PLL_OUTCLK_DESIGN.md). The map is composed at

@@ -54,6 +54,70 @@ void Arch::create_hps_mpu_general_purpose(int x, int y)
     }
 }
 
+// G3: the HPS2FPGA lightweight bridge -- the ARM's 2 MB MMIO window at 0xFF200000, and the SVGA
+// command-ring path. The HPS is the AXI-3 MASTER: address/data/valid arrive INTO fabric (PORT_OUT
+// bel pins -- the interface block drives fabric wires), ready/response go back (PORT_IN). Pin names
+// follow the Quartus WYSIWYG primitive so real cores' instantiations match unchanged.
+void Arch::create_hps_lwh2f(int x, int y)
+{
+    BelId bel = add_bel(x, y, id_cyclonev_hps_interface_hps2fpga_light_weight,
+                        id_cyclonev_hps_interface_hps2fpga_light_weight);
+    auto B = CycloneV::HPS_HPS2FPGA_LIGHT_WEIGHT;
+    // single-bit ports encode as pi = -1 in the p2r table; only buses use pi = 0..N
+    auto one_in = [&](const char *n, CycloneV::port_type_t pt) {
+        add_bel_pin(bel, id(n), PORT_IN, get_port(B, x, y, -1, pt, -1));
+    };
+    auto one_out = [&](const char *n, CycloneV::port_type_t pt) {
+        add_bel_pin(bel, id(n), PORT_OUT, get_port(B, x, y, -1, pt, -1));
+    };
+    auto bus = [&](const char *n, CycloneV::port_type_t pt, int w, PortType dir) {
+        for (int i = 0; i < w; i++)
+            add_bel_pin(bel, idf("%s[%d]", n, i), dir, get_port(B, x, y, -1, pt, i));
+    };
+    one_in("clk", CycloneV::CLK);
+    // write address channel (HPS -> fabric)
+    bus("awid", CycloneV::AWID, 12, PORT_OUT);
+    bus("awaddr", CycloneV::AWADDR, 21, PORT_OUT);
+    bus("awlen", CycloneV::AWLEN, 4, PORT_OUT);
+    bus("awsize", CycloneV::AWSIZE, 3, PORT_OUT);
+    bus("awburst", CycloneV::AWBURST, 2, PORT_OUT);
+    bus("awlock", CycloneV::AWLOCK, 2, PORT_OUT);
+    bus("awcache", CycloneV::AWCACHE, 4, PORT_OUT);
+    bus("awprot", CycloneV::AWPROT, 3, PORT_OUT);
+    one_out("awvalid", CycloneV::AWVALID);
+    one_in("awready", CycloneV::AWREADY);
+    // write data
+    bus("wid", CycloneV::WID, 12, PORT_OUT);
+    bus("wdata", CycloneV::WDATA, 32, PORT_OUT);
+    bus("wstrb", CycloneV::WSTRB, 4, PORT_OUT);
+    one_out("wlast", CycloneV::WLAST);
+    one_out("wvalid", CycloneV::WVALID);
+    one_in("wready", CycloneV::WREADY);
+    // write response (fabric -> HPS)
+    bus("bid", CycloneV::BID, 12, PORT_IN);
+    bus("bresp", CycloneV::BRESP, 2, PORT_IN);
+    one_in("bvalid", CycloneV::BVALID);
+    one_out("bready", CycloneV::BREADY);
+    // read address
+    bus("arid", CycloneV::ARID, 12, PORT_OUT);
+    bus("araddr", CycloneV::ARADDR, 21, PORT_OUT);
+    bus("arlen", CycloneV::ARLEN, 4, PORT_OUT);
+    bus("arsize", CycloneV::ARSIZE, 3, PORT_OUT);
+    bus("arburst", CycloneV::ARBURST, 2, PORT_OUT);
+    bus("arlock", CycloneV::ARLOCK, 2, PORT_OUT);
+    bus("arcache", CycloneV::ARCACHE, 4, PORT_OUT);
+    bus("arprot", CycloneV::ARPROT, 3, PORT_OUT);
+    one_out("arvalid", CycloneV::ARVALID);
+    one_in("arready", CycloneV::ARREADY);
+    // read data (fabric -> HPS)
+    bus("rid", CycloneV::RID, 12, PORT_IN);
+    bus("rdata", CycloneV::RDATA, 32, PORT_IN);
+    bus("rresp", CycloneV::RRESP, 2, PORT_IN);
+    one_in("rlast", CycloneV::RLAST);
+    one_in("rvalid", CycloneV::RVALID);
+    one_out("rready", CycloneV::RREADY);
+}
+
 void Arch::create_control(int x, int y)
 {
     BelId oscillator_bel = add_bel(x, y, id_cyclonev_oscillator, id_cyclonev_oscillator);
