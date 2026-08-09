@@ -127,9 +127,12 @@ Arch::Arch(ArchArgs args)
     if (!hps_pos.empty()) {
         create_hps_mpu_general_purpose(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_MPU_GENERAL_PURPOSE]),
                                        CycloneV::pos2y(hps_pos[CycloneV::I_HPS_MPU_GENERAL_PURPOSE]));
-    if (!hps_pos.empty())
+    if (!hps_pos.empty()) {
         create_hps_lwh2f(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]),
                          CycloneV::pos2y(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]));
+        create_hps_f2sdram(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]),
+                           CycloneV::pos2y(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]));
+    }
     }
 
     for (auto m10k_pos : cyclonev->m10k_get_pos())

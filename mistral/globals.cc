@@ -63,59 +63,97 @@ void Arch::create_hps_lwh2f(int x, int y)
     BelId bel = add_bel(x, y, id_cyclonev_hps_interface_hps2fpga_light_weight,
                         id_cyclonev_hps_interface_hps2fpga_light_weight);
     auto B = CycloneV::HPS_HPS2FPGA_LIGHT_WEIGHT;
-    // single-bit ports encode as pi = -1 in the p2r table; only buses use pi = 0..N
-    auto one_in = [&](const char *n, CycloneV::port_type_t pt) {
-        add_bel_pin(bel, id(n), PORT_IN, get_port(B, x, y, -1, pt, -1));
+    // Direction is DERIVED from the rnode type in add_hps_pin, not asserted from AXI semantics --
+    // the first cut hardcoded PORT_IN/OUT from master/slave reasoning, which is exactly the trap
+    // the GP naming inversion sets (see add_hps_pin).
+    auto one = [&](const char *n, CycloneV::port_type_t pt) { add_hps_pin(bel, id(n), B, x, y, pt, -1, -1); };
+    auto bus = [&](const char *n, CycloneV::port_type_t pt, int w) {
+        for (int i = 0; i < w; i++) add_hps_pin(bel, idf("%s[%d]", n, i), B, x, y, pt, -1, i);
     };
-    auto one_out = [&](const char *n, CycloneV::port_type_t pt) {
-        add_bel_pin(bel, id(n), PORT_OUT, get_port(B, x, y, -1, pt, -1));
-    };
-    auto bus = [&](const char *n, CycloneV::port_type_t pt, int w, PortType dir) {
+    one("clk", CycloneV::CLK);
+    bus("awid", CycloneV::AWID, 12); bus("awaddr", CycloneV::AWADDR, 21); bus("awlen", CycloneV::AWLEN, 4);
+    bus("awsize", CycloneV::AWSIZE, 3); bus("awburst", CycloneV::AWBURST, 2); bus("awlock", CycloneV::AWLOCK, 2);
+    bus("awcache", CycloneV::AWCACHE, 4); bus("awprot", CycloneV::AWPROT, 3);
+    one("awvalid", CycloneV::AWVALID); one("awready", CycloneV::AWREADY);
+    bus("wid", CycloneV::WID, 12); bus("wdata", CycloneV::WDATA, 32); bus("wstrb", CycloneV::WSTRB, 4);
+    one("wlast", CycloneV::WLAST); one("wvalid", CycloneV::WVALID); one("wready", CycloneV::WREADY);
+    bus("bid", CycloneV::BID, 12); bus("bresp", CycloneV::BRESP, 2);
+    one("bvalid", CycloneV::BVALID); one("bready", CycloneV::BREADY);
+    bus("arid", CycloneV::ARID, 12); bus("araddr", CycloneV::ARADDR, 21); bus("arlen", CycloneV::ARLEN, 4);
+    bus("arsize", CycloneV::ARSIZE, 3); bus("arburst", CycloneV::ARBURST, 2); bus("arlock", CycloneV::ARLOCK, 2);
+    bus("arcache", CycloneV::ARCACHE, 4); bus("arprot", CycloneV::ARPROT, 3);
+    one("arvalid", CycloneV::ARVALID); one("arready", CycloneV::ARREADY);
+    bus("rid", CycloneV::RID, 12); bus("rdata", CycloneV::RDATA, 32); bus("rresp", CycloneV::RRESP, 2);
+    one("rlast", CycloneV::RLAST); one("rvalid", CycloneV::RVALID); one("rready", CycloneV::RREADY);
+}
+
+// G3: add an HPS-interface bel pin with direction DERIVED from the routing-node type, not guessed.
+// The GP interface proves the port NAMES are inverted vs the physical direction: gp_in (a PORT_IN
+// bel pin in the silicon-verified mpu bel) resolves to a GOUT rnode. So the reliable rule is
+// GOUT -> PORT_IN (fabric drives into the block), GIN -> PORT_OUT (block drives into fabric); a
+// clock node (DCMUX) is a block input. Guessing from AXI master/slave semantics is how the first
+// lwh2f cut risked getting 22 directions wrong.
+void Arch::add_hps_pin(BelId bel, IdString pin, CycloneV::block_type_t bt, int x, int y,
+                       CycloneV::port_type_t pt, int bi, int pi)
+{
+    if (!has_port(bt, x, y, bi, pt, pi))
+        return;
+    WireId w = get_port(bt, x, y, bi, pt, pi);
+    auto t = CycloneV::rn2t(w.node);
+    PortType dir = (t == CycloneV::GIN) ? PORT_OUT : PORT_IN;
+    add_bel_pin(bel, pin, dir, w);
+}
+
+void Arch::create_hps_f2sdram(int x, int y)
+{
+    BelId bel = add_bel(x, y, id_cyclonev_hps_interface_fpga2sdram, id_cyclonev_hps_interface_fpga2sdram);
+    auto B = CycloneV::HPS_FPGA2SDRAM;
+    // bus port on a given command/data port index
+    auto bus = [&](const char *n, CycloneV::port_type_t pt, int port, int w) {
         for (int i = 0; i < w; i++)
-            add_bel_pin(bel, idf("%s[%d]", n, i), dir, get_port(B, x, y, -1, pt, i));
+            add_hps_pin(bel, idf("%s_%d[%d]", n, port, i), B, x, y, pt, port, i);
     };
-    one_in("clk", CycloneV::CLK);
-    // write address channel (HPS -> fabric)
-    bus("awid", CycloneV::AWID, 12, PORT_OUT);
-    bus("awaddr", CycloneV::AWADDR, 21, PORT_OUT);
-    bus("awlen", CycloneV::AWLEN, 4, PORT_OUT);
-    bus("awsize", CycloneV::AWSIZE, 3, PORT_OUT);
-    bus("awburst", CycloneV::AWBURST, 2, PORT_OUT);
-    bus("awlock", CycloneV::AWLOCK, 2, PORT_OUT);
-    bus("awcache", CycloneV::AWCACHE, 4, PORT_OUT);
-    bus("awprot", CycloneV::AWPROT, 3, PORT_OUT);
-    one_out("awvalid", CycloneV::AWVALID);
-    one_in("awready", CycloneV::AWREADY);
-    // write data
-    bus("wid", CycloneV::WID, 12, PORT_OUT);
-    bus("wdata", CycloneV::WDATA, 32, PORT_OUT);
-    bus("wstrb", CycloneV::WSTRB, 4, PORT_OUT);
-    one_out("wlast", CycloneV::WLAST);
-    one_out("wvalid", CycloneV::WVALID);
-    one_in("wready", CycloneV::WREADY);
-    // write response (fabric -> HPS)
-    bus("bid", CycloneV::BID, 12, PORT_IN);
-    bus("bresp", CycloneV::BRESP, 2, PORT_IN);
-    one_in("bvalid", CycloneV::BVALID);
-    one_out("bready", CycloneV::BREADY);
-    // read address
-    bus("arid", CycloneV::ARID, 12, PORT_OUT);
-    bus("araddr", CycloneV::ARADDR, 21, PORT_OUT);
-    bus("arlen", CycloneV::ARLEN, 4, PORT_OUT);
-    bus("arsize", CycloneV::ARSIZE, 3, PORT_OUT);
-    bus("arburst", CycloneV::ARBURST, 2, PORT_OUT);
-    bus("arlock", CycloneV::ARLOCK, 2, PORT_OUT);
-    bus("arcache", CycloneV::ARCACHE, 4, PORT_OUT);
-    bus("arprot", CycloneV::ARPROT, 3, PORT_OUT);
-    one_out("arvalid", CycloneV::ARVALID);
-    one_in("arready", CycloneV::ARREADY);
-    // read data (fabric -> HPS)
-    bus("rid", CycloneV::RID, 12, PORT_IN);
-    bus("rdata", CycloneV::RDATA, 32, PORT_IN);
-    bus("rresp", CycloneV::RRESP, 2, PORT_IN);
-    one_in("rlast", CycloneV::RLAST);
-    one_in("rvalid", CycloneV::RVALID);
-    one_out("rready", CycloneV::RREADY);
+    auto scalar = [&](const char *n, CycloneV::port_type_t pt, int port) {
+        add_hps_pin(bel, idf("%s_%d", n, port), B, x, y, pt, port, -1);
+    };
+    // 6 command ports
+    for (int p = 0; p < 6; p++) {
+        bus("cmd_data", CycloneV::CMD_DATA, p, 60);
+        scalar("cmd_valid", CycloneV::CMD_VALID, p);
+        scalar("cmd_ready", CycloneV::CMD_READY, p);
+        scalar("cmd_clk", CycloneV::CMD_PORT_CLK, p);
+        bus("wrack_data", CycloneV::WRACK_DATA, p, 10);
+        scalar("wrack_valid", CycloneV::WRACK_VALID, p);
+        scalar("wrack_ready", CycloneV::WRACK_READY, p);
+    }
+    // 4 write data ports
+    for (int p = 0; p < 4; p++) {
+        bus("wr_data", CycloneV::WR_DATA, p, 90);
+        scalar("wr_valid", CycloneV::WR_VALID, p);
+        scalar("wr_ready", CycloneV::WR_READY, p);
+        scalar("wr_clk", CycloneV::WR_CLK, p);
+    }
+    // 4 read data ports
+    for (int p = 0; p < 4; p++) {
+        bus("rd_data", CycloneV::RD_DATA, p, 80);
+        scalar("rd_valid", CycloneV::RD_VALID, p);
+        scalar("rd_ready", CycloneV::RD_READY, p);
+        scalar("rd_clk", CycloneV::RD_CLK, p);
+    }
+    // configuration (single port each) -- fabric drives these to select port widths and FIFO maps.
+    // The bitstream carries the wiring; the HPS-side applycfg sequence (MiSTer Main at core load)
+    // actually enables the ports. See MISTRAL_GAPS G3.
+    // config ports are single (bi = -1), unlike the numbered data ports
+    auto cfg = [&](const char *n, CycloneV::port_type_t pt, int w) {
+        for (int i = 0; i < w; i++) add_hps_pin(bel, idf("%s[%d]", n, i), B, x, y, pt, -1, i);
+    };
+    cfg("cfg_port_width", CycloneV::CFG_PORT_WIDTH, 12);
+    cfg("cfg_axi_mm_select", CycloneV::CFG_AXI_MM_SELECT, 6);
+    cfg("cfg_cport_type", CycloneV::CFG_CPORT_TYPE, 12);
+    cfg("cfg_cport_rfifo_map", CycloneV::CFG_CPORT_RFIFO_MAP, 18);
+    cfg("cfg_cport_wfifo_map", CycloneV::CFG_CPORT_WFIFO_MAP, 18);
+    cfg("cfg_rfifo_cport_map", CycloneV::CFG_RFIFO_CPORT_MAP, 16);
+    cfg("cfg_wfifo_cport_map", CycloneV::CFG_WFIFO_CPORT_MAP, 16);
 }
 
 void Arch::create_control(int x, int y)

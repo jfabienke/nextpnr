@@ -504,6 +504,9 @@ struct Arch : BaseArch<ArchRanges>
     void create_control(int x, int y);                 // globals.cc
     void create_hps_mpu_general_purpose(int x, int y); // globals.cc
     void create_hps_lwh2f(int x, int y);               // globals.cc (G3)
+    void create_hps_f2sdram(int x, int y);             // globals.cc (G3)
+    void add_hps_pin(BelId bel, IdString pin, CycloneV::block_type_t bt, int x, int y,
+                     CycloneV::port_type_t pt, int bi, int pi); // globals.cc (G3, auto-direction)
     void create_fpll(int x, int y);                    // pll.cc
 
     // G4: PLL outclk -> global clock network (see PLL_OUTCLK_DESIGN.md). The map is composed at
