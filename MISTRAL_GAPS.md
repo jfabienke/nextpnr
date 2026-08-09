@@ -115,8 +115,19 @@ silicon attempt. Only load a design whose handshake is simulation-proven.
 - the bridge `clk` reaches the bel clk pin through the global clock network (VUP_DEBUG_HPSCLK);
 - DCE removes the bridge unless its outputs are observed -- keep them wired to gp.
 
-The remaining unknown is purely the AXI handshake (prime suspects: BID/RID must echo AWID/ARID; the
-wide ID buses also hit the G2 router deadlock and must be narrowed). Resolve it in simulation.
+**RESOLVED in simulation (2026-08-09):** the hang was a missing AXI ID echo. An iverilog testbench
+(AXI-3 master model) shows the original slave FAILS with `BID 0 != AWID 5` and the corrected slave
+(register AWID->BID, ARID->RID) PASSES write+read. An AXI-3 master waits forever for a response whose
+id matches the outstanding request, which wedges the whole HPS. Fix: `openflow-test/lwh2f_fix.v`,
+proven in `openflow-test/sim/`.
+
+**Now gated ONLY on the G2 router.** The corrected design's 48 ID-bus bits (awid/bid/arid/rid, 12
+each) will not route out of the HPS corner -- deadlocks at 1 overused escape wire even at
+`MISTRAL_LAB_INPUT_LIMIT=20`, the same legalisation gap as G2. So lwh2f silicon bring-up is no longer
+blocked on unknown design correctness (that is proven) -- it is blocked on the SAME wide-bus router
+work that gates the whole HPS interface and Fmax. Narrowing the ID echo would route but risks a hang
+if the master's real id does not fit, so it is not worth a manual-power-cycle gamble. Do the G2
+router legalisation, then one sim-backed silicon test.
 
 ### Timing model vs silicon — first calibration (2026-08-08)
 
