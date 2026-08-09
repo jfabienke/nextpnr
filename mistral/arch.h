@@ -388,6 +388,7 @@ struct Arch : BaseArch<ArchRanges>
     bool wires_connected(WireId src, WireId dst) const;
     // Only allow src, and not any other wire, to drive dst
     void reserve_route(WireId src, WireId dst);
+    void create_dsp(int x, int y); // dsp.cc (G7)
     void block_wire(WireId w); // no pip may use this wire (see WireInfo::BLOCKED)
 
     // -------------------------------------------------

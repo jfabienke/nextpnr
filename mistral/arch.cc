@@ -131,6 +131,8 @@ Arch::Arch(ArchArgs args)
 
     for (auto m10k_pos : cyclonev->m10k_get_pos())
         create_m10k(CycloneV::pos2x(m10k_pos), CycloneV::pos2y(m10k_pos));
+    for (auto dsp_pos : cyclonev->dsp_get_pos())
+        create_dsp(CycloneV::pos2x(dsp_pos), CycloneV::pos2y(dsp_pos));
 
     for (auto fpll_pos : cyclonev->fpll_get_pos())
         create_fpll(CycloneV::pos2x(fpll_pos), CycloneV::pos2y(fpll_pos));

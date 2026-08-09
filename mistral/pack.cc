@@ -382,6 +382,28 @@ struct MistralPacker
         }
     }
 
+    // G7: map MISTRAL_MUL18X18's logical ports onto the DSP bel pins created in dsp.cc.
+    // getBelPinsForCellPin() is pin_data.at(pin).bel_pins -- an explicit map with no name-based
+    // fallback (the tristate work established that the hard way), so every bit of A/B/Y needs an
+    // entry even though the names match.
+    void setup_dsps()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_MISTRAL_MUL18X18)
+                continue;
+            for (auto &port : ci->ports)
+                ci->pin_data[port.first];
+            for (int i = 0; i < 18; i++) {
+                ci->pin_data[ctx->idf("A[%d]", i)].bel_pins = {ctx->idf("A[%d]", i)};
+                ci->pin_data[ctx->idf("B[%d]", i)].bel_pins = {ctx->idf("B[%d]", i)};
+            }
+            for (int i = 0; i < 36; i++)
+                ci->pin_data[ctx->idf("Y[%d]", i)].bel_pins = {ctx->idf("Y[%d]", i)};
+            log_info("  DSP: set up MISTRAL_MUL18X18 '%s'\n", ctx->nameOf(ci));
+        }
+    }
+
     void setup_m10ks()
     {
         for (auto &cell : ctx->cells) {
@@ -862,6 +884,7 @@ struct MistralPacker
         constrain_carries();
         constrain_lutram();
         setup_m10ks();
+        setup_dsps();
         setup_fplls();
         bypass_pll_clkbufs();
     }

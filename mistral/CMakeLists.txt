@@ -11,6 +11,7 @@ set(SOURCES
     delay.cc
     globals.cc
     io.cc
+    dsp.cc
     lab.cc
     m10k.cc
     pll.cc

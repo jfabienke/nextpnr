@@ -783,10 +783,43 @@ struct MistralBitgen
 
     }
 
+    // G7: the combinational unsigned 18x18 multiply recipe. Every value is Quartus ground truth
+    // (openflow-test/qdspc), byte-identical across two designs and two DSP positions -- structural,
+    // not design-derived. DATA_INV[0..3]'s odd-looking values are part of that ground truth.
+    void write_dsp_cell(CellInfo *ci, int x, int y)
+    {
+        auto pos = CycloneV::xy2pos(x, y);
+        cv->bmux_b_set(CycloneV::DSP, pos, CycloneV::ACC_INV, -1, true);
+        cv->bmux_n_set(CycloneV::DSP, pos, CycloneV::ACLR0_SEL, -1, 0x2);
+        cv->bmux_n_set(CycloneV::DSP, pos, CycloneV::ACLR1_SEL, -1, 0x3);
+        cv->bmux_n_set(CycloneV::DSP, pos, CycloneV::CLK0_SEL, -1, 0x3);
+        cv->bmux_n_set(CycloneV::DSP, pos, CycloneV::CLK1_SEL, -1, 0x4);
+        cv->bmux_n_set(CycloneV::DSP, pos, CycloneV::CLK2_SEL, -1, 0x5);
+        // DATA_INV[0..3] cover the 36 used input lanes (4 x 9). The ground truth's values there
+        // (0x0085, 0x000d, 0x0039, 0x0018) are NOT structural: they are per-lane inverters Quartus
+        // set to cancel its own inverted routing, and they spell that design's init values 12345 /
+        // 6789 across the lanes -- proven on silicon when copying them made a baseline of all-zero
+        // inputs multiply as 12345 x 6789. Our routing delivers true polarity, so used lanes are 0.
+        // [4..11] = 0x1ff (unused lanes held inverted) is kept from ground truth.
+        static const uint16_t data_inv[12] = {0x0000, 0x0000, 0x0000, 0x0000, 0x01ff, 0x01ff,
+                                              0x01ff, 0x01ff, 0x01ff, 0x01ff, 0x01ff, 0x01ff};
+        for (int i = 0; i < 12; i++)
+            cv->bmux_r_set(CycloneV::DSP, pos, CycloneV::DATA_INV, i, data_inv[i]);
+        cv->bmux_b_set(CycloneV::DSP, pos, CycloneV::DEC_INV, -1, true);
+        cv->bmux_b_set(CycloneV::DSP, pos, CycloneV::PRELOAD_INV, -1, true);
+        cv->bmux_b_set(CycloneV::DSP, pos, CycloneV::SUB_INV, -1, true);
+        log_info("  DSP '%s' at (%d,%d): combinational 18x18 recipe emitted\n", ctx->nameOf(ci), x, y);
+    }
+
     void write_cells()
     {
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
+            if (ci->type == id_MISTRAL_MUL18X18 && ci->bel != BelId()) {
+                Loc l = ctx->getBelLocation(ci->bel);
+                write_dsp_cell(ci, l.x, l.y);
+                continue;
+            }
             Loc loc = ctx->getBelLocation(ci->bel);
             int bi = ctx->bel_data(ci->bel).block_index;
             if (ctx->is_io_cell(ci->type))
