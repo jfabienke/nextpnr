@@ -13,7 +13,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 |---|---|---|
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: lwh2f + f2sdram bels implemented | **BOTH DATA-PATH BELS BUILT & ROUTE; silicon BLOCKED on board network.** The bel (globals.cc `create_hps_lwh2f`) instantiates, packs, places and ROUTES a minimal single-handshake design. Silicon unverified: the board dropped to a 169.254 link-local address (off its subnet), unreachable until it re-acquires DHCP. Also found: the router cannot legalise a WIDE bus escaping the HPS corner (many parallel signals deadlock at cong=2) — same LUT-permutation gap as G2, so keep the h2f data path narrow or await the router fix. **f2sdram bel now also implemented** (globals.cc `create_hps_f2sdram`): all 22 port types, directions AUTO-DERIVED from rnode type (GOUT→PORT_IN, GIN→PORT_OUT — the GP naming is inverted vs the physical direction, a trap that would have mis-wired 22 ports if guessed from AXI roles). A minimal single-command-port design routes. Remaining: config-bit ground truth + the HPS-side applycfg enable + the wide-bus router fix |
+| **G3** | HPS hard IP: lwh2f + f2sdram bels; wide interface ROUTES | **WIDE lwh2f ROUTES + AXI-correct (sim); one silicon test remains.** The bel (globals.cc `create_hps_lwh2f`) instantiates, packs, places and ROUTES a minimal single-handshake design. Silicon unverified: the board dropped to a 169.254 link-local address (off its subnet), unreachable until it re-acquires DHCP. Also found: the router cannot legalise a WIDE bus escaping the HPS corner (many parallel signals deadlock at cong=2) — same LUT-permutation gap as G2, so keep the h2f data path narrow or await the router fix. **f2sdram bel now also implemented** (globals.cc `create_hps_f2sdram`): all 22 port types, directions AUTO-DERIVED from rnode type (GOUT→PORT_IN, GIN→PORT_OUT — the GP naming is inverted vs the physical direction, a trap that would have mis-wired 22 ports if guessed from AXI roles). A minimal single-command-port design routes. Remaining: config-bit ground truth + the HPS-side applycfg enable + the wide-bus router fix |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED on silicon** — tristate pads drive/release, and a **full 32 MB MemTest passes with 0 errors** on slot 2 @ 50 MHz. Remaining: frequency probe + a performance controller |
@@ -48,8 +48,10 @@ Investigating the wide-HPS and arithmetic deadlocks together showed "G2" is not 
    exist (7x the demand in aggregate), so it is not a hard capacity limit -- but every specific
    source->sink path funnels through the same near-bridge wires. Congestion floor (both terms,
    every seed), local-reg readies (not VCC), and seed sweeps ALL still stall at 1 overused wire.
-   The fix is a narrower interface or placement-level spreading of the consuming FFs -- not a
-   router-cost change. (This is why the sim-proven lwh2f slave still cannot go to silicon: its 48
+   **SOLVED by an RTL pattern:** pipeline the wide id buses with PIPELINE-DELAYED readies. The pipeline
+   registers spread the boundary crossing (routes 5/5 seeds, no flags) and delayed readies keep the
+   master's id stable so capture stays exact (sim-proven). openflow-test/lwh2f_work.v. Not a router
+   or placer change. (This is why the sim-proven lwh2f slave still cannot go to silicon: its 48
    ID-bus bits trip exactly this.)
 
 Also established: router2 has **no pin-swap infrastructure**, so router-time LUT permutation would
