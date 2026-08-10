@@ -276,7 +276,7 @@ reading the first gave ~58 MHz against a routed ~37 and briefly inverted the con
 
 | item | evidence |
 |---|---|
-| M10K block RAM | **works on silicon**: 1024×16 composite AND all six native geometries — 256×40, 512×20, 1024×10, 2048×5, 4096×2, 8192×1 (`m10kshapes.v`, one run, all pass 2026-08-10). Dual-clock SDP + true dual port in progress |
+| M10K block RAM | **works on silicon**: 1024×16 composite, all six native geometries (`m10kshapes.v`), AND **dual-clock SDP** — 512×20 written @50 MHz, read+verified @25 MHz (`m10kdc.v`, `MISTRAL_M10K_DC`, 2026-08-10). The SVGA line-buffer/FIFO shapes are all proven. Remaining: TRUE dual port (fabi386-tier — B-side write; one qm10k-style differential away, machinery in place) |
 | single PLL, multiple outputs | **works on silicon**, incl. phase-shifted taps (G4) |
 | tristate / bidirectional pads | **works on silicon**, DQ and ordinary pads (G6 slice 1) |
 | plain output pads | **works on silicon** |
