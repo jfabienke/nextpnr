@@ -408,6 +408,20 @@ struct MistralPacker
     {
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
+            // MISTRAL_M10K_DC: hand-instantiated dual-clock simple-dual-port variant (yosys cannot
+            // infer it -- its M10K cell is single-clock). Same interface plus CLK2 = the read-port
+            // clock. Ground truth (qm10k_sc/dc differential): dual-clock is the SAME static config
+            // in Quartus's shape -- port B hard-selected onto clock rail 1 -- and the second clock
+            // is ROUTED to CLKIN[1]; single- vs dual-clock differ only in which net feeds that rail.
+            if (ci->type == id_MISTRAL_M10K_DC) {
+                // Defensive: any pinmap assigned before this point (e.g. a load-time
+                // assign_default_pinmap) would sit AHEAD of the real pins below.
+                for (auto &pd : ci->pin_data)
+                    pd.second.bel_pins.clear();
+                ci->pin_data[id_CLK2].bel_pins = {ctx->id("CLKIN[1]")};
+                ci->params[id_M10K_DC] = 1;
+                ci->type = id_MISTRAL_M10K;
+            }
             if (ci->type != id_MISTRAL_M10K)
                 continue;
 
@@ -419,6 +433,10 @@ struct MistralPacker
 
             log_info("Setting up %ld-bit address, %ld-bit data M10K for %s.\n", abits, dbits,
                      ci->name.str(ctx).c_str());
+            if (getenv("VUP_DEBUG_M10K"))
+                for (auto &pd : ci->pin_data)
+                    for (auto bp : pd.second.bel_pins)
+                        log_info("  [m10k-pre] %s -> %s\n", pd.first.c_str(ctx), bp.c_str(ctx));
 
             // Quartus doesn't seem to generate ADDRSTALL[AB], BYTEENABLE[AB][01].
 

@@ -385,10 +385,22 @@ struct MistralBitgen
         cv->bmux_r_set(CycloneV::M10K, pos, CycloneV::B_WR_TIMER_PULSE, bi, 0x0b);
 
         cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::TOP_CLK_SEL, bi, 1);
-        cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::TOP_W_INV, bi, dbits != 40);
-        cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::TOP_W_SEL, bi, dbits != 40);
-        cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::BOT_CLK_INV, bi, dbits != 40);
-        cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_W_SEL, bi, dbits != 40);
+        if (ci->params.count(id_M10K_DC)) {
+            // Dual-clock SDP, Quartus's shape (qm10k_sc/dc ground truth): port B's input/output/
+            // core registers all select clock rail 1, which the router feeds from CLK2->CLKIN[1].
+            // The single-clock INV/W_SEL arrangement below is NOT used in this shape -- the two
+            // configs differ in exactly these two field groups, nothing else.
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_1_CORECLK_SEL, bi, 1);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_1_INCLK_SEL, bi, 1);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_1_OUTCLK_SEL, bi, 1);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_CLK_SEL, bi, 1);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::TOP_CORECLK_SEL, bi, 1);
+        } else {
+            cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::TOP_W_INV, bi, dbits != 40);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::TOP_W_SEL, bi, dbits != 40);
+            cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::BOT_CLK_INV, bi, dbits != 40);
+            cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::BOT_W_SEL, bi, dbits != 40);
+        }
 
         cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::TRUE_DUAL_PORT, bi, 0);
 

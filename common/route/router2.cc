@@ -169,9 +169,17 @@ struct Router2
                     if (src_wire == WireId())
                         log_error("No wire found for port %s on source cell %s.\n", ctx->nameOf(ni->driver.port),
                                   ctx->nameOf(ni->driver.cell));
-                    if (dst_wire == WireId())
+                    if (dst_wire == WireId()) {
+                        log_info("  [debug] cell '%s' port %s bel=%s\n", ctx->nameOf(usr.value.cell),
+                                 ctx->nameOf(usr.value.port),
+                                 usr.value.cell->bel == BelId() ? "<unplaced>"
+                                                                : ctx->nameOfBel(usr.value.cell->bel));
+                        for (auto pin : ctx->getBelPinsForCellPin(usr.value.cell, usr.value.port))
+                            log_info("    belpin '%s' wire=%s\n", pin.c_str(ctx),
+                                     ctx->getBelPinWire(usr.value.cell->bel, pin) == WireId() ? "<none>" : "ok");
                         log_error("No wire found for port %s on destination cell %s.\n", ctx->nameOf(usr.value.port),
                                   ctx->nameOf(usr.value.cell));
+                    }
                     nets.at(i).arcs.at(usr.index.idx()).emplace_back();
                     auto &ad = nets.at(i).arcs.at(usr.index.idx()).back();
                     ad.sink_wire = dst_wire;
