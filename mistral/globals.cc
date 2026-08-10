@@ -258,17 +258,25 @@ struct MistralGlobalRouter
             // Reverse that list
             std::reverse(pips.begin(), pips.end());
             // Bind pips until we hit already-bound routing
+            static const bool dbg_clk = getenv("VUP_DEBUG_IOREG_CLK") != nullptr;
             for (PipId pip : pips) {
                 WireId dst = ctx->getPipDstWire(pip);
                 if (ctx->getBoundWireNet(dst) == net)
                     break;
                 ctx->bindPip(pip, net, STRENGTH_LOCKED);
+                if (dbg_clk)
+                    log_info("      [ioregclk] net '%s' sink %s.%s: %s -> %s\n", ctx->nameOf(net),
+                             ctx->nameOf(net->users.at(user_idx).cell), ctx->nameOf(net->users.at(user_idx).port),
+                             ctx->nameOfWire(ctx->getPipSrcWire(pip)), ctx->nameOfWire(dst));
             }
             return true;
         } else {
             if (strict)
-                log_error("Failed to route net '%s' from %s to %s using dedicated routing.\n", ctx->nameOf(net),
-                          ctx->nameOfWire(src), ctx->nameOfWire(dst));
+                log_error("Failed to route net '%s' from %s to %s (sink %s.%s, cell type %s) using dedicated "
+                          "routing.\n",
+                          ctx->nameOf(net), ctx->nameOfWire(src), ctx->nameOfWire(dst),
+                          ctx->nameOf(net->users.at(user_idx).cell), ctx->nameOf(net->users.at(user_idx).port),
+                          net->users.at(user_idx).cell->type.c_str(ctx));
             return false;
         }
     }
@@ -281,12 +289,102 @@ struct MistralGlobalRouter
         return false;
     }
 
-    void route_clk_net(NetInfo *net)
+    // IO-edge clock-spine legs attested on silicon for PAD-REGISTER clock delivery (the
+    // ICLK/OCLK DCMUX sinks). The table is the UNION of every leg observed in a working
+    // bitstream: Quartus qrall (vs qrbase) and the proven open build sdreg135 (vs qrbase).
+    // The routing model exposes parallel legs beyond these; at least one is a FALSE PIP:
+    // XCLKB2B.*.000.0008 -> TD routes fine in the model but measured DEAD on silicon
+    // (svga_m0 builds 0x10-0x14: the DQS16-stage registers froze at init, every read
+    // returned the last-driven DQ word), while sdreg135 -- same pads, same qsf -- carries
+    // that delivery exclusively on XCLKB2B.*.000.0004. Legs 0001/0008 ARE attested for
+    // the XCLKB2A/TCLK per-pad branch, so this is a per-(type,row,index) property, not a
+    // per-index one. Routes to pad-clock sinks are pinned to attested legs; every other
+    // clock consumer (LAB/M10K/DSP clocking) is unrestricted. A registered pad on an
+    // edge row outside this table fails the strict BFS loudly -- validate the new leg on
+    // silicon, then extend the table.
+    bool ioreg_leg_ok(PipId pip) const
     {
-        for (auto usr : net->users.enumerate())
+        WireId w = ctx->getPipDstWire(pip);
+        if (w.is_nextpnr_created())
+            return true;
+        auto t = CycloneV::rn2t(w.node);
+        int y = CycloneV::rn2y(w.node);
+        int z = CycloneV::rn2z(w.node);
+        // Only two constraints are backed by silicon evidence; the rest of the spine
+        // stages are 1:1 links (rmux pattern 254 -- no choice to make) or have several
+        // attested-working legs, so they stay unrestricted:
+        //  1. XCLKB2B row 0: leg 0008 measured DEAD (svga_m0 0x10-0x14: SDRAM2_CLK pad
+        //     fed through it received no clock); every working bitstream uses 0004.
+        if (t == CycloneV::XCLKB2B && y == 0)
+            return z == 4;
+        //  2. DCMUX: ground truth (qrall, qireg_on) always enters via the TD->TDMUX leg
+        //     (TCLK->DCMUX attested only at (89,6)). Our TCLK leg happens to clock the
+        //     OUTPUT registers but is FALSE for CLKIN: the read-FIFO write clock never
+        //     arrived and DATAIN[3] degenerated to an OUTREG loopback -- the registered-
+        //     input acceptance passed spuriously (its dq_out<=expect default masked it)
+        //     until the svga_m0 controller exposed it.
+        if (t == CycloneV::DCMUX) {
+            auto st = CycloneV::rn2t(pip.src);
+            if (st == CycloneV::TCLK)
+                return CycloneV::rn2x(w.node) == 89 && y == 6;
+            return true;
+        }
+        return true;
+    }
+
+    // The one pip PROVEN false on silicon (three dead builds routed SDRAM2_CLK through it,
+    // chip received no clock; no working bitstream -- vendor or open -- has ever used it).
+    bool ioreg_leg_poison(PipId pip) const
+    {
+        WireId w = ctx->getPipDstWire(pip);
+        if (w.is_nextpnr_created())
+            return false;
+        return CycloneV::rn2t(w.node) == CycloneV::XCLKB2B && CycloneV::rn2y(w.node) == 0 &&
+               CycloneV::rn2z(w.node) == 8;
+    }
+
+    enum class RoutePhase { PAD_DATA, REST };
+
+    void route_clk_net(NetInfo *net, RoutePhase rp)
+    {
+        for (auto usr : net->users.enumerate()) {
+            // Phase PAD_DATA routes only clocks driven out a pad (port I on an IO cell):
+            // few sinks, and each needs one exact attested leg (e.g. SDRAM2_CLK's
+            // XCLKB2B.77.0.4 -> TD.77.0.33 -> GOUT). Register-clock fanout is routed in
+            // REST so it cannot steal those wires first.
+            bool pad_data = ctx->is_io_cell(usr.value.cell->type) && usr.value.port == id_I;
+            if ((rp == RoutePhase::PAD_DATA) != pad_data)
+                continue;
+            // Any pad-bound sink of a clock net rides the IO-edge spines: the register
+            // clocks (ICLK/OCLK -> DCMUX) and equally a clock DRIVEN OUT A PAD (port I,
+            // e.g. an SDRAM clock pin). The false-pip trap caught svga_m0 on the latter:
+            // SDRAM2_CLK's data feed routed XCLKB2B.77.0.8 -> TD.77.0.11 and the SDRAM
+            // chip received no clock at all.
+            bool pad_sink = ctx->is_io_cell(usr.value.cell->type);
+            if (pad_sink) {
+                // Prefer the silicon-attested spine legs (ioreg_leg_ok). The attested set
+                // is incomplete by construction (diffs against a baseline hide shared
+                // arcs), so when it cannot reach the sink, fall back to permissive
+                // routing minus the proven-poison pip(s).
+                if (backwards_bfs_route(net, usr.index, 1000000, false, [&](PipId pip) {
+                        return ioreg_leg_ok(pip) && global_pip_filter(pip);
+                    }))
+                    continue;
+                // Loud: a fallback route may land on a leg that was never proven on
+                // silicon (the TCLK->DCMUX CLKIN leg was exactly such a silent trap).
+                log_warning("pad clock sink %s.%s not reachable via attested legs; "
+                            "falling back to permissive routing\n",
+                            ctx->nameOf(usr.value.cell), ctx->nameOf(usr.value.port));
+                backwards_bfs_route(net, usr.index, 1000000, true, [&](PipId pip) {
+                    return !ioreg_leg_poison(pip) && global_pip_filter(pip);
+                });
+                continue;
+            }
             backwards_bfs_route(net, usr.index, 1000000, true,
                                 [&](PipId pip) { return (is_relaxed_sink(usr.value) || global_pip_filter(pip)); });
-        log_info("    routed net '%s' using global resources\n", ctx->nameOf(net));
+        }
+        if (rp == RoutePhase::REST)
+            log_info("    routed net '%s' using global resources\n", ctx->nameOf(net));
         if (getenv("VUP_DEBUG_HPSCLK")) {
             for (auto &u : net->users)
                 if (std::string(u.port.c_str(ctx)) == "clk")
@@ -298,6 +396,9 @@ struct MistralGlobalRouter
     void operator()()
     {
         log_info("Routing globals...\n");
+        // Two passes: pad-data clock sinks first (each needs one exact attested leg),
+        // then the wide register-clock/fabric fanout.
+        for (auto phase : {RoutePhase::PAD_DATA, RoutePhase::REST})
         for (auto &net : ctx->nets) {
             NetInfo *ni = net.second.get();
             CellInfo *drv = ni->driver.cell;
@@ -313,7 +414,7 @@ struct MistralGlobalRouter
                                      ? (std::string("  *** ALREADY OWNED BY '") + ctx->nameOf(owner) + "' ***").c_str()
                                      : "");
                 }
-                route_clk_net(ni);
+                route_clk_net(ni, phase);
                 continue;
             }
         }

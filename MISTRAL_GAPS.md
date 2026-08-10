@@ -1168,3 +1168,66 @@ beyond 1024×16; and M10K true-dual-port (a framebuffer usually wants dual port)
   climbs past 5,575); gentle escalation is stable but worse than default (min 434 vs 326); the default is
   already near-optimal and still does not route without the beta change. Dead lever in both directions.
 - **beta sweeps expecting a timing win.** The knob buys routability, not timing, and only at coarse steps.
+
+## IO-REGISTER CORRECTION + M0 SLICE-1 CLOSURE (2026-08-10, svga_m0 debug campaign)
+
+The M0 slice-1 silicon gate (svga-video-card) refused a controller that was correct in sim and
+identical in pad config to the "proven" builds. Working the failure signature back exposed that
+**both 2026-08-09 registered-IO acceptances were spurious** and two toolchain defects were live.
+Sixteen board trials later the slice passes: 16M words @135 MHz clean + CRTC 60.00 Hz (0x2E).
+
+### VOID: the 2026-08-09 registered-IO silicon claims (loopback / self-masking test)
+
+- The registered-INPUT tap (`DATAIN[3]`) was reading the pad's OWN OUTREG, not the pad: the
+  read-FIFO write clock (CLKIN[0] DCMUX) was fed via the false `TCLK->DCMUX` leg, the FIFO never
+  clocked, and the tap degenerated to an output loopback.
+- `sdramreg_tmpl.v`'s default `dq_out <= expect` kept the OUTREG holding exactly the expected
+  read value, so the loopback COMPARED EQUAL: the "@50 transparent + @135 all-8-phases" passes
+  proved nothing. All-phases-pass was the tell (the data never left the FPGA).
+- **LAW (acceptance tests): poison the OUTREG.** A read-path gate is only valid if the value the
+  pad WOULD drive differs from the expected read data (e.g. `dq_out <= phase ? ~expect : expect`).
+
+### FIXED and REALLY silicon-verified now
+
+- **Pad-register clock delivery**: DCMUX (register clocks) must be entered via the `TD->TDMUX`
+  leg — `TCLK->DCMUX` is real only for CLKOUT (outputs ran on it) and attested at (89,6); for
+  CLKIN it is a false pip. Ground truth: qrall/qireg_on route ALL DCMUXes via TDMUX at row 0.
+  Implemented in `mistral/globals.cc` (`ioreg_leg_ok`): pad-bound sinks of clock nets prefer
+  attested legs, loud fallback otherwise; plus two-phase routing (pad-DATA clock sinks first —
+  e.g. SDRAM2_CLK's `XCLKB2B.77.0.4 -> TD.77.0.33 -> GOUT.77.0.20` — then register-clock fanout).
+- **Poison pip**: `XCLKB2B.*.000.0008` routes in the model but is DEAD on silicon (three builds
+  fed SDRAM2_CLK through it; the chip received no clock). Blacklisted.
+- **Registered INPUT path**: with the TDMUX clock delivery it now reads the real pad —
+  poison-gated PASS @50 (0x28) and @135 (0x2E, in the slice).
+- **Registered OUTPUT path** (DQ + A/BA/cmd): poison-gated PASS @50 (0x29, 0x2D) and @135 (0x2E).
+- **SDRAM pad-clock phase**: with registered launch, phase 0 FAILS @135 (signals transition at
+  the chip's sampling edge); `SDRAM2_CLK = ~mclk` (180°) passes. The old full-window claim was
+  loopback-fake. The pad clock must SHARE the mclk net: a dedicated counter starves the
+  register-clock spines of the attested legs (two nets cannot share the BCLK trunk).
+
+### OPEN items from the campaign
+
+- **OEREG packing BROKEN**: enabling `FAST_OUTPUT_ENABLE_REGISTER` kills the interface even @50
+  (0x26/0x27 vs 0x29). Config matches vendor exactly (OEREG_OUTPUT_SEL=SEL_1X=0x674, clock on
+  CLKOUT[0] via TDMUX, T9 removal — qoereg diff). Cause unknown (suspect OE polarity through the
+  OEIN inverter with the register in the path, or an unmodelled select). Workaround shipped:
+  `constraints/slot2_ioreg_noe.qsf` (OE on fabric) — passes @135 with the 180° pad clock.
+- **gp_word 4:1 mux arm mis-select**: two independent builds showed one case arm returning
+  another arm's data (page1=page0 in 0x13-0x16; err_total=0 vs errs=255 in 0x2B/0x2C) while sim
+  passes. Suspected fabric miscompile class (yosys mux mapping or pack/route); needs isolation
+  with a netlist-level sim or a minimal repro. Telemetry reads involving counts are suspect
+  until closed.
+- **MiSTer Main gp clobbering** (environment, not a bug): Main hammers `gp_out` with mailbox
+  writes (e.g. 0x80100032). gp paging must be MAGIC-QUALIFIED AND LATCHED (16-bit magic 0xA55A;
+  4-bit magic still collided). `f2s_avmm`'s doorbell magic was load-bearing for the same reason.
+- **WEAK_PULL_UP emission likely inert**: with nothing driving, the DQ bus holds charge for
+  seconds instead of drifting to 0xFFFF. Harmless for SDRAM (bus never floats in operation);
+  listed for completeness.
+
+### New tooling
+
+- `openflow-test/muxin.cc` (+ bin/muxin): list an rnode's routing-mux sources from the model.
+- `VUP_DEBUG_IOREG_CLK=1`: per-sink dump of every bound pip on global clock nets.
+- Pad-level trace pattern (bisect 0x1D/0x1E in the session scratchpad): 512-sample
+  {cmd,oe,ba,addr,dq_in} ring in an M10K, read out over magic-paged gp — the instrument that
+  cracked the case. Worth productizing into the harness.
