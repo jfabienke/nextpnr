@@ -273,7 +273,27 @@ cycles in `__findenv_locked` before the fix (cached now). Every build since that
 only a 39k-ALUT design made it visible. The "10x faster than Quartus" numbers were measured on
 small designs WITH this tax, so they understate the flow.
 
-Fix ladder for the livelock (not yet built): (1) infeasibility exit — error naming the cluster
+**A/B/C/D verdict (2026-08-10, all on the 39k-ALUT fabi386 probe):**
+
+| run | binary | LAB limit | outcome |
+|---|---|---|---|
+| A | pre-fix | 34 | livelock in first legalisation, killed at 45 min (plus the getenv tax) |
+| B | getenv-fix | none | COMB bucket 1 s; FF bucket no convergence, killed at 1h39 |
+| C | + timeout & accessor fixes | none | identical shape; killed at 1h24. Accessor overhead gone from profile (dedup 1000→387 samples) but search VOLUME dominates |
+| D | + timeout & accessor fixes | 34 | **named infeasibility error in 10.7 min / 6.99M attempts** — the culprit is a ~64-ALM carry chain in fabi386's `exec_stage.divider_inst` |
+
+Conclusions: (1) the linear timeout (was cells^2/8 = 372M attempts, now cells*128) turns livelock
+into a named diagnosis — keep, upstream-worthy; (2) the accessor fix is real but insufficient —
+the FF-bucket search does astronomical bind/unbind counts and each one recomputes ALM input
+state; (3) fabi386-scale placement is BLOCKED on legaliser algorithmics, not constants: the
+required work is incremental input-count maintenance (update only the affected ALM's count at
+bind, or defer to a dirty-flag check) plus a smarter FF search (control-set candidate windows
+exist but their scan itself shows in the profile). The proven 32k-cell result stands; the wall is
+between there and 39k+15k FFs. fabi386 RTL note: the divider's 60+-stage ALUT_ARITH chain is
+unplaceable under any LAB input limit — pipeline or narrow it regardless of flow.
+
+Fix ladder for the livelock (partially built — items 1 is DONE as the linear timeout, 2 partially
+as the accessor fix): (1) infeasibility exit — error naming the cluster
 after a bounded attempt count instead of searching forever; (2) incremental/cached
 `update_alm_input_count` (the ALM knows its cells at bind time; no rescan); (3) make the LAB
 limit a soft cost rather than a hard validity wall for clusters that fit nowhere else.

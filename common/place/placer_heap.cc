@@ -2176,9 +2176,13 @@ PlacerHeapCfg::PlacerHeapCfg(Context *ctx)
 
     int timeout_divisor = ctx->setting<int>("placerHeap/cellPlacementTimeout", 8);
     if (timeout_divisor > 0) {
-        // Set a conservative default. This is a rather large number and could probably
-        // be shaved down, but for now it will keep the process from running indefinite.
-        cell_placement_timeout = std::max(10000, (int(ctx->cells.size()) * int(ctx->cells.size()) / timeout_divisor));
+        // Linear in design size. The old default was QUADRATIC (cells^2/divisor): tuned-feeling at
+        // 3k cells (~1M attempts) but 372M attempts at 54k cells -- measured as a 45-minute-and-
+        // counting livelock on one infeasible carry cluster (39k-ALUT fabi386 probe, LAB input
+        // limit made the cluster unplaceable; profile: 85% of cycles in try_place_cluster). An
+        // infeasible cell must FAIL, naming itself, in minutes -- the error message already tells
+        // the user how to raise the bound if their design is merely hard.
+        cell_placement_timeout = std::max(10000, (int(ctx->cells.size()) * 1024 / timeout_divisor));
     } else {
         cell_placement_timeout = 0;
     }

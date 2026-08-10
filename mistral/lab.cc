@@ -383,11 +383,16 @@ void Arch::assign_ff_info(CellInfo *cell) const
 // Validity checking functions
 bool Arch::is_alm_legal(uint32_t lab, uint8_t alm) const
 {
-    auto &alm_data = labs.at(lab).alms.at(alm);
+    // HOT PATH: called on every bind/unbind of a LAB cell, and the strict legaliser does millions
+    // of those while searching cluster placements (profiled: the .at() bounds-check chains under
+    // this function were the second-largest cycle sink after the search itself). Unchecked
+    // indexing; the indices come from the arch's own tables.
+    auto &alm_data = labs[lab].alms[alm];
+    auto bound_fast = [&](BelId b) -> const CellInfo * { return bels_by_tile[pos2idx(b.pos)][b.z].bound; };
     // Get cells into an array for fast access
-    std::array<const CellInfo *, 2> luts{getBoundBelCell(alm_data.lut_bels[0]), getBoundBelCell(alm_data.lut_bels[1])};
-    std::array<const CellInfo *, 4> ffs{getBoundBelCell(alm_data.ff_bels[0]), getBoundBelCell(alm_data.ff_bels[1]),
-                                        getBoundBelCell(alm_data.ff_bels[2]), getBoundBelCell(alm_data.ff_bels[3])};
+    std::array<const CellInfo *, 2> luts{bound_fast(alm_data.lut_bels[0]), bound_fast(alm_data.lut_bels[1])};
+    std::array<const CellInfo *, 4> ffs{bound_fast(alm_data.ff_bels[0]), bound_fast(alm_data.ff_bels[1]),
+                                        bound_fast(alm_data.ff_bels[2]), bound_fast(alm_data.ff_bels[3])};
     int used_lut_bits = 0;
 
     int total_lut_inputs = 0;
@@ -483,11 +488,16 @@ bool Arch::is_alm_legal(uint32_t lab, uint8_t alm) const
 void Arch::update_alm_input_count(uint32_t lab, uint8_t alm)
 {
     // TODO: duplication with above
-    auto &alm_data = labs.at(lab).alms.at(alm);
+    // HOT PATH: called on every bind/unbind of a LAB cell, and the strict legaliser does millions
+    // of those while searching cluster placements (profiled: the .at() bounds-check chains under
+    // this function were the second-largest cycle sink after the search itself). Unchecked
+    // indexing; the indices come from the arch's own tables.
+    auto &alm_data = labs[lab].alms[alm];
+    auto bound_fast = [&](BelId b) -> const CellInfo * { return bels_by_tile[pos2idx(b.pos)][b.z].bound; };
     // Get cells into an array for fast access
-    std::array<const CellInfo *, 2> luts{getBoundBelCell(alm_data.lut_bels[0]), getBoundBelCell(alm_data.lut_bels[1])};
-    std::array<const CellInfo *, 4> ffs{getBoundBelCell(alm_data.ff_bels[0]), getBoundBelCell(alm_data.ff_bels[1]),
-                                        getBoundBelCell(alm_data.ff_bels[2]), getBoundBelCell(alm_data.ff_bels[3])};
+    std::array<const CellInfo *, 2> luts{bound_fast(alm_data.lut_bels[0]), bound_fast(alm_data.lut_bels[1])};
+    std::array<const CellInfo *, 4> ffs{bound_fast(alm_data.ff_bels[0]), bound_fast(alm_data.ff_bels[1]),
+                                        bound_fast(alm_data.ff_bels[2]), bound_fast(alm_data.ff_bels[3])};
     int total_inputs = 0;
     int total_lut_inputs = 0;
     for (int i = 0; i < 2; i++) {
