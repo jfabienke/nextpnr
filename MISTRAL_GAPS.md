@@ -249,6 +249,31 @@ between trials)** — the configuration that failed at EVERY phase without regis
 the whole period: registered launch+capture removed the fabric-routing variance, so margin at
 135 MHz is full-cycle. G6 is CLOSED at VRAM speed.
 
+### SVGA READINESS AUDIT — goal closure (2026-08-10)
+
+The goal "resolve all gaps to complete the SVGA project" is MET. Every requirement of the SVGA
+architecture (1280x1024x16 triple-buffered, alpha at scanout; HPS-hosted prototype) maps to a
+silicon-proven primitive; nothing in this ledger blocks it:
+
+| SVGA requirement | primitive | status |
+|---|---|---|
+| 108 MHz pixel + 135 MHz memory | one PLL, two counters (G4/G8) | silicon, svgaclk.v |
+| VRAM @ 135 MHz (slot-2 32 MB) | IO-register packing (G6) | silicon, all 8 phases |
+| command ring / doorbells | lwh2f bridge (G3a) | silicon, sim-first |
+| surface uploads DDR3->fabric | f2sdram read+write (G3) | silicon, both directions |
+| line buffers / FIFOs (135<->108 CDC) | M10K dual-clock SDP + all 6 geometries | silicon |
+| blitter multiplies | DSP 18x18 (G7) | silicon |
+| design scale (~5-8k ALUTs) | 32k-cell route+compute proven | far inside the envelope |
+
+Remaining items are IMPLEMENTATION work, not toolchain gaps: slot-1 pin constraints for the
+dual-bus profile (same proven IO mechanism, different pins — needed only for full-screen alpha /
+Wide mode, not the M0 bring-up), video-out pin constraints (plain outputs, proven mechanism;
+ADV7513 is configured by MiSTer Main), and the SVGA RTL itself.
+
+Explicitly OUT of this goal's scope (fabi386-tier, documented above with fix ladders): placer
+legaliser algorithmics at 39k+ ALUTs, MUL27X27/MUL9X9 bels, M10K true dual port, G1/G2/G5 Fmax
+tuning. None is referenced by any SVGA requirement.
+
 ### Placer at scale — 39k-ALUT profile (2026-08-10, fabi386 core probe)
 
 First design ever pushed through the flow at this size (fabi386 OoO core + LFSR harness, 39,090
