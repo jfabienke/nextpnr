@@ -13,7 +13,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 |---|---|---|
 | **G1** | timing-driven placement ineffective (`criticalityExponent = 7`) | **root-caused**; the fix is a *conditional* trade, automated in `critexp_auto.sh` |
 | **G2** | `--tmg-ripup` churns without reducing `tmgfail` | **measured broken**; needs work in `router2.cc` |
-| **G3** | HPS hard IP: lwh2f SILICON-VERIFIED; f2sdram bel built | **lwh2f WORKS ON SILICON** — full 12-bit AXI-3, read AND write, no hang. ARM `devmem 0xFF200000` writes reach the fabric (counted exactly) and reads return fabric data; gp telemetry and AXI read data agree. First working HPS bridge through the open flow. **f2sdram READ silicon-verified 2026-08-10** (ARM-planted DDR3 pattern read back exactly; protocol/cfg/address-unit all pinned — see the f2sdram section). Remaining: the write direction, sim-proven, one silicon run |
+| **G3** | HPS hard IP: lwh2f SILICON-VERIFIED; f2sdram bel built | **lwh2f WORKS ON SILICON** — full 12-bit AXI-3, read AND write, no hang. ARM `devmem 0xFF200000` writes reach the fabric (counted exactly) and reads return fabric data; gp telemetry and AXI read data agree. First working HPS bridge through the open flow. **f2sdram CLOSED 2026-08-10: READ and WRITE both silicon-verified** (ARM-planted pattern read back exactly; core-written word read back by the ARM exactly; protocol/cfg/address-unit pinned — see the f2sdram section). G3 is fully closed |
 | **G4** | PLL: reference delivery **and** outclk → clock network | **SOLVED on silicon, and now for real designs** — arbitrary requested frequencies (N/M solved, not pinned) and buffered reference clocks both work: 108 MHz + 135 MHz from one PLL, `LOCKED=1`. Phase taps verified (90°/270°). Generalisation beyond `PIN_V11 → FPLL(0,14)` still remains |
 | **G5** | placer delay estimate is congestion-blind | **characterized**; the cheap fix was tried and REVERTED (measurably worse). Negative result, not a blocker |
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. **CLOSED 2026-08-09: IO-register packing implemented and silicon-verified** — registered MemTest passes @50 (transparency, 0 errors) AND **@135 MHz** (BUILD_ID C2), the frequency that failed at every phase without registers. Pack rule + DQS16 emission in nextpnr (`pack_io_registers`), qsf `FAST_*_REGISTER`-gated; controllers need the pad-launch-stage RTL shape (`sdramreg_tmpl.v`). |
@@ -188,11 +188,11 @@ doorbell through gp, the core issues one Avalon read and the captured 64-bit wor
   a dead port leaves the FSM in its (sim-proven) timeout path and the SoC stays alive, which
   silicon confirmed (board remained reachable throughout).
 
-**Remaining:** the WRITE direction — same design, second doorbell (0xE) writes
-`0BADC0DE_D00D2BAD` at byte `0x2000_0010`, ARM verifies via devmem. Sim gate PASSED (model checks
-data/BE/address and the dead-port timeout); silicon run pending a board power-cycle (the board
-hung on a plain reboot BEFORE the write core was ever loaded — md5 discipline confirms nothing
-was flashed; unrelated to the test).
+**WRITE SILICON-VERIFIED (2026-08-10, after power-cycle):** second doorbell (0xE) wrote
+`0BADC0DE_D00D2BAD` at byte `0x2000_0010` — the ARM read exactly that via devmem (sentinels
+`11111111/22222222` overwritten, full byte-enables, address unit confirmed in the write
+direction too). Telemetry `0xF5D80001` = wdone, no timeout; board alive throughout.
+**f2sdram is CLOSED: the DDR3 upload path works in both directions under the open flow.**
 
 ### IO registers — the COMPLETE bit-level model (2026-08-09, Quartus differentials qrbase/qrout/qrall + qireg/qoereg)
 
