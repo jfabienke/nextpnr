@@ -276,7 +276,7 @@ reading the first gave ~58 MHz against a routed ~37 and briefly inverted the con
 
 | item | evidence |
 |---|---|
-| M10K block RAM | **works on silicon**, 1024×16. Other geometries and true dual port untested |
+| M10K block RAM | **works on silicon**: 1024×16 composite AND all six native geometries — 256×40, 512×20, 1024×10, 2048×5, 4096×2, 8192×1 (`m10kshapes.v`, one run, all pass 2026-08-10). Dual-clock SDP + true dual port in progress |
 | single PLL, multiple outputs | **works on silicon**, incl. phase-shifted taps (G4) |
 | tristate / bidirectional pads | **works on silicon**, DQ and ordinary pads (G6 slice 1) |
 | plain output pads | **works on silicon** |
