@@ -249,6 +249,35 @@ between trials)** — the configuration that failed at EVERY phase without regis
 the whole period: registered launch+capture removed the fabric-routing variance, so margin at
 135 MHz is full-cycle. G6 is CLOSED at VRAM speed.
 
+### Placer at scale — 39k-ALUT profile (2026-08-10, fabi386 core probe)
+
+First design ever pushed through the flow at this size (fabi386 OoO core + LFSR harness, 39,090
+ALUTs, `-nodsp`). Placement with the proven `MISTRAL_LAB_INPUT_LIMIT=34` knob NEVER completed the
+first HeAP legalisation pass (killed after 45 min at 100% CPU). A 30 s `sample` profile says why:
+
+- **85% of all cycles inside `StrictLegaliser::try_place_cluster`** — the legaliser searching
+  placements for carry-chain clusters. Solver, spreader, router: ~0% (never reached).
+- Inside it: `update_alm_input_count` (full-ALM rescan on EVERY bind/unbind; each rescan does ~6
+  `getBoundBelCell` nested-`vector::at` walks — the ICF-folded hot symbol) plus
+  `dict<BelId, CellInfo*>` insert/lookup/rehash churn from cluster bind/unbind cycles.
+- The budget line "max placement attempts per cell = 372672300" is the tell: the legaliser has
+  **no infeasibility exit** — a cluster that cannot legally sit anywhere under the input-limit
+  validity check is retried effectively forever.
+- **Control: the identical design WITHOUT the LAB limit legalises in 1.00 s.** This is G2
+  mechanism 2 (carry chains + input limit = genuine resource conflict) resurfacing at scale as a
+  LIVELOCK instead of a router deadlock.
+
+Also found and fixed on the way: the G4-era `VUP_TRACE_PLL` debug called `getenv()` inside
+bindBel/unbindBel — a locked linear environ scan on the legaliser's innermost path; HALF of all
+cycles in `__findenv_locked` before the fix (cached now). Every build since that debug paid it;
+only a 39k-ALUT design made it visible. The "10x faster than Quartus" numbers were measured on
+small designs WITH this tax, so they understate the flow.
+
+Fix ladder for the livelock (not yet built): (1) infeasibility exit — error naming the cluster
+after a bounded attempt count instead of searching forever; (2) incremental/cached
+`update_alm_input_count` (the ALM knows its cells at bind time; no rescan); (3) make the LAB
+limit a soft cost rather than a hard validity wall for clusters that fit nowhere else.
+
 ### Timing model vs silicon — first calibration (2026-08-08)
 
 Every Fmax number in G1/G2/G5 comes from nextpnr's own model, which had never been checked against
