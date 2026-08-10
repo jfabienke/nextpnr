@@ -352,7 +352,11 @@ struct Arch : BaseArch<ArchRanges>
         data.bound = cell;
         cell->bel = bel;
         cell->belStrength = strength;
-        if (getenv("VUP_TRACE_PLL") && cell->type == id_altera_pll)
+        // getenv() is a locked linear environ scan; in bindBel it sat on the HeAP legaliser's
+        // innermost path and turned a 39k-ALUT placement into hours (found by sampling: half of
+        // all cycles in __findenv_locked). Cache once; cheap type check first.
+        static const bool vup_trace_pll = getenv("VUP_TRACE_PLL") != nullptr;
+        if (cell->type == id_altera_pll && vup_trace_pll)
             fprintf(stderr, "  [trace] bind   '%s' -> FPLL(%d,%d) strength=%d\n", cell->name.c_str(this),
                      CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
                      int(strength));
@@ -362,7 +366,8 @@ struct Arch : BaseArch<ArchRanges>
     {
         auto &data = bel_data(bel);
         NPNR_ASSERT(data.bound != nullptr);
-        if (getenv("VUP_TRACE_PLL") && data.bound->type == id_altera_pll)
+        static const bool vup_trace_pll = getenv("VUP_TRACE_PLL") != nullptr;
+        if (data.bound->type == id_altera_pll && vup_trace_pll)
             fprintf(stderr, "  [trace] unbind '%s' from FPLL(%d,%d)\n", data.bound->name.c_str(this),
                      CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)));
         data.bound->bel = BelId();
