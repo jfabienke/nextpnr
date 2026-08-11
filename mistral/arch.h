@@ -344,6 +344,10 @@ struct Arch : BaseArch<ArchRanges>
     bool isBelLocationValid(BelId bel, bool explain_invalid = false) const override;
     // CLKBUF and PLLCLK bels alias the same physical CMUX*G CLKOUT; at most one may be used.
     bool global_sibling_occupied(BelId bel, IdString other_type) const;
+    // static sibling relation, built lazily -- the naive per-query tile scan allocated on
+    // every placer validity check and dominated placement at ~24k cells (profiled ~60%)
+    mutable dict<BelId, std::vector<BelId>> clk_sibling_cache;
+    mutable bool clk_sibling_cache_built = false;
 
     void bindBel(BelId bel, CellInfo *cell, PlaceStrength strength) override
     {

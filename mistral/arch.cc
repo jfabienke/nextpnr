@@ -201,15 +201,35 @@ IdStringList Arch::getBelName(BelId bel) const
 }
 
 // Is the bel that models the SAME physical global-clock output, under the other bel type, in use?
+// HOT under the placer (isBelLocationValid on CLKENA/PLLCLK): the sibling relation is
+// static, so build it once instead of an allocating tile scan per query (profiled: the
+// scan consumed ~60% of placement wall time at ~24k cells and stalled both placers).
 bool Arch::global_sibling_occupied(BelId bel, IdString other_type) const
 {
-    int idx = bel_data(bel).block_index;
-    Loc loc = getBelLocation(bel);
-    for (BelId b : getBelsByTile(loc.x, loc.y)) {
-        if (b == bel)
-            continue;
-        auto &bd = bel_data(b);
-        if (bd.type != other_type || bd.block_index != idx)
+    if (!clk_sibling_cache_built) {
+        dict<uint64_t, std::vector<BelId>> by_key;
+        for (BelId b : getBels()) {
+            auto &bd = bel_data(b);
+            if (bd.type != id_MISTRAL_CLKENA && bd.type != id_MISTRAL_PLLCLK)
+                continue;
+            Loc l = getBelLocation(b);
+            uint64_t key = (uint64_t(l.x) << 32) | (uint64_t(l.y) << 16) | uint64_t(bd.block_index & 0xFFFF);
+            by_key[key].push_back(b);
+        }
+        for (auto &kv : by_key)
+            for (BelId b : kv.second) {
+                auto &sibs = clk_sibling_cache[b];
+                for (BelId o : kv.second)
+                    if (o != b)
+                        sibs.push_back(o);
+            }
+        clk_sibling_cache_built = true;
+    }
+    auto it = clk_sibling_cache.find(bel);
+    if (it == clk_sibling_cache.end())
+        return false;
+    for (BelId b : it->second) {
+        if (bel_data(b).type != other_type)
             continue;
         if (getBoundBelCell(b) != nullptr)
             return true;

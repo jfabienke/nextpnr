@@ -365,6 +365,8 @@ struct MistralBitgen
         // DATA_FLOW_THRU is probably transparent reads.
 
         auto dbits = ci->params.at(id_CFG_DBITS).as_int64();
+        log_info("M10K emit: '%s' at (%d,%d) bi=%d dbits=%ld%s\n", ctx->nameOf(ci), x, y, bi,
+                 dbits, ci->params.count(id_M10K_DC) ? " DC" : "");
 
         cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::A_DATA_FLOW_THRU, bi, 1);
         cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::A_DATA_WIDTH, bi, dbits);
