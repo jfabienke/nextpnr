@@ -1103,6 +1103,11 @@ class HeAPPlacer
                 // Was now placed, ignore
                 if (ci->bel != BelId())
                     continue;
+                // progress heartbeat: strict legalisation can run for hours on large
+                // designs with zero output -- indistinguishable from a hang without this
+                if (++legalised_count % 2000 == 0)
+                    log_info("      strict legalise: %d cells done, %d queued, ripup_radius=%d\n",
+                             legalised_count, int(remaining.size()), ripup_radius);
                 std::chrono::high_resolution_clock::time_point ci_startt;
                 if (ctx->verbose)
                     ci_startt = std::chrono::high_resolution_clock::now();
@@ -1263,6 +1268,7 @@ class HeAPPlacer
         Context *ctx;
 
         int ripup_radius, chain_ripup_radius, total_iters, total_iters_noreset;
+        int legalised_count = 0;
 
         FastBels::FastBelsData *fb;
 
