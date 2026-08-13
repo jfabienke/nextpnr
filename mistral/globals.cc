@@ -307,6 +307,10 @@ struct MistralGlobalRouter
         WireId w = ctx->getPipDstWire(pip);
         if (w.is_nextpnr_created())
             return true;
+        // A poisoned leg is never OK -- makes the attested-preferred BFS route AROUND it
+        // (env TD poison for the slot-1 campaign, and the proven XCLKB2B leg-8).
+        if (ioreg_leg_poison(pip))
+            return false;
         auto t = CycloneV::rn2t(w.node);
         int y = CycloneV::rn2y(w.node);
         int z = CycloneV::rn2z(w.node);
@@ -356,8 +360,30 @@ struct MistralGlobalRouter
         WireId w = ctx->getPipDstWire(pip);
         if (w.is_nextpnr_created())
             return false;
-        return CycloneV::rn2t(w.node) == CycloneV::XCLKB2B && CycloneV::rn2y(w.node) == 0 &&
-               CycloneV::rn2z(w.node) == 8;
+        if (CycloneV::rn2t(w.node) == CycloneV::XCLKB2B && CycloneV::rn2y(w.node) == 0 &&
+            CycloneV::rn2z(w.node) == 8)
+            return true;
+        // SLOT-1 CAMPAIGN: env-driven TD-leg poison for empirical bisection. Set
+        // VUP_IOREG_POISON_TD="x,y,z;x,y,z;..." to blacklist specific TD dst rnodes so the
+        // router reroutes the pads that used them via alternative legs. The tap-vs-bits
+        // trial proved slot-1's 8 failing DQ bits are pad-clock delivery (tap-invariant);
+        // this tests whether the failing TD legs are avoidable false pips.
+        static const char *ptd = getenv("VUP_IOREG_POISON_TD");
+        if (ptd && CycloneV::rn2t(w.node) == CycloneV::TD) {
+            int x = CycloneV::rn2x(w.node), y = CycloneV::rn2y(w.node), z = CycloneV::rn2z(w.node);
+            const char *p = ptd;
+            while (*p) {
+                int px, py, pz, n = 0;
+                if (sscanf(p, "%d,%d,%d%n", &px, &py, &pz, &n) == 3) {
+                    if (px == x && py == y && pz == z)
+                        return true;
+                    p += n;
+                }
+                while (*p && *p != ';') ++p;
+                if (*p == ';') ++p;
+            }
+        }
+        return false;
     }
 
     enum class RoutePhase { PAD_DATA, REST };
