@@ -1231,3 +1231,28 @@ Sixteen board trials later the slice passes: 16M words @135 MHz clean + CRTC 60.
 - Pad-level trace pattern (bisect 0x1D/0x1E in the session scratchpad): 512-sample
   {cmd,oe,ba,addr,dq_in} ring in an M10K, read out over magic-paged gp — the instrument that
   cracked the case. Worth productizing into the harness.
+
+## SLOT-1 IO-REGISTER CAMPAIGN (2026-08-13, in progress)
+
+Goal: run slot-1 (bus A, the 128 MB module) at 135 MHz with registered IO, as slot 2 does
+-- the fix that would let the 128 MB module reclaim the compositor's primary plane. Slot-1
+plain-IO ceiling is ~66-70 MHz (silicon-swept), so this is the only path to ~135.
+
+**Phase 1 -- localization (DONE, build-time via VUP_DEBUG_IOREG_CLK).** Unlike slot 2 (one
+clean bottom-edge bank), slot-1's DQ pins scatter across THREE edge regions:
+- **Bottom edge (y=0):** DQ capture routes XCLKB2B row0 **leg 4** -> TD -> TDMUX -- the
+  SAME attested-good pattern as slot 2. These bits are fine.
+- **Top edge (y=81): 6 DQ bits + 4 addr bits** on legs {1,2,6} -- UN-ATTESTED. These 6 DQ
+  capture registers are the prime suspects for the 0xf000 constant-read failure (frozen
+  capture on a false/wrong leg).
+- **Right edge (x=89): 6 addr + 2 bank bits** on leg 0 -- un-attested but OUTPUT-only, so
+  lower priority for read integrity.
+
+**Phase 2 -- bisection (bitstreams built, silicon PENDING board).** `ioreg_leg_ok` now takes
+`VUP_IOREG_TOP_LEG=<z>` (pins y=81 XCLKB2B to one leg) and `VUP_IOREG_RIGHT_LEG=<z>`.
+Built `svga_a0_topleg{1,2,6}.rbf` (135 MHz, slot1_ioreg.qsf). March-test each: whichever
+gives clean reads identifies the correct top-edge capture leg (analog of the row-0 leg-4
+discovery). NOTE: forcing a single leg over-constrains the router (15k+ iterations) -- may
+need per-pad leg assignment rather than a blanket y=81 rule once the good leg is known.
+Then likely a right-edge sweep for the address pads. Expect several board trials, like the
+slot-2 campaign. Board hangs between trials -- power-cycle discipline applies.

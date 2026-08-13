@@ -317,6 +317,23 @@ struct MistralGlobalRouter
         //     fed through it received no clock); every working bitstream uses 0004.
         if (t == CycloneV::XCLKB2B && y == 0)
             return z == 4;
+        //  1b. SLOT-1 IO-REGISTER CAMPAIGN (bisection): slot-1's DQ pins scatter across
+        //     edges; 6 DQ capture registers land on the TOP edge (y == 81) whose XCLKB2B
+        //     legs {1,2,6} are un-attested. VUP_IOREG_TOP_LEG=<z> pins them to one leg so a
+        //     board trial finds which delivers the read-capture clock (analog of the row-0
+        //     leg-4 discovery). Unset = unrestricted (current behavior).
+        if (t == CycloneV::XCLKB2B && y == 81) {
+            static const char *tl = getenv("VUP_IOREG_TOP_LEG");
+            if (tl)
+                return z == atoi(tl);
+        }
+        //  1c. Right-edge (x == 89) slot-1 address/bank pads on leg 0; output-only so lower
+        //     priority for read integrity, but sweepable the same way.
+        if (t == CycloneV::XCLKB2B && CycloneV::rn2x(w.node) == 89) {
+            static const char *rl = getenv("VUP_IOREG_RIGHT_LEG");
+            if (rl)
+                return z == atoi(rl);
+        }
         //  2. DCMUX: ground truth (qrall, qireg_on) always enters via the TD->TDMUX leg
         //     (TCLK->DCMUX attested only at (89,6)). Our TCLK leg happens to clock the
         //     OUTPUT registers but is FALSE for CLKIN: the read-FIFO write clock never
