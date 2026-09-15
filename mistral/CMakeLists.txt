@@ -70,6 +70,8 @@ if (BUILD_RUST)
         target_link_libraries(nextpnr-mistral-lab-ffi-replay PRIVATE npnr_mistral_lab_ffi json11)
         add_executable(nextpnr-mistral-lab-bench tests/lab_bench.cc)
         target_link_libraries(nextpnr-mistral-lab-bench PRIVATE nextpnr-${family}-core)
+        add_executable(nextpnr-mistral-lab-frozen-bench tests/lab_frozen_bench.cc)
+        target_link_libraries(nextpnr-mistral-lab-frozen-bench PRIVATE nextpnr-${family}-core)
     endif()
 endif()
 

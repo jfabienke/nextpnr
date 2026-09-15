@@ -102,6 +102,8 @@ Unit 4D is active. The next boundary is deterministic proposal sequencing using
 the existing C++ scheduler: freeze proposals and RNG decisions serially, evaluate
 owned batches concurrently, consume in sequence order, and reject stale commits
 against the global revision with two bounded retries before synchronous fallback.
+The first 4D throughput benchmark is now in place; live scheduling and stale-retry
+integration remain outstanding.
 
 ## Validation log
 
@@ -495,6 +497,45 @@ commit `bf30a82`; removing that provenance line gives identical SHA-256
 `963a6262c7ae50d2791f92a98e4e35ed92200d7c706f516f2f0666117a2adfa9`.
 Placement and routing checksums remain `0xbb18ede9` and `0xbc1365c6`.
 
+### 2026-09-15: Unit 4D benchmark baseline
+
+A dedicated release-mode benchmark measures one 64-record V2 batch without timed
+thread creation, handle creation, or output allocation. Each round performs
+1,280,000 record evaluations per phase. Two independent seven-round runs produced
+the following midpoint of their run medians:
+
+| Path | Workers | Median ns/record | Throughput | Speedup vs frozen 1-worker |
+| --- | ---: | ---: | ---: | ---: |
+| Direct V2 FFI, validates every call | 1 | 807.66 | 1.24 M/s | 0.49x |
+| Rust-owned frozen V2 | 1 | 392.19 | 2.55 M/s | 1.00x |
+| Rust-owned frozen V2 | 2 | 199.21 | 5.02 M/s | 1.97x |
+| Rust-owned frozen V2 | 4 | 102.67 | 9.74 M/s | 3.82x |
+| Rust-owned frozen V2 | 8 | 54.28 | 18.42 M/s | 7.22x |
+
+Creation plus destruction costs 504.92 ns per retained record, or 32.32 us for
+the 64-record handle. Consequently, serial frozen evaluation amortizes creation
+after two evaluations of the same batch; one creation plus one serial evaluation
+is slower than direct validation. A separate three-round resource run reproduced
+the scaling and reported 4,227,072 bytes peak RSS, 2,785,664 bytes peak memory
+footprint, zero swaps, and 6.08 s wall time.
+
+This is an evaluator-throughput result over representative nonempty whole-LAB
+facts, not an end-to-end placement speedup. Unit 4D remains active until proposals
+are generated serially, results are consumed in sequence order, stale retries are
+bounded, and 1/2/4/8-worker full-placement traces are proven reproducible.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4-validation/frozen-v2-scaling.csv 7 20000` | Complete; 1/2/4/8-worker scaling measured |
+| Independent seven-round repeat | Complete; medians reproduced within 3.0% |
+| `/usr/bin/time -l ... frozen-v2-scaling-rss.csv 3 20000` | Complete; peak RSS 4,227,072 bytes |
+
+CSV SHA-256: primary
+`2ef2385c2d8601f3de58de2744b354103d8c4ab43868fed882b4bd34cee70ddb`;
+repeat `a3fb6cf20e4341abb732549ab386ec09b3f031e51a54e16d6172105b6b62847d`;
+resource run
+`41cacb1abac1c0cdfec9f896853838e555d6b0d34d1d3799646a862db723717a`.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -523,6 +564,8 @@ Placement and routing checksums remain `0xbb18ede9` and `0xbc1365c6`.
 | 2026-09-15 | 4B | Preserve the original live path for facts outside the frozen Mistral LAB model | Explicit `Unsupported` transaction outcome; candidate and RNG order are unchanged |
 | 2026-09-15 | 4C | Publish only fully copied and validated Rust-owned batches | Malformed and panic tests leave the output handle null; source lifetime test mutates and drops host inputs |
 | 2026-09-15 | 4C | Bound retained work before enabling scheduler concurrency | 64 records per batch, two handles per worker, real 64 MiB aggregate exhaustion and quota-recovery tests |
+| 2026-09-15 | 4D | Retain validated V2 facts when a frozen batch will be reused | 807.66 ns/record direct versus 392.19 ns frozen; creation amortizes after two serial evaluations |
+| 2026-09-15 | 4D | Continue with bounded parallel scheduling | Frozen evaluation scales 1.97x, 3.82x, and 7.22x at 2/4/8 workers; live determinism remains gated |
 
 ## Stage gates and promotion
 
