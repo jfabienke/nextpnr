@@ -63,6 +63,16 @@ PlacementCommitOutcome commit_placement_transaction(Arch &arch, PreparedPlacemen
     return PlacementCommitOutcome::Committed;
 }
 
+bool placement_candidate_supported(const Arch &arch, const PreparedPlacementTransaction &transaction)
+{
+    if (!transaction)
+        return false;
+    for (const auto &edit : transaction.edits())
+        if (!arch.bel_data(edit.bel).type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF))
+            return false;
+    return true;
+}
+
 FrozenPlacementCandidate freeze_placement_candidate(const Arch &arch, const PreparedPlacementTransaction &transaction)
 {
     FrozenPlacementCandidate frozen;

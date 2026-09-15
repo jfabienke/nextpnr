@@ -549,7 +549,7 @@ TEST_F(LabControlCaptureTest, BatchCoordinatorCommitsFirstLegalInProposalOrderFo
         EXPECT_EQ(s.stale_retries, 0u);
         EXPECT_EQ(s.synchronous_fallbacks, 0u);
 #ifndef NO_RUST
-        EXPECT_EQ(s.rust_batches, 1u);
+        EXPECT_EQ(s.rust_batches, 4u); // one handle per candidate, created by its worker
         EXPECT_EQ(s.rust_direct, 0u);
 #endif
         ctx->unbindBel(even_a);
@@ -627,12 +627,12 @@ TEST_F(LabControlCaptureTest, BatchCoordinatorTruncatesAtUnsupportedCandidate)
     EXPECT_EQ(s.committed, 0u);
 }
 
-TEST_F(LabControlCaptureTest, BatchCoordinatorSpansSeveralFrozenHandlesAndKeepsOrder)
+TEST_F(LabControlCaptureTest, BatchCoordinatorHandlesLargeBatchesAndKeepsOrder)
 {
     const auto &alms = ctx->labs.at(0).alms;
     const BelId odd = alms.at(0).ff_bels.at(1);
     const BelId even = alms.at(1).ff_bels.at(0);
-    // 100 single-query candidates need two 64-record Rust handles; only the last is legal.
+    // 100 single-query candidates, more than one Rust handle's worth; only the last is legal.
     std::vector<HeAPClusterCandidate> batch;
     for (unsigned i = 0; i < 99; ++i)
         batch.push_back(cluster_candidate(*ctx, cells[i % 40], odd));
@@ -650,11 +650,73 @@ TEST_F(LabControlCaptureTest, BatchCoordinatorSpansSeveralFrozenHandlesAndKeepsO
         EXPECT_EQ(s.max_candidates, 100u);
         EXPECT_EQ(s.max_queries, 100u);
 #ifndef NO_RUST
-        EXPECT_EQ(s.rust_batches, 2u);
+        EXPECT_EQ(s.rust_batches, 100u); // one handle per candidate
         EXPECT_EQ(s.rust_direct, 0u);
 #endif
         ctx->unbindBel(even);
     }
+}
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorParallelFreezeMatchesOwnerFreeze)
+{
+    // Workers capture each candidate's overlay themselves. Every frozen fact record must be
+    // byte-identical to what the owner would have captured, results must agree, and the live
+    // design must not change: the coordinator only reads while the owner is blocked.
+    const auto &alms = ctx->labs.at(0).alms;
+    for (unsigned i = 0; i < 8; ++i) {
+        cells[i]->addInput(id_CLK);
+        cells[i]->connectPort(id_CLK, nets[i % 2]);
+        ctx->assign_ff_info(cells[i]);
+    }
+    ctx->bindBel(alms.at(5).ff_bels.at(0), cells[9], STRENGTH_WEAK); // an occupant some candidates displace
+    std::vector<PreparedPlacementTransaction> prepared;
+    for (unsigned i = 0; i < 24; ++i) {
+        const BelId bel = alms.at(i % 10).ff_bels.at(i % 4);
+        CellInfo *bound = ctx->getBoundBelCell(bel);
+        prepared.push_back(prepare_placement_transaction(
+                *ctx, {{bel, bound, bound ? bound->belStrength : STRENGTH_NONE, cells[i % 8], STRENGTH_STRONG}}));
+        ASSERT_TRUE(prepared.back());
+    }
+    std::vector<FrozenPlacementCandidate> reference;
+    for (const auto &transaction : prepared)
+        reference.push_back(freeze_placement_candidate(*ctx, transaction));
+    const auto before = ctx->placement_revision.stamp();
+    for (unsigned workers : {1u, 4u, 8u}) {
+        SCOPED_TRACE(workers);
+        PlacementCandidateCoordinator coordinator(*ctx, workers);
+        std::vector<FrozenPlacementCandidate> frozen;
+        std::vector<PlacementCandidateAssessment> results;
+        std::vector<uint8_t> agrees;
+        coordinator.freeze_and_evaluate(prepared, frozen, results, agrees);
+        ASSERT_EQ(frozen.size(), prepared.size());
+        for (size_t i = 0; i < prepared.size(); ++i) {
+            EXPECT_EQ(frozen[i].status, FrozenPlacementStatus::Ready);
+            EXPECT_EQ(frozen[i].stamp.revision, reference[i].stamp.revision);
+            ASSERT_EQ(frozen[i].queries.size(), reference[i].queries.size());
+            for (size_t q = 0; q < frozen[i].queries.size(); ++q)
+                EXPECT_EQ(std::memcmp(&frozen[i].queries[q], &reference[i].queries[q], sizeof(NpnrLabFactsV2)), 0);
+            EXPECT_TRUE(agrees[i]);
+            EXPECT_EQ(results[i].legal, evaluate_placement_candidate(reference[i]).legal);
+            EXPECT_EQ(results[i].legal, (i % 4) % 2 == 0);
+        }
+        const auto &s = coordinator.stats();
+        EXPECT_EQ(s.evaluated, 24u);
+        EXPECT_EQ(s.pool_runs, 1u);
+        if (workers > 1)
+            EXPECT_GT(s.frozen_by_workers, 0u);
+        else
+            EXPECT_EQ(s.frozen_by_workers, 0u);
+#ifndef NO_RUST
+        EXPECT_EQ(s.rust_batches, 24u);
+        EXPECT_EQ(s.rust_direct, 0u);
+#endif
+    }
+    EXPECT_TRUE(ctx->placement_revision.is_current(before));
+    ctx->unbindBel(alms.at(5).ff_bels.at(0));
+    for (unsigned i = 0; i < 8; ++i)
+        cells[i]->disconnectPort(id_CLK);
+    for (auto *cell : cells)
+        EXPECT_EQ(cell->bel, BelId());
 }
 
 TEST_F(LabControlCaptureTest, BatchCoordinatorDetachedEvaluationMatchesSerialAndNeverMutates)

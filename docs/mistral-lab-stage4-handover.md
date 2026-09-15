@@ -121,21 +121,26 @@ trajectory matches the serial search. `try_place_cluster` was split into
 `build_cluster_candidate` and `finish_cluster_move`, and the location step into
 `next_random_location`, so both paths share one implementation.
 
-`PlacementCandidateCoordinator` (Mistral) prepares and freezes every candidate
-on the owner thread, evaluates them on a persistent pool of `--threads` workers
-(detached C++ authority plus Rust cross-check through Rust-owned frozen
-handles), consumes results strictly in proposal order, and commits after
-rechecking the stamp and every expected owner. The stale policy (two
+`PlacementCandidateCoordinator` (Mistral) prepares every candidate on the
+owner thread; workers then freeze each candidate's overlay facts, create their
+own Rust-owned handle, evaluate the detached C++ reference, and require Rust
+agreement (parallel freezing, added after the scaling analysis). The owner
+consumes results strictly in proposal order and commits after rechecking the
+stamp and every expected owner. Workers may read the live design because the
+owner is blocked during the parallel section and the capture path writes no
+shared state; a test compares worker-captured facts byte for byte with
+owner-captured ones. The stale policy (two
 asynchronous retries, then synchronous) is implemented and counted; it cannot
 trigger because only the owner mutates. Unsupported candidates truncate the
 batch and HeAP replays that location through the serial path.
 
 Every Fabi386 configuration from budget 2 to 64 and 1 to 16 workers is
-byte-identical to the Stage 4C artifacts. The measured outcome is negative for
-speed: the serial search rejects 0.77 candidates per commit, so almost all
-speculated work is discarded, and its owner-side capture outweighs what the
-workers save; strict legalisation is under 2.5% of wall time anyway. The
-tracker records the full table.
+byte-identical to the Stage 4C artifacts. With parallel freezing the lookahead
+phase scales (budget 64: 4.69 s on one worker to 1.60 s on eight; budget 8:
+1.25 s to 0.83 s) and comes within about 10% of the serial search's 0.75 s
+without beating it. It is under 3% of wall time on Fabi386, whose serial
+search rejects only 0.77 candidates per commit, so the default stays serial;
+the option is meant for workloads where legalisation is minutes. The tracker records the tables.
 
 The option travels in `ArchArgs::placer_lookahead`, not `ctx->settings`.
 Interning a new settings key shifted `IdString` indices and changed both the
@@ -243,7 +248,8 @@ and routing time, RSS, and counters recorded in the tracker. It is not promoted.
 
 Anyone revisiting lookahead for speed should note that the useful work per batch
 is bounded by the rejection run before the next commit (0.77 on Fabi386), so a
-budget above 2 mostly discards candidates. A frozen-epoch search policy
+budget above 2 mostly discards candidates; parallel freezing makes that
+discarded work nearly free but not free. A frozen-epoch search policy
 (evaluate several alternatives per cell and choose in sequence order) would
 change the search trajectory and needs its own reproducibility gate; that is a
 new decision, not a continuation of 4D.

@@ -71,6 +71,9 @@ struct PlacementCandidateAssessment
 
 PreparedPlacementTransaction prepare_placement_transaction(const Arch &arch, std::vector<PlacementBindingEdit> edits);
 PlacementCommitOutcome commit_placement_transaction(Arch &arch, PreparedPlacementTransaction &&transaction);
+// True when every edited BEL is a LAB COMB/MCOMB/FF BEL, i.e. freezing would
+// not report Unsupported. Reads BEL types only; no capture.
+bool placement_candidate_supported(const Arch &arch, const PreparedPlacementTransaction &transaction);
 FrozenPlacementCandidate freeze_placement_candidate(const Arch &arch, const PreparedPlacementTransaction &transaction);
 PlacementCandidateAssessment evaluate_placement_candidate(const FrozenPlacementCandidate &candidate);
 bool placement_candidate_rust_matches(const FrozenPlacementCandidate &candidate,

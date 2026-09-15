@@ -102,8 +102,10 @@ sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared w
 - Stage 4D parallel evaluation is opt-in via `--placer-lookahead N` (candidates speculated per
   clustered HeAP move) with `--threads W` workers. HeAP generates candidates in serial order and
   restores its RNG/radius state after a commit (`legalise_cluster_lookahead` in `placer_heap.cc`);
-  `mistral/placement_coordinator.*` freezes, evaluates on a worker pool, cross-checks Rust through
-  frozen batch handles, and commits strictly in proposal order. Results are byte-identical to the
+  `mistral/placement_coordinator.*` prepares on the owner, then workers freeze each candidate's
+  overlay, create their own Rust handle, evaluate, and cross-check (parallel freezing); the owner
+  commits strictly in proposal order. Workers may read the live design only because the owner is
+  blocked during the parallel section and the capture path writes no shared state. Results are byte-identical to the
   serial search. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.

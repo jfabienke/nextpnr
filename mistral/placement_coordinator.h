@@ -3,6 +3,7 @@
 #define MISTRAL_PLACEMENT_COORDINATOR_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -12,13 +13,13 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-// Counters for the Stage 4D batch path. All are owner-thread values; workers
-// never touch them.
+// Counters for the Stage 4D batch path. Owner-thread values; worker tallies
+// are folded in after each parallel section.
 struct PlacementBatchStats
 {
     uint64_t batches = 0;
     uint64_t candidates = 0;            // candidates handed to the coordinator
-    uint64_t evaluated = 0;             // candidates evaluated detached (supported prefix)
+    uint64_t evaluated = 0;             // candidates frozen and evaluated detached (supported prefix)
     uint64_t queries = 0;               // V2 facts evaluated by C++ (Rust evaluates the same prefix)
     uint64_t committed = 0;             // exactly one per batch that commits
     uint64_t rejected = 0;              // illegal candidates before the committed one
@@ -27,19 +28,25 @@ struct PlacementBatchStats
     uint64_t stale = 0;                 // commits that found a changed stamp or owner (must stay 0)
     uint64_t stale_retries = 0;         // asynchronous re-evaluations of a stale proposal
     uint64_t synchronous_fallbacks = 0; // proposals re-evaluated inline by the owner
-    uint64_t rust_batches = 0;          // frozen Rust handles created
+    uint64_t rust_batches = 0;          // frozen Rust handles created (one per candidate, by its worker)
     uint64_t rust_direct = 0;           // candidates cross-checked through the one-shot FFI instead
+    uint64_t frozen_by_workers = 0;     // candidates whose overlay capture ran on a worker (owner = worker 0)
+    uint64_t pool_runs = 0;             // parallel sections
+    uint64_t pool_spin_wakes = 0;       // worker wake-ups served by the spin phase, no blocking
+    uint64_t pool_block_wakes = 0;      // worker wake-ups that had to block on the condition variable
     uint64_t max_candidates = 0;
     uint64_t max_queries = 0;
 };
 
 // Owner-side scheduler for speculated HeAP cluster candidates. The owner
-// prepares and freezes every candidate while it holds the live design, workers
-// evaluate the frozen facts (C++ authority plus a Rust cross-check that must
-// agree exactly), and the owner consumes assessments strictly in proposal
-// order and commits the first legal one. Nothing but the owner ever mutates
-// the design, so a stale stamp at commit time is a bug, not an expected event;
-// it is still checked and, if seen, the proposal is re-evaluated synchronously.
+// prepares every candidate (binding edits plus revision stamp) and decides the
+// supported prefix; workers then freeze the candidate's whole-LAB facts with
+// its occupancy overlay, create their own Rust-owned handle, evaluate the
+// detached C++ reference, and require Rust agreement. The owner consumes
+// assessments strictly in proposal order and commits the first legal one.
+// Workers read the live design only while the owner is blocked in the
+// parallel section, so the design is immutable for them; nothing they touch
+// interns an IdString or updates a mutable cache.
 class PlacementCandidateCoordinator
 {
   public:
@@ -56,17 +63,28 @@ class PlacementCandidateCoordinator
     // HeAP batch callback. Candidates are in proposal order.
     HeAPClusterBatchOutcome place(const std::vector<HeAPClusterCandidate> &candidates);
 
-    // Detached evaluation of an already frozen batch, in parallel when workers
-    // are available. `rust_agrees[i]` is false when the Rust evaluator differs
-    // from the C++ result for candidate i. Exposed for tests; it never mutates.
+    // Parallel freeze plus evaluation of prepared transactions: frozen[i] is
+    // captured by whichever worker claims i. Never mutates. `rust_agrees[i]`
+    // is false when the Rust evaluator differs from the C++ result.
+    void freeze_and_evaluate(const std::vector<PreparedPlacementTransaction> &prepared,
+                             std::vector<FrozenPlacementCandidate> &frozen,
+                             std::vector<PlacementCandidateAssessment> &results, std::vector<uint8_t> &rust_agrees);
+
+    // Detached evaluation of already frozen candidates (tests and the stale
+    // retry path). Never mutates.
     void evaluate(const std::vector<FrozenPlacementCandidate> &frozen,
                   std::vector<PlacementCandidateAssessment> &results, std::vector<uint8_t> &rust_agrees);
 
   private:
     struct Pool;
+    struct WorkerTally;
+    void assess(unsigned worker, const FrozenPlacementCandidate &frozen, PlacementCandidateAssessment &result,
+                uint8_t &rust_agrees, WorkerTally &tally);
+    void run_jobs(size_t count, const std::function<void(unsigned, size_t)> &job);
     Arch &arch_;
     unsigned workers_;
     std::unique_ptr<Pool> pool_;
+    std::vector<std::vector<NpnrLabAssessmentV2>> scratch_;
     PlacementBatchStats stats_;
 };
 

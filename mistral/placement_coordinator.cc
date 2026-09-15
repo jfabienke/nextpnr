@@ -3,10 +3,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "arch.h"
@@ -16,14 +19,33 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-// A persistent pool of (workers - 1) threads plus the calling owner thread. Each
-// job is a range of indices claimed dynamically; results are addressed by index,
-// so claim order never influences what the owner sees.
+namespace {
+inline void cpu_relax()
+{
+#if defined(__aarch64__)
+    asm volatile("yield");
+#elif defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+}
+} // namespace
+
+struct PlacementCandidateCoordinator::WorkerTally
+{
+    uint64_t evaluated = 0, queries = 0, rust_batches = 0, rust_direct = 0, frozen = 0;
+};
+
+// A persistent pool of (workers - 1) threads plus the calling owner thread.
+// Each job is a range of indices claimed dynamically; results are addressed by
+// index, so claim order never influences what the owner sees. Workers spin for
+// a bounded time before blocking, because a batch of eight candidates holds
+// tens of microseconds of work, comparable to a condition-variable wake.
 struct PlacementCandidateCoordinator::Pool
 {
     using Job = std::function<void(unsigned worker, size_t index)>;
+    static constexpr auto SPIN_LIMIT = std::chrono::microseconds(50);
 
-    explicit Pool(unsigned threads)
+    explicit Pool(unsigned threads) : failures(threads + 1)
     {
         for (unsigned i = 0; i < threads; ++i)
             workers.emplace_back([this, i] { worker_loop(i + 1); });
@@ -32,75 +54,122 @@ struct PlacementCandidateCoordinator::Pool
     {
         {
             std::lock_guard<std::mutex> lock(mutex);
-            stop = true;
+            stop.store(true, std::memory_order_release);
         }
         wake.notify_all();
         for (auto &thread : workers)
             thread.join();
     }
 
-    void run(size_t count, const Job &fn)
+    // Runs `fn` over [0, count) on all workers plus the caller. Returns the first
+    // worker failure message, or an empty string.
+    std::string run(size_t count, const Job &fn)
     {
+        for (auto &failure : failures)
+            failure.clear();
         {
             std::lock_guard<std::mutex> lock(mutex);
             job = &fn;
             job_count = count;
             next.store(0, std::memory_order_relaxed);
-            finished = 0;
-            ++generation;
+            finished.store(0, std::memory_order_relaxed);
+            generation.fetch_add(1, std::memory_order_release);
         }
         wake.notify_all();
         claim(0, fn, count);
-        std::unique_lock<std::mutex> lock(mutex);
-        done.wait(lock, [&] { return finished == workers.size(); });
+        if (!spin_until([&] { return finished.load(std::memory_order_acquire) == workers.size(); })) {
+            std::unique_lock<std::mutex> lock(mutex);
+            done.wait(lock, [&] { return finished.load(std::memory_order_acquire) == workers.size(); });
+        }
         job = nullptr;
+        for (const auto &failure : failures)
+            if (!failure.empty())
+                return failure;
+        return {};
     }
 
+    uint64_t spin_wakes = 0, block_wakes = 0; // written by workers under the mutex, read by the owner between runs
+
   private:
+    template <typename Predicate> static bool spin_until(Predicate ready)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + SPIN_LIMIT;
+        while (true) {
+            for (unsigned i = 0; i < 64; ++i) {
+                if (ready())
+                    return true;
+                cpu_relax();
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+                return ready();
+        }
+    }
+
     void claim(unsigned worker, const Job &fn, size_t count)
     {
         for (size_t i = next.fetch_add(1, std::memory_order_relaxed); i < count;
-             i = next.fetch_add(1, std::memory_order_relaxed))
-            fn(worker, i);
+             i = next.fetch_add(1, std::memory_order_relaxed)) {
+            if (!failures[worker].empty())
+                continue; // drain: a failed worker keeps claiming and skipping so the run completes
+            try {
+                fn(worker, i);
+            } catch (const std::exception &e) {
+                failures[worker] = e.what();
+            } catch (...) {
+                failures[worker] = "unknown exception";
+            }
+        }
     }
 
     void worker_loop(unsigned worker)
     {
         uint64_t seen = 0;
         while (true) {
+            const bool spun = spin_until([&] {
+                return stop.load(std::memory_order_acquire) || generation.load(std::memory_order_acquire) != seen;
+            });
             const Job *fn;
             size_t count;
             {
                 std::unique_lock<std::mutex> lock(mutex);
-                wake.wait(lock, [&] { return stop || generation != seen; });
-                if (stop)
+                if (!spun)
+                    wake.wait(lock, [&] {
+                        return stop.load(std::memory_order_acquire) ||
+                               generation.load(std::memory_order_acquire) != seen;
+                    });
+                if (stop.load(std::memory_order_acquire))
                     return;
-                seen = generation;
+                seen = generation.load(std::memory_order_acquire);
                 fn = job;
                 count = job_count;
+                if (spun)
+                    ++spin_wakes;
+                else
+                    ++block_wakes;
             }
             claim(worker, *fn, count);
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                ++finished;
+                finished.fetch_add(1, std::memory_order_release);
             }
             done.notify_all();
         }
     }
 
     std::vector<std::thread> workers;
+    std::vector<std::string> failures;
     std::mutex mutex;
     std::condition_variable wake, done;
     const Job *job = nullptr;
     size_t job_count = 0;
     std::atomic<size_t> next{0};
-    size_t finished = 0;
-    uint64_t generation = 0;
-    bool stop = false;
+    std::atomic<size_t> finished{0};
+    std::atomic<uint64_t> generation{0};
+    std::atomic<bool> stop{false};
 };
 
 PlacementCandidateCoordinator::PlacementCandidateCoordinator(Arch &arch, unsigned workers)
-        : arch_(arch), workers_(std::max(1u, workers))
+        : arch_(arch), workers_(std::max(1u, workers)), scratch_(workers_)
 {
     if (workers_ > 1)
         pool_ = std::make_unique<Pool>(workers_ - 1);
@@ -127,26 +196,16 @@ placement_edits_for_candidate(const std::vector<std::pair<CellInfo *, BelId>> &t
 }
 
 namespace {
-
-// Where candidate i's queries live inside the flattened Rust batches. A
-// candidate whose queries do not fit one 64-record handle is checked through the
-// one-shot FFI instead (`handle == SIZE_MAX`).
-struct RustSlice
-{
-    size_t handle = SIZE_MAX;
-    uint32_t offset = 0;
-};
-
 #ifndef NO_RUST
 bool rust_prefix_matches(const FrozenPlacementCandidate &candidate, const PlacementCandidateAssessment &cpp,
-                         const RustFrozenLabBatchV2 &batch, uint32_t offset, std::vector<NpnrLabAssessmentV2> &scratch)
+                         const RustFrozenLabBatchV2 &batch, std::vector<NpnrLabAssessmentV2> &scratch)
 {
     if (candidate.status != FrozenPlacementStatus::Ready || cpp.status != FrozenPlacementStatus::Ready ||
         cpp.results.empty() || cpp.results.size() > candidate.queries.size())
         return false;
     const auto count = uint32_t(cpp.results.size());
     scratch.resize(count);
-    if (batch.evaluate(offset, count, scratch.data(), count) != NPNR_LAB_CALL_OK)
+    if (batch.evaluate(0, count, scratch.data(), count) != NPNR_LAB_CALL_OK)
         return false;
     for (uint32_t i = 0; i < count; ++i)
         if (!lab_v2_result_valid(candidate.queries[i], scratch[i]) || !lab_v2_results_match(cpp.results[i], scratch[i]))
@@ -154,8 +213,81 @@ bool rust_prefix_matches(const FrozenPlacementCandidate &candidate, const Placem
     return true;
 }
 #endif
-
 } // namespace
+
+// Runs on the claiming worker. Pure: reads the frozen facts only.
+void PlacementCandidateCoordinator::assess(unsigned worker, const FrozenPlacementCandidate &frozen,
+                                           PlacementCandidateAssessment &result, uint8_t &rust_agrees,
+                                           WorkerTally &tally)
+{
+    rust_agrees = 1;
+    result = evaluate_placement_candidate(frozen);
+    if (result.status != FrozenPlacementStatus::Ready)
+        return; // the owner reports it
+    ++tally.evaluated;
+    tally.queries += frozen.queries.size();
+#ifndef NO_RUST
+    // Each worker owns its handle for the duration of one candidate; the Rust
+    // quota (two live handles per worker id) is never approached.
+    if (frozen.queries.size() <= NPNR_LAB_MAX_BATCH) {
+        uint32_t status = NPNR_LAB_CALL_LIMIT;
+        auto handle = RustFrozenLabBatchV2::create(frozen.queries, uint64_t(worker) + 1, status);
+        if (status == NPNR_LAB_CALL_OK && handle) {
+            rust_agrees = rust_prefix_matches(frozen, result, handle, scratch_.at(worker));
+            ++tally.rust_batches;
+            return;
+        }
+    }
+    rust_agrees = placement_candidate_rust_matches(frozen, result);
+    ++tally.rust_direct;
+#else
+    (void)worker;
+#endif
+}
+
+void PlacementCandidateCoordinator::run_jobs(size_t count, const std::function<void(unsigned, size_t)> &job)
+{
+    if (count == 0)
+        return;
+    ++stats_.pool_runs;
+    if (!pool_) {
+        for (size_t i = 0; i < count; ++i)
+            job(0, i);
+        return;
+    }
+    const auto failure = pool_->run(count, job);
+    stats_.pool_spin_wakes = pool_->spin_wakes;
+    stats_.pool_block_wakes = pool_->block_wakes;
+    if (!failure.empty())
+        log_error("A placement worker failed: %s\n", failure.c_str());
+}
+
+void PlacementCandidateCoordinator::freeze_and_evaluate(const std::vector<PreparedPlacementTransaction> &prepared,
+                                                        std::vector<FrozenPlacementCandidate> &frozen,
+                                                        std::vector<PlacementCandidateAssessment> &results,
+                                                        std::vector<uint8_t> &rust_agrees)
+{
+    frozen.assign(prepared.size(), {});
+    results.assign(prepared.size(), {});
+    rust_agrees.assign(prepared.size(), 1);
+    std::vector<WorkerTally> tallies(workers_);
+    run_jobs(prepared.size(), [&](unsigned worker, size_t i) {
+        frozen[i] = freeze_placement_candidate(arch_, prepared[i]);
+        ++tallies[worker].frozen;
+        if (frozen[i].status == FrozenPlacementStatus::Ready)
+            assess(worker, frozen[i], results[i], rust_agrees[i], tallies[worker]);
+        else
+            results[i].status = frozen[i].status;
+    });
+    for (unsigned w = 0; w < workers_; ++w) {
+        stats_.evaluated += tallies[w].evaluated;
+        stats_.queries += tallies[w].queries;
+        stats_.rust_batches += tallies[w].rust_batches;
+        stats_.rust_direct += tallies[w].rust_direct;
+        if (w != 0)
+            stats_.frozen_by_workers += tallies[w].frozen;
+    }
+}
 
 void PlacementCandidateCoordinator::evaluate(const std::vector<FrozenPlacementCandidate> &frozen,
                                              std::vector<PlacementCandidateAssessment> &results,
@@ -163,79 +295,19 @@ void PlacementCandidateCoordinator::evaluate(const std::vector<FrozenPlacementCa
 {
     results.assign(frozen.size(), {});
     rust_agrees.assign(frozen.size(), 1);
-    if (frozen.empty())
-        return;
-
-    // Publish the frozen facts to Rust-owned handles before any worker starts.
-    // Handles are created here, on the owner, and outlive the parallel section.
-    std::vector<RustSlice> slices(frozen.size());
-    std::vector<RustFrozenLabBatchV2> handles;
-#ifndef NO_RUST
-    {
-        std::vector<NpnrLabFactsV2> pending;
-        std::vector<size_t> pending_candidates;
-        auto flush = [&] {
-            if (pending.empty())
-                return;
-            uint32_t status = NPNR_LAB_CALL_LIMIT;
-            auto handle = RustFrozenLabBatchV2::create(pending, uint64_t(handles.size()), status);
-            if (status == NPNR_LAB_CALL_OK && handle) {
-                for (size_t c : pending_candidates)
-                    slices[c].handle = handles.size();
-                handles.push_back(std::move(handle));
-                ++stats_.rust_batches;
-            } else {
-                // Quota or validation refusal: these candidates use the one-shot path.
-                for (size_t c : pending_candidates)
-                    slices[c].handle = SIZE_MAX;
-            }
-            pending.clear();
-            pending_candidates.clear();
-        };
-        for (size_t c = 0; c < frozen.size(); ++c) {
-            const auto &queries = frozen[c].queries;
-            if (frozen[c].status != FrozenPlacementStatus::Ready || queries.empty() ||
-                queries.size() > NPNR_LAB_MAX_BATCH)
-                continue;
-            if (pending.size() + queries.size() > NPNR_LAB_MAX_BATCH)
-                flush();
-            slices[c].offset = uint32_t(pending.size());
-            pending.insert(pending.end(), queries.begin(), queries.end());
-            pending_candidates.push_back(c);
-        }
-        flush();
+    std::vector<WorkerTally> tallies(workers_);
+    run_jobs(frozen.size(), [&](unsigned worker, size_t i) {
+        if (frozen[i].status == FrozenPlacementStatus::Ready)
+            assess(worker, frozen[i], results[i], rust_agrees[i], tallies[worker]);
+        else
+            results[i].status = frozen[i].status;
+    });
+    for (const auto &tally : tallies) {
+        stats_.evaluated += tally.evaluated;
+        stats_.queries += tally.queries;
+        stats_.rust_batches += tally.rust_batches;
+        stats_.rust_direct += tally.rust_direct;
     }
-#endif
-
-    // Worker 0 is the owner thread; each worker owns one scratch buffer and
-    // writes only results[i] / rust_agrees[i] for the indices it claims.
-    std::vector<std::vector<NpnrLabAssessmentV2>> scratch(workers_);
-    auto job = [&](unsigned worker, size_t i) {
-        auto &mine = scratch.at(worker);
-        results[i] = evaluate_placement_candidate(frozen[i]);
-#ifndef NO_RUST
-        if (results[i].status == FrozenPlacementStatus::Ready) {
-            if (slices[i].handle != SIZE_MAX)
-                rust_agrees[i] =
-                        rust_prefix_matches(frozen[i], results[i], handles[slices[i].handle], slices[i].offset, mine);
-            else
-                rust_agrees[i] = placement_candidate_rust_matches(frozen[i], results[i]);
-        }
-#else
-        (void)mine;
-#endif
-    };
-    if (pool_)
-        pool_->run(frozen.size(), job);
-    else
-        for (size_t i = 0; i < frozen.size(); ++i)
-            job(0, i);
-
-#ifndef NO_RUST
-    for (size_t c = 0; c < frozen.size(); ++c)
-        if (frozen[c].status == FrozenPlacementStatus::Ready && slices[c].handle == SIZE_MAX)
-            ++stats_.rust_direct;
-#endif
 }
 
 HeAPClusterBatchOutcome PlacementCandidateCoordinator::place(const std::vector<HeAPClusterCandidate> &candidates)
@@ -244,45 +316,41 @@ HeAPClusterBatchOutcome PlacementCandidateCoordinator::place(const std::vector<H
     stats_.candidates += candidates.size();
     stats_.max_candidates = std::max<uint64_t>(stats_.max_candidates, candidates.size());
 
-    // 1. Prepare and freeze on the owner, in proposal order, while the live
-    //    design is stable. Stop at the first unsupported candidate: HeAP handles
-    //    it with the live path and everything after it is never proposed.
+    // 1. Prepare on the owner, in proposal order, while the live design is
+    //    stable. The supported prefix is decided from BEL types alone; the
+    //    first unsupported candidate truncates the batch (HeAP replays it live)
+    //    and everything after it is never proposed.
     std::vector<PreparedPlacementTransaction> prepared;
-    std::vector<FrozenPlacementCandidate> frozen;
     prepared.reserve(candidates.size());
-    frozen.reserve(candidates.size());
     size_t supported = candidates.size();
-    uint64_t batch_queries = 0;
     for (size_t i = 0; i < candidates.size(); ++i) {
         auto transaction = prepare_placement_transaction(
                 arch_, placement_edits_for_candidate(candidates[i].targets, candidates[i].displaced));
         if (!transaction)
             log_error("Failed to preflight a detached HeAP cluster candidate (batch %" PRIu64 ", index %zu).\n",
                       stats_.batches, i);
-        auto candidate = freeze_placement_candidate(arch_, transaction);
-        if (candidate.status == FrozenPlacementStatus::Unsupported) {
+        if (!placement_candidate_supported(arch_, transaction)) {
             supported = i;
             ++stats_.unsupported;
             break;
         }
-        if (candidate.status != FrozenPlacementStatus::Ready)
-            log_error("Failed to freeze a detached HeAP cluster candidate (batch %" PRIu64 ", index %zu).\n",
-                      stats_.batches, i);
-        batch_queries += candidate.queries.size();
         prepared.push_back(std::move(transaction));
-        frozen.push_back(std::move(candidate));
     }
-    stats_.evaluated += frozen.size();
-    stats_.queries += batch_queries;
-    stats_.max_queries = std::max(stats_.max_queries, batch_queries);
 
-    // 2. Detached evaluation.
+    // 2. Parallel freeze and detached evaluation. The owner is blocked here, so
+    //    the design is immutable for every worker.
+    const uint64_t queries_before = stats_.queries;
+    std::vector<FrozenPlacementCandidate> frozen;
     std::vector<PlacementCandidateAssessment> results;
     std::vector<uint8_t> rust_agrees;
-    evaluate(frozen, results, rust_agrees);
+    freeze_and_evaluate(prepared, frozen, results, rust_agrees);
+    stats_.max_queries = std::max(stats_.max_queries, stats_.queries - queries_before);
 
     // 3. Consume strictly in proposal order.
-    for (size_t i = 0; i < frozen.size(); ++i) {
+    for (size_t i = 0; i < prepared.size(); ++i) {
+        if (frozen[i].status != FrozenPlacementStatus::Ready)
+            log_error("Failed to freeze a detached HeAP cluster candidate (batch %" PRIu64 ", index %zu).\n",
+                      stats_.batches, i);
         if (results[i].status != FrozenPlacementStatus::Ready)
             log_error("Failed to evaluate a detached HeAP cluster candidate (batch %" PRIu64 ", index %zu).\n",
                       stats_.batches, i);
@@ -307,22 +375,26 @@ HeAPClusterBatchOutcome PlacementCandidateCoordinator::place(const std::vector<H
                     arch_, placement_edits_for_candidate(candidates[i].targets, candidates[i].displaced));
             if (!again)
                 log_error("Failed to preflight a stale HeAP cluster candidate.\n");
-            auto refrozen = freeze_placement_candidate(arch_, again);
-            if (refrozen.status != FrozenPlacementStatus::Ready)
-                log_error("Failed to refreeze a stale HeAP cluster candidate.\n");
             PlacementCandidateAssessment assessment;
             if (retry < MAX_STALE_RETRIES) {
                 ++stats_.stale_retries;
-                std::vector<FrozenPlacementCandidate> one;
-                one.push_back(std::move(refrozen));
+                std::vector<PreparedPlacementTransaction> one;
+                one.push_back(std::move(again));
+                std::vector<FrozenPlacementCandidate> one_frozen;
                 std::vector<PlacementCandidateAssessment> one_result;
                 std::vector<uint8_t> one_agrees;
-                evaluate(one, one_result, one_agrees);
+                freeze_and_evaluate(one, one_frozen, one_result, one_agrees);
+                if (one_frozen[0].status != FrozenPlacementStatus::Ready)
+                    log_error("Failed to refreeze a stale HeAP cluster candidate.\n");
                 if (!one_agrees[0])
                     log_error("Rust disagrees with detached C++ for a stale HeAP cluster candidate.\n");
                 assessment = std::move(one_result[0]);
+                again = std::move(one[0]);
             } else {
                 ++stats_.synchronous_fallbacks;
+                auto refrozen = freeze_placement_candidate(arch_, again);
+                if (refrozen.status != FrozenPlacementStatus::Ready)
+                    log_error("Failed to refreeze a stale HeAP cluster candidate.\n");
                 assessment = evaluate_placement_candidate(refrozen);
                 if (!placement_candidate_rust_matches(refrozen, assessment))
                     log_error("Rust disagrees with detached C++ for a synchronous HeAP cluster candidate.\n");
@@ -336,7 +408,7 @@ HeAPClusterBatchOutcome PlacementCandidateCoordinator::place(const std::vector<H
         }
         if (outcome == PlacementCommitOutcome::Committed) {
             ++stats_.committed;
-            stats_.discarded += frozen.size() - i - 1;
+            stats_.discarded += prepared.size() - i - 1;
             return {HeAPClusterBatchStatus::Committed, i};
         }
         ++stats_.rejected;
@@ -355,7 +427,9 @@ void report_placement_batch_stats(const PlacementCandidateCoordinator &coordinat
     log_info("  committed=%" PRIu64 ", rejected=%" PRIu64 ", discarded=%" PRIu64 ", unsupported=%" PRIu64
              ", stale=%" PRIu64 ", stale-retries=%" PRIu64 ", synchronous-fallbacks=%" PRIu64 "\n",
              s.committed, s.rejected, s.discarded, s.unsupported, s.stale, s.stale_retries, s.synchronous_fallbacks);
-    log_info("  rust frozen handles=%" PRIu64 ", one-shot cross-checks=%" PRIu64 "\n", s.rust_batches, s.rust_direct);
+    log_info("  rust frozen handles=%" PRIu64 ", one-shot cross-checks=%" PRIu64 ", frozen by workers=%" PRIu64
+             "; pool runs=%" PRIu64 ", spin wakes=%" PRIu64 ", blocking wakes=%" PRIu64 "\n",
+             s.rust_batches, s.rust_direct, s.frozen_by_workers, s.pool_runs, s.pool_spin_wakes, s.pool_block_wakes);
 }
 
 NEXTPNR_NAMESPACE_END

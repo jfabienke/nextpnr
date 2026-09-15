@@ -937,6 +937,72 @@ Artifacts: `build/stage4e-validation/bench-*.csv`, `bench2-*.csv`, and
 
 
 
+### 2026-09-15: Parallel freezing
+
+Implemented the step the scaling analysis identified. `PlacementCandidateCoordinator::place()`
+now does only preparation on the owner: binding edits, the revision stamp, and
+the supported prefix decided from BEL types alone (`placement_candidate_supported`,
+no capture). Workers claim candidates, freeze the whole-LAB overlay facts
+themselves (`freeze_placement_candidate` on the shared `const Arch`), create a
+Rust-owned handle for that candidate under their own worker id, evaluate the
+detached C++ reference, and require Rust agreement. The owner consumes in
+proposal order and commits exactly as before. Workers read the live design
+only while the owner is blocked in the parallel section; the capture path
+assigns local net ids without interning and touches no mutable cache, which
+the new `BatchCoordinatorParallelFreezeMatchesOwnerFreeze` test checks by
+comparing every worker-captured fact record byte for byte with an
+owner-captured reference at 1, 4, and 8 workers.
+
+Two pool changes came with it. Workers and the owner spin for at most 50 µs
+before blocking on the condition variable, because a budget-8 batch holds
+about 50 µs of work. Worker exceptions are caught per job, the run drains,
+and the owner reports the first failure through `log_error` instead of the
+process terminating inside a worker.
+
+Fabi386, every run byte-identical to the Stage 4C artifacts with checksums
+`0xbb18ede9` / `0xbc1365c6`, 1,632 commits, 1,260 rejections, zero stale:
+
+| Budget | Workers | Strict legalisation | Before (owner freeze) | Frozen by workers | Spin / blocking wakes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 1 | 1.28 s | 1.26 s | 0 | — |
+| 8 | 8 | 0.83 s | 1.31 s | 11,614 of 14,304 | 7,058 / 5,458 |
+| 64 | 1 | 4.69 s | 4.95 s | 0 | — |
+| 64 | 8 | 1.60 s (repeat 1.61 s) | 4.28 s | 90,279 of 105,600 | 0 / 11,550 |
+| 64 | 16 | 1.49 s | — | 97,376 of 105,600 | 0 / 24,750 |
+
+Amdahl on budget 64 now gives a parallel fraction of about 0.75 (8 workers)
+to 0.73 (16 workers), up from 0.155. The remaining serial share is
+preparation, ordered consumption, the commit, and HeAP's own candidate
+generation between batches, which is why 16 workers add little over 8. At
+budget 8 the spin phase serves 56% of wake-ups; at budget 64 the owner's work
+between batches exceeds the spin limit and every wake-up blocks, which costs
+nothing there because the batches are large.
+
+Contemporaneous repeats (same binary, same session, nothing else running):
+
+| Configuration | Strict legalisation, three runs |
+| --- | ---: |
+| serial | 0.75, 0.75 s (plus the earlier session's 0.94, 0.95, 2.06 s) |
+| budget 8, 1 worker | 1.28, 1.24, 1.24 s |
+| budget 8, 8 workers | 0.83, 0.84, 0.82 s |
+
+So parallel freezing takes the budget-8 phase from 1.25 s to 0.83 s, within
+about 10% of the serial search measured in the same session, but not below
+it: the serial search does 2,892 evaluations and the lookahead does 14,304,
+and eight workers do not quite absorb the difference. The end-to-end
+conclusion therefore stands: on Fabi386 lookahead is break-even at best and
+the phase is under 3% of wall time, so the default stays serial. What
+changed is that the phase now scales, which is what a workload with many
+rejections per commit needs; there the phase is minutes and the same
+parallel fraction applies.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 53/53 pass (new: worker-captured facts byte-identical to owner capture at 1/4/8 workers; existing batch tests updated for one handle per candidate) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 43/43 pass |
+| Fabi386 budgets 8 and 64, 1/8/16 workers, plus a budget-64 repeat | All byte-identical; as tabulated |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -982,7 +1048,9 @@ Artifacts: `build/stage4e-validation/bench-*.csv`, `bench2-*.csv`, and
 | 2026-09-15 | 4E | Reject the content tier for promotion; keep it as an explicit mode | Sub-result hits rose from 14.5% to 28.9% but HeAP time doubled (9.95 s to 20.09 s) because each stale query pays a whole-LAB capture |
 | 2026-09-15 | 4E | Object creation does not invalidate LAB assessments | A created cell or net is nobody's dependency until bound or connected, both tracked precisely; the global bump had dirtied 4,020 prepared LABs during route-through insertion |
 | 2026-09-15 | scaling | Prefer dynamic claiming with whole-pass units for parallel evaluation | 14.83x at 16 workers and 16.09x at 20 versus 12.20x static; static partitions wait for threads on efficiency cores, and 4-record claims contend on the counter |
-| 2026-09-15 | scaling | Do not implement parallel freezing now | Only 15% of the lookahead phase is evaluation; moving capture to workers would scale the phase but cannot beat the serial search on a workload with 0.77 rejections per commit |
+| 2026-09-15 | scaling | Do not implement parallel freezing now (superseded the same day at the user's request) | Only 15% of the lookahead phase was evaluation; implementing it confirmed the phase scales without beating the serial search on this design |
+| 2026-09-15 | scaling | Implement parallel freezing with per-worker Rust handles and a bounded spin before blocking | Parallel fraction 0.15 to 0.75; budget-64 phase 4.69 s to 1.60 s on 8 workers; budget 8 on 8 workers within 10% of the serial phase; all artifacts byte-identical |
+| 2026-09-15 | scaling | Keep the serial search as the default | The phase is under 3% of wall time on Fabi386; enable lookahead only where rejections per commit are high |
 
 ## Stage gates and promotion
 
