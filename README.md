@@ -4,6 +4,34 @@ nextpnr -- a portable FPGA place and route tool
 nextpnr aims to be a vendor neutral, timing driven, FOSS FPGA place and route
 tool.
 
+Cyclone V work on this branch
+-----------------------------
+
+The `cyclonev-compress-default` branch of this repository carries an
+experimental, silicon-tested Cyclone V (`nextpnr-mistral`) flow for the
+DE10-Nano on top of upstream nextpnr, built against
+[libmistral](https://github.com/Ravenslofty/mistral/tree/nextpnr-latest)
+(`-DMISTRAL_ROOT=...`). Start here:
+
+- [`docs/mistral-lab-stage4-handover.md`](docs/mistral-lab-stage4-handover.md):
+  the restart guide, what exists, and what comes next.
+- [`docs/mistral-lab-next-stages-tracker.md`](docs/mistral-lab-next-stages-tracker.md):
+  the execution record with every measurement, hash, and decision, including
+  the negative results.
+- [`MISTRAL_GAPS.md`](MISTRAL_GAPS.md): silicon-verified findings for PLLs, IO
+  registers, HPS bridges, DSP, M10K, and the router's deadlock mechanisms.
+- [`docs/mistral-upstream-candidates.md`](docs/mistral-upstream-candidates.md):
+  which parts are generic enough to offer upstream, and which are not.
+
+Everything new is opt-in and off by default: `--lab-controls` and
+`--lab-legality` (`legacy|shadow|verify|rust`) select the LAB legality
+evaluator, `--placer-lookahead N` with `--threads W` evaluates HeAP cluster
+candidates in parallel with byte-identical results, `--lab-reuse` caches
+LAB-level legality within a run, and `--reuse-placement prev.json`
+transplants a previous placement onto an edited design. Two Rust crates under
+`rust/` provide the independent LAB rule implementation used as a parity
+oracle; build with `-DBUILD_RUST=ON` to enable the cross-checks.
+
 Currently nextpnr supports:
  * Lattice iCE40 devices supported by [Project IceStorm](https://github.com/YosysHQ/icestorm)
  * Lattice ECP5 devices supported by [Project Trellis](https://github.com/YosysHQ/prjtrellis)
