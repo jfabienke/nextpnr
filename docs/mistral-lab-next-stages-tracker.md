@@ -501,18 +501,21 @@ Placement and routing checksums remain `0xbb18ede9` and `0xbc1365c6`.
 
 A dedicated release-mode benchmark measures one 64-record V2 batch without timed
 thread creation, handle creation, or output allocation. Each round performs
-1,280,000 record evaluations per phase. Two independent seven-round runs produced
-the following midpoint of their run medians:
+1,280,000 record evaluations per phase. The benchmark supports uneven contiguous
+partitions, so worker counts need not divide the batch size. Two independent
+extended seven-round runs produced the following midpoint of their run medians:
 
 | Path | Workers | Median ns/record | Throughput | Speedup vs frozen 1-worker |
 | --- | ---: | ---: | ---: | ---: |
-| Direct V2 FFI, validates every call | 1 | 807.66 | 1.24 M/s | 0.49x |
-| Rust-owned frozen V2 | 1 | 392.19 | 2.55 M/s | 1.00x |
-| Rust-owned frozen V2 | 2 | 199.21 | 5.02 M/s | 1.97x |
-| Rust-owned frozen V2 | 4 | 102.67 | 9.74 M/s | 3.82x |
-| Rust-owned frozen V2 | 8 | 54.28 | 18.42 M/s | 7.22x |
+| Direct V2 FFI, validates every call | 1 | 804.63 | 1.24 M/s | 0.48x |
+| Rust-owned frozen V2 | 1 | 389.73 | 2.57 M/s | 1.00x |
+| Rust-owned frozen V2 | 2 | 198.09 | 5.05 M/s | 1.97x |
+| Rust-owned frozen V2 | 4 | 102.07 | 9.80 M/s | 3.82x |
+| Rust-owned frozen V2 | 8 | 54.05 | 18.50 M/s | 7.21x |
+| Rust-owned frozen V2 | 12 | 39.89 | 25.07 M/s | 9.77x |
+| Rust-owned frozen V2 | 16 | 30.33 | 32.97 M/s | 12.85x |
 
-Creation plus destruction costs 504.92 ns per retained record, or 32.32 us for
+Creation plus destruction costs 503.42 ns per retained record, or 32.22 us for
 the 64-record handle. Consequently, serial frozen evaluation amortizes creation
 after two evaluations of the same batch; one creation plus one serial evaluation
 is slower than direct validation. A separate three-round resource run reproduced
@@ -526,14 +529,14 @@ bounded, and 1/2/4/8-worker full-placement traces are proven reproducible.
 
 | Command | Result |
 | --- | --- |
-| `./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4-validation/frozen-v2-scaling.csv 7 20000` | Complete; 1/2/4/8-worker scaling measured |
-| Independent seven-round repeat | Complete; medians reproduced within 3.0% |
+| `./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4-validation/frozen-v2-scaling-16.csv 7 20000` | Complete; 1/2/4/8/12/16-worker scaling measured |
+| Independent extended seven-round repeat | Complete; 12/16-worker medians reproduced within 7.0% |
 | `/usr/bin/time -l ... frozen-v2-scaling-rss.csv 3 20000` | Complete; peak RSS 4,227,072 bytes |
 
-CSV SHA-256: primary
-`2ef2385c2d8601f3de58de2744b354103d8c4ab43868fed882b4bd34cee70ddb`;
-repeat `a3fb6cf20e4341abb732549ab386ec09b3f031e51a54e16d6172105b6b62847d`;
-resource run
+Extended CSV SHA-256: primary
+`965add4795235ddb9467e39f899d2c1a64ce29d35dc7b73a6aedd824a353e21b`;
+repeat `27e90a2b7e2a9587e648772856319a129b260f22614badf7aa057de6f8c5a9b2`.
+The original resource-run SHA-256 remains
 `41cacb1abac1c0cdfec9f896853838e555d6b0d34d1d3799646a862db723717a`.
 
 ## Decision log
@@ -564,8 +567,8 @@ resource run
 | 2026-09-15 | 4B | Preserve the original live path for facts outside the frozen Mistral LAB model | Explicit `Unsupported` transaction outcome; candidate and RNG order are unchanged |
 | 2026-09-15 | 4C | Publish only fully copied and validated Rust-owned batches | Malformed and panic tests leave the output handle null; source lifetime test mutates and drops host inputs |
 | 2026-09-15 | 4C | Bound retained work before enabling scheduler concurrency | 64 records per batch, two handles per worker, real 64 MiB aggregate exhaustion and quota-recovery tests |
-| 2026-09-15 | 4D | Retain validated V2 facts when a frozen batch will be reused | 807.66 ns/record direct versus 392.19 ns frozen; creation amortizes after two serial evaluations |
-| 2026-09-15 | 4D | Continue with bounded parallel scheduling | Frozen evaluation scales 1.97x, 3.82x, and 7.22x at 2/4/8 workers; live determinism remains gated |
+| 2026-09-15 | 4D | Retain validated V2 facts when a frozen batch will be reused | 804.63 ns/record direct versus 389.73 ns frozen; creation amortizes after two serial evaluations |
+| 2026-09-15 | 4D | Continue with bounded parallel scheduling | Frozen evaluation scales 1.97x, 3.82x, 7.21x, 9.77x, and 12.85x at 2/4/8/12/16 workers; live determinism remains gated |
 
 ## Stage gates and promotion
 

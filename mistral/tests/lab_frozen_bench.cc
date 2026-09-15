@@ -57,23 +57,30 @@ std::vector<NpnrLabFactsV2> make_inputs()
     return inputs;
 }
 
-uint64_t frozen_parallel(const RustFrozenLabBatchV2 &batch, unsigned workers, unsigned repeats)
+uint64_t frozen_parallel(const RustFrozenLabBatchV2 &batch,
+                         const std::array<NpnrLabAssessmentV2, RECORDS> &expected, unsigned workers,
+                         unsigned repeats)
 {
-    require(RECORDS % workers == 0, "worker count must divide batch size");
-    const uint32_t per_worker = RECORDS / workers;
+    require(workers > 0 && workers <= RECORDS, "worker count must fit batch size");
     std::atomic<unsigned> ready{0};
     std::atomic<bool> go{false};
     std::vector<std::thread> threads;
     std::vector<std::vector<NpnrLabAssessmentV2>> outputs(workers);
     std::vector<uint32_t> statuses(workers, NPNR_LAB_CALL_PANIC);
     for (unsigned worker = 0; worker < workers; ++worker) {
-        outputs[worker].resize(per_worker);
+        const uint32_t begin = uint64_t(RECORDS) * worker / workers;
+        const uint32_t end = uint64_t(RECORDS) * (worker + 1) / workers;
+        const uint32_t count = end - begin;
+        outputs[worker].resize(count);
         threads.emplace_back([&, worker] {
+            const uint32_t begin = uint64_t(RECORDS) * worker / workers;
+            const uint32_t end = uint64_t(RECORDS) * (worker + 1) / workers;
+            const uint32_t count = end - begin;
             ready.fetch_add(1, std::memory_order_release);
             while (!go.load(std::memory_order_acquire))
                 std::this_thread::yield();
             for (unsigned iteration = 0; iteration < repeats; ++iteration) {
-                statuses[worker] = batch.evaluate(worker * per_worker, per_worker, outputs[worker].data(), per_worker);
+                statuses[worker] = batch.evaluate(begin, count, outputs[worker].data(), count);
                 consume(outputs[worker]);
                 if (statuses[worker] != NPNR_LAB_CALL_OK)
                     return;
@@ -89,6 +96,12 @@ uint64_t frozen_parallel(const RustFrozenLabBatchV2 &batch, unsigned workers, un
     const auto finish = std::chrono::steady_clock::now();
     for (auto status : statuses)
         require(status == NPNR_LAB_CALL_OK, "frozen evaluation failed");
+    for (unsigned worker = 0; worker < workers; ++worker) {
+        const uint32_t begin = uint64_t(RECORDS) * worker / workers;
+        for (uint32_t index = 0; index < outputs[worker].size(); ++index)
+            require(lab_v2_results_match(expected[begin + index], outputs[worker][index]),
+                    "parallel frozen result mismatch");
+    }
     return std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
 }
 } // namespace
@@ -134,8 +147,8 @@ try {
         const auto direct_ns = direct();
         output << round << ",direct_v2,1," << records << ',' << repeats << ',' << direct_ns << ','
                << double(direct_ns) / records << '\n';
-        for (unsigned workers : {1, 2, 4, 8}) {
-            const auto elapsed = frozen_parallel(batch, workers, repeats);
+        for (unsigned workers : {1, 2, 4, 8, 12, 16}) {
+            const auto elapsed = frozen_parallel(batch, direct_outputs, workers, repeats);
             output << round << ",frozen_v2," << workers << ',' << records << ',' << uint64_t(repeats) * workers << ','
                    << elapsed << ',' << double(elapsed) / records << '\n';
         }
