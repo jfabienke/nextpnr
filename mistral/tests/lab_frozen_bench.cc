@@ -72,21 +72,40 @@ std::vector<NpnrLabFactsV2> make_inputs()
     return inputs;
 }
 
-uint64_t frozen_parallel(const RustFrozenLabBatchV2 &batch, const std::array<NpnrLabAssessmentV2, RECORDS> &expected,
-                         unsigned workers, unsigned repeats, bool performance_qos)
+struct ParallelResult
+{
+    uint64_t elapsed_ns = 0;
+    uint64_t fastest_worker_ns = 0;        // time until the first worker finished its work
+    uint64_t slowest_worker_ns = 0;        // time until the last worker finished (== elapsed minus join skew)
+    uint64_t units_min = 0, units_max = 0; // dynamic mode: fewest/most work units claimed by one worker
+};
+
+// `dynamic`: instead of a fixed contiguous range per worker, the record range is
+// cut into DYNAMIC_CHUNK-record units and every worker claims the next unit from
+// a shared counter until the whole repeats x records workload is consumed. A slow
+// core then does less work instead of bounding the batch.
+uint32_t DYNAMIC_CHUNK = 4; // records per claimed unit; set from the scheduling argument (dynamic:N)
+
+ParallelResult frozen_parallel(const RustFrozenLabBatchV2 &batch,
+                               const std::array<NpnrLabAssessmentV2, RECORDS> &expected, unsigned workers,
+                               unsigned repeats, bool performance_qos, bool dynamic)
 {
     require(workers > 0 && workers <= RECORDS, "worker count must fit batch size");
     std::atomic<unsigned> ready{0};
     std::atomic<bool> go{false};
     std::atomic<bool> policy_failed{false};
+    std::atomic<uint64_t> next_unit{0};
+    const uint64_t units_per_pass = (RECORDS + DYNAMIC_CHUNK - 1) / DYNAMIC_CHUNK;
+    const uint64_t total_units = units_per_pass * repeats;
     std::vector<std::thread> threads;
     std::vector<std::vector<NpnrLabAssessmentV2>> outputs(workers);
     std::vector<uint32_t> statuses(workers, NPNR_LAB_CALL_PANIC);
+    std::vector<uint64_t> finished_ns(workers, 0), units(workers, 0);
+    std::chrono::steady_clock::time_point start;
     for (unsigned worker = 0; worker < workers; ++worker) {
         const uint32_t begin = uint64_t(RECORDS) * worker / workers;
         const uint32_t end = uint64_t(RECORDS) * (worker + 1) / workers;
-        const uint32_t count = end - begin;
-        outputs[worker].resize(count);
+        outputs[worker].resize(dynamic ? DYNAMIC_CHUNK : end - begin);
         threads.emplace_back([&, worker] {
             const uint32_t begin = uint64_t(RECORDS) * worker / workers;
             const uint32_t end = uint64_t(RECORDS) * (worker + 1) / workers;
@@ -96,31 +115,63 @@ uint64_t frozen_parallel(const RustFrozenLabBatchV2 &batch, const std::array<Npn
             ready.fetch_add(1, std::memory_order_release);
             while (!go.load(std::memory_order_acquire))
                 std::this_thread::yield();
-            for (unsigned iteration = 0; iteration < repeats; ++iteration) {
-                statuses[worker] = batch.evaluate(begin, count, outputs[worker].data(), count);
-                consume(outputs[worker]);
-                if (statuses[worker] != NPNR_LAB_CALL_OK)
-                    return;
+            statuses[worker] = NPNR_LAB_CALL_OK;
+            if (dynamic) {
+                for (uint64_t unit = next_unit.fetch_add(1, std::memory_order_relaxed); unit < total_units;
+                     unit = next_unit.fetch_add(1, std::memory_order_relaxed)) {
+                    const uint32_t offset = uint32_t((unit % units_per_pass) * DYNAMIC_CHUNK);
+                    const uint32_t n = std::min<uint32_t>(DYNAMIC_CHUNK, RECORDS - offset);
+                    statuses[worker] = batch.evaluate(offset, n, outputs[worker].data(), n);
+                    consume(outputs[worker]);
+                    ++units[worker];
+                    if (statuses[worker] != NPNR_LAB_CALL_OK)
+                        break;
+                    // Validate only the first pass over the records so that checking
+                    // costs the same fixed amount as the static mode's post-timing check.
+                    if (unit < units_per_pass)
+                        for (uint32_t i = 0; i < n; ++i)
+                            if (!lab_v2_results_match(expected[offset + i], outputs[worker][i]))
+                                statuses[worker] = NPNR_LAB_CALL_PANIC;
+                }
+            } else {
+                for (unsigned iteration = 0; iteration < repeats; ++iteration) {
+                    statuses[worker] = batch.evaluate(begin, count, outputs[worker].data(), count);
+                    consume(outputs[worker]);
+                    if (statuses[worker] != NPNR_LAB_CALL_OK)
+                        break;
+                }
+                units[worker] = repeats;
             }
+            finished_ns[worker] = uint64_t(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+                            .count());
         });
     }
     while (ready.load(std::memory_order_acquire) != workers)
         std::this_thread::yield();
-    const auto start = std::chrono::steady_clock::now();
+    start = std::chrono::steady_clock::now();
     go.store(true, std::memory_order_release);
     for (auto &thread : threads)
         thread.join();
     const auto finish = std::chrono::steady_clock::now();
     require(!policy_failed.load(std::memory_order_relaxed), "performance scheduling request failed");
     for (auto status : statuses)
-        require(status == NPNR_LAB_CALL_OK, "frozen evaluation failed");
-    for (unsigned worker = 0; worker < workers; ++worker) {
-        const uint32_t begin = uint64_t(RECORDS) * worker / workers;
-        for (uint32_t index = 0; index < outputs[worker].size(); ++index)
-            require(lab_v2_results_match(expected[begin + index], outputs[worker][index]),
-                    "parallel frozen result mismatch");
+        require(status == NPNR_LAB_CALL_OK, "frozen evaluation failed or mismatched");
+    if (!dynamic) {
+        for (unsigned worker = 0; worker < workers; ++worker) {
+            const uint32_t begin = uint64_t(RECORDS) * worker / workers;
+            for (uint32_t index = 0; index < outputs[worker].size(); ++index)
+                require(lab_v2_results_match(expected[begin + index], outputs[worker][index]),
+                        "parallel frozen result mismatch");
+        }
     }
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
+    ParallelResult result;
+    result.elapsed_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count());
+    result.fastest_worker_ns = *std::min_element(finished_ns.begin(), finished_ns.end());
+    result.slowest_worker_ns = *std::max_element(finished_ns.begin(), finished_ns.end());
+    result.units_min = *std::min_element(units.begin(), units.end());
+    result.units_max = *std::max_element(units.begin(), units.end());
+    return result;
 }
 } // namespace
 
@@ -128,14 +179,18 @@ int main(int argc, char **argv)
 try {
     if (argc < 2 || argc > 5) {
         std::cerr << "usage: lab-frozen-bench OUTPUT.csv [rounds=7] [repeats=20000] "
-                     "[scheduling=default|performance-qos]\n";
+                     "[scheduling=default|performance-qos|dynamic[:chunk]]\n";
         return 2;
     }
     const unsigned rounds = argc > 2 ? std::stoul(argv[2]) : 7;
     const unsigned repeats = argc > 3 ? std::stoul(argv[3]) : 20000;
     const std::string scheduling = argc > 4 ? argv[4] : "default";
-    require(scheduling == "default" || scheduling == "performance-qos", "unknown scheduling mode");
     const bool performance_qos = scheduling == "performance-qos";
+    const bool dynamic = scheduling.rfind("dynamic", 0) == 0;
+    require(scheduling == "default" || performance_qos || dynamic, "unknown scheduling mode");
+    if (dynamic && scheduling.size() > 8 && scheduling[7] == ':')
+        DYNAMIC_CHUNK = std::stoul(scheduling.substr(8));
+    require(DYNAMIC_CHUNK > 0 && DYNAMIC_CHUNK <= RECORDS, "dynamic chunk must be 1..64");
     require(rounds > 0 && repeats > 0, "rounds/repeats must be positive");
     auto inputs = make_inputs();
     std::array<NpnrLabAssessmentV2, RECORDS> direct_outputs;
@@ -152,7 +207,8 @@ try {
 
     std::ofstream output(argv[1]);
     require(bool(output), "cannot write CSV");
-    output << "round,phase,scheduling,workers,records,calls,nanoseconds,ns_per_record\n";
+    output << "round,phase,scheduling,workers,records,calls,nanoseconds,ns_per_record,fastest_worker_ns,"
+              "slowest_worker_ns,units_min,units_max\n";
     for (unsigned round = 0; round < rounds; ++round) {
         auto direct = [&] {
             const auto start = std::chrono::steady_clock::now();
@@ -168,11 +224,13 @@ try {
         const uint64_t records = uint64_t(RECORDS) * repeats;
         const auto direct_ns = direct();
         output << round << ",direct_v2," << scheduling << ",1," << records << ',' << repeats << ',' << direct_ns << ','
-               << double(direct_ns) / records << '\n';
-        for (unsigned workers : {1, 2, 4, 8, 12, 16}) {
-            const auto elapsed = frozen_parallel(batch, direct_outputs, workers, repeats, performance_qos);
+               << double(direct_ns) / records << ",,,,\n";
+        for (unsigned workers : {1, 2, 4, 8, 12, 16, 20}) {
+            const auto r = frozen_parallel(batch, direct_outputs, workers, repeats, performance_qos, dynamic);
             output << round << ",frozen_v2," << scheduling << ',' << workers << ',' << records << ','
-                   << uint64_t(repeats) * workers << ',' << elapsed << ',' << double(elapsed) / records << '\n';
+                   << uint64_t(repeats) * workers << ',' << r.elapsed_ns << ',' << double(r.elapsed_ns) / records << ','
+                   << r.fastest_worker_ns << ',' << r.slowest_worker_ns << ',' << r.units_min << ',' << r.units_max
+                   << '\n';
         }
 
         const unsigned creation_repeats = std::max(1u, repeats / 20);
@@ -188,7 +246,7 @@ try {
                 std::chrono::duration_cast<std::chrono::nanoseconds>(create_finish - create_start).count();
         output << round << ",create_destroy," << scheduling << ",1," << uint64_t(RECORDS) * creation_repeats << ','
                << creation_repeats << ',' << create_ns << ','
-               << double(create_ns) / (uint64_t(RECORDS) * creation_repeats) << '\n';
+               << double(create_ns) / (uint64_t(RECORDS) * creation_repeats) << ",,,,\n";
         output.flush();
         std::cerr << "completed frozen benchmark round " << round + 1 << '/' << rounds << '\n';
     }

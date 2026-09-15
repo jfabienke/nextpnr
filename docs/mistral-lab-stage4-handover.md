@@ -221,7 +221,13 @@ Benchmark commands:
 cmake --build build/rust-enabled --target nextpnr-mistral-lab-frozen-bench -j4
 ./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4-validation/frozen-v2-scaling.csv 7 20000 default
 ./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4-validation/frozen-v2-performance-qos.csv 7 20000 performance-qos
+./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench build/stage4e-validation/bench-dynamic-64.csv 7 20000 dynamic:64
 ```
+
+The `dynamic[:chunk]` mode (workers claim chunk-record units from a shared
+counter) reaches 14.83x at 16 workers and 16.09x at 20 against 12.20x static,
+because static partitions wait for threads the scheduler placed on efficiency
+cores. The CSV also records per-worker completion times and claimed units.
 
 Artifact hashes and the resource run are recorded in the tracker. Benchmark
 outputs belong under `build/` and are intentionally not source-controlled.

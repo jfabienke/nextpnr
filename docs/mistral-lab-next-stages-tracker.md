@@ -865,6 +865,78 @@ Default control CSV SHA-256: primary
 `b6d1cbada8ac860bbbbf5e841b75af3714dfc10fd8d25d8a8e2144acf6ae8c0c`;
 repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 
+### 2026-09-15: Scaling linearity analysis
+
+Question: can the parallel evaluator's sub-linear scaling (12.85x at 16
+workers in the Stage 4D baseline) be improved, and does it matter end to end?
+
+**Evaluator microbenchmark.** `nextpnr-mistral-lab-frozen-bench` gained
+per-worker completion timestamps, a 20-worker point, and a `dynamic[:chunk]`
+scheduling mode in which workers claim `chunk`-record units from a shared
+counter instead of owning a fixed contiguous range. Seven-round medians of
+two runs per mode (one for `dynamic:4`), 20,000 repeats over the 64-record
+batch:
+
+| Workers | static | dynamic:4 | dynamic:16 | dynamic:64 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 400.4 ns (1.00x) | 386.5 ns | 385.3 ns | 385.5 ns |
+| 2 | 2.00x, 99.9% | 1.87x, 93.6% | 1.93x, 96.3% | 1.95x, 97.4% |
+| 4 | 3.91x, 97.8% | 3.24x, 80.9% | 3.67x, 91.8% | 3.80x, 95.0% |
+| 8 | 7.53x, 94.2% | 6.17x, 77.1% | 7.18x, 89.7% | 7.53x, 94.2% |
+| 12 | 9.98x, 83.2% | 9.16x, 76.4% | 10.76x, 89.7% | 11.22x, 93.5% |
+| 16 | 12.20x, 76.2% | 11.51x, 71.9% | 14.16x, 88.5% | **14.83x, 92.7%** |
+| 20 | 10.87x, 54.3% | 10.24x, 51.2% | 15.44x, 77.2% | **16.09x, 80.5%** |
+
+The cause of the static collapse is heterogeneous cores, not the evaluator:
+with identical work per worker the slowest worker finishes 16.7% (12
+workers), 18.8% (16) and 42.8% (20) after the fastest, so beyond eight
+workers the scheduler places some threads on the four efficiency cores and
+the batch waits for them. Dynamic claiming makes the spread 0.0–0.3% and the
+unit counts show the slow workers doing 55–60% of a fast worker's share.
+The claim granularity matters: at 4 records the shared counter is contended
+about every 120 ns of work and the mode loses to static; at 16 records it
+recovers; at 64 (one whole pass per claim) it is never worse than static and
+scales to 16.09x on all 20 cores. The Stage 4D coordinator already claims
+per candidate (about 22 queries each), which is the right granularity.
+
+**End to end.** Evaluator linearity is not what limits `--placer-lookahead`.
+Fabi386 strict legalisation, one run each (serial repeats: 0.94, 0.95, 2.06 s):
+
+| Budget | 1 worker | 8 workers | Candidates | Queries | Batches |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 1.26 s | 1.31 s | 14,304 | 315,464 | 1,788 |
+| 64 | 4.95 s | 4.28 s | 105,600 | 1,957,056 | 1,650 |
+
+At budget 64 the eight-worker saving is 0.67 s of 4.95 s. Amdahl gives the
+parallel fraction: 4.28 = 4.95 × (1 − P + P/8), so P ≈ 0.155. About 85% of
+the lookahead phase is owner-side work: per speculated candidate roughly
+39 µs, of which detached evaluation is about 6 µs (18.5 queries at the
+benchmark's 0.33–0.39 µs per record) and the remaining
+33 µs is overlay capture (about 1 µs per query), transaction preparation,
+and Rust handle creation. At budget 8 a batch holds about 50 µs of
+evaluation, comparable to the pool's wake-and-join latency, so eight workers
+gain nothing at all.
+
+Two conclusions follow. First, the phase can be made to scale: overlay
+capture writes no shared state (`capture_lab_v2_impl` reads bound cells,
+cell facts, and net flags, and assigns local net ids without interning),
+and the owner is blocked during the parallel section, so freezing and
+per-worker Rust handle creation could move into the workers, leaving only
+preparation on the owner. That would raise P to roughly 0.85 and make a
+budget-64 phase scale close to 5x at eight workers. Second, doing so cannot
+make the run faster on this design: speculation adds work by construction,
+so the best case is returning to the serial 0.95 s, and strict legalisation
+is under 2.5% of a 30–45 s run. Lookahead pays off only on a workload whose
+serial search rejects many candidates per commit; Fabi386 rejects 0.77.
+The evaluator-level fix (dynamic claiming, already the coordinator's policy)
+is kept; parallel freezing is recorded as the next step if such a workload
+appears, not implemented now.
+
+Artifacts: `build/stage4e-validation/bench-*.csv`, `bench2-*.csv`, and
+`amdahl-*` logs.
+
+
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -909,6 +981,8 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | 2026-09-15 | 4E | Key the content tier on complete V2 whole-LAB facts and compare in full on a hit | The hash only selects a slot; correctness never depends on it |
 | 2026-09-15 | 4E | Reject the content tier for promotion; keep it as an explicit mode | Sub-result hits rose from 14.5% to 28.9% but HeAP time doubled (9.95 s to 20.09 s) because each stale query pays a whole-LAB capture |
 | 2026-09-15 | 4E | Object creation does not invalidate LAB assessments | A created cell or net is nobody's dependency until bound or connected, both tracked precisely; the global bump had dirtied 4,020 prepared LABs during route-through insertion |
+| 2026-09-15 | scaling | Prefer dynamic claiming with whole-pass units for parallel evaluation | 14.83x at 16 workers and 16.09x at 20 versus 12.20x static; static partitions wait for threads on efficiency cores, and 4-record claims contend on the counter |
+| 2026-09-15 | scaling | Do not implement parallel freezing now | Only 15% of the lookahead phase is evaluation; moving capture to workers would scale the phase but cannot beat the serial search on a workload with 0.77 rejections per commit |
 
 ## Stage gates and promotion
 
