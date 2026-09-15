@@ -40,6 +40,8 @@ set(SOURCES
     placement_revision.cc
     placement_transaction.h
     placement_transaction.cc
+    placement_coordinator.h
+    placement_coordinator.cc
     m10k.cc
     pll.cc
     pack.cc

@@ -50,6 +50,28 @@ enum class HeAPClusterTransactionOutcome
     Unsupported
 };
 
+// One speculative clustered move: the cells to bind and the complete set of
+// bindings it displaces. Candidates in a batch are generated serially under one
+// unchanged placement and are independent until one of them commits.
+struct HeAPClusterCandidate
+{
+    std::vector<std::pair<CellInfo *, BelId>> targets;
+    HeAPDisplacedBindings displaced;
+};
+
+enum class HeAPClusterBatchStatus
+{
+    Committed,   // candidate `index` was committed; later candidates were discarded
+    Unsupported, // candidate `index` needs the live bind/check/revert path; earlier ones were illegal
+    NoneLegal    // every candidate was evaluated and rejected
+};
+
+struct HeAPClusterBatchOutcome
+{
+    HeAPClusterBatchStatus status = HeAPClusterBatchStatus::NoneLegal;
+    size_t index = 0;
+};
+
 struct PlacerHeapCfg
 {
     PlacerHeapCfg(Context *ctx);
@@ -82,6 +104,18 @@ struct PlacerHeapCfg
     std::function<HeAPClusterTransactionOutcome(Context *, const std::vector<std::pair<CellInfo *, BelId>> &,
                                                 const HeAPDisplacedBindings &)>
             place_cluster_transaction;
+
+    // Optional batch form. With clusterLookahead > 0 the legaliser generates up to
+    // that many candidates ahead of evaluation, in exactly the serial search
+    // order, and the callback must evaluate them detached and commit the first
+    // legal one in sequence order. Search state (RNG, radius, counters) is
+    // restored to the point just after the committed candidate, so the result is
+    // identical to the serial trajectory. Requires place_cluster_transaction for
+    // the Unsupported fallback. Set programmatically by the architecture; it is
+    // deliberately not a settings key so that enabling it interns no IdString.
+    std::function<HeAPClusterBatchOutcome(Context *, const std::vector<HeAPClusterCandidate> &)>
+            place_cluster_transactions;
+    int clusterLookahead = 0;
 
     bool disableCtrlSet;
 

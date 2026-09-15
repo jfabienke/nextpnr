@@ -21,6 +21,9 @@
 #include "log.h"
 #include "nextpnr.h"
 
+#include <memory>
+
+#include "placement_coordinator.h"
 #include "placement_transaction.h"
 #include "placer1.h"
 #include "placer_heap.h"
@@ -681,18 +684,7 @@ bool Arch::place()
         cfg.criticalityExponent = 7;
         cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
                                            const HeAPDisplacedBindings &displaced) {
-            dict<BelId, CellInfo *> replacements;
-            for (const auto &target : targets)
-                replacements[target.second] = target.first;
-            std::vector<PlacementBindingEdit> edits;
-            edits.reserve(displaced.size());
-            for (const auto &entry : displaced) {
-                auto replacement = replacements.find(entry.first);
-                CellInfo *cell = replacement == replacements.end() ? nullptr : replacement->second;
-                edits.push_back({entry.first, entry.second.cell, entry.second.strength, cell,
-                                 cell == nullptr ? STRENGTH_NONE : STRENGTH_STRONG});
-            }
-            auto prepared = prepare_placement_transaction(*owner, std::move(edits));
+            auto prepared = prepare_placement_transaction(*owner, placement_edits_for_candidate(targets, displaced));
             if (!prepared)
                 log_error("Failed to preflight a detached HeAP cluster candidate.\n");
             auto frozen = freeze_placement_candidate(*owner, prepared);
@@ -712,8 +704,26 @@ bool Arch::place()
                 log_error("Failed to commit a detached HeAP cluster candidate.\n");
             return HeAPClusterTransactionOutcome::Committed;
         };
+        // Stage 4D: speculate candidate locations and evaluate them detached on
+        // `--threads` workers. Off unless --placer-lookahead is given; the serial
+        // per-candidate callback above remains the fallback for unsupported moves.
+        cfg.clusterLookahead = std::max(0, args.placer_lookahead);
+        const int lookahead = cfg.clusterLookahead;
+        const int threads = std::max(1, getCtx()->setting<int>("threads", 1));
+        std::unique_ptr<PlacementCandidateCoordinator> coordinator;
+        if (lookahead > 0) {
+            coordinator = std::make_unique<PlacementCandidateCoordinator>(*this, unsigned(threads));
+            log_info("Cluster lookahead enabled: %d candidates per batch, %u workers.\n", lookahead,
+                     coordinator->workers());
+            cfg.place_cluster_transactions = [&coordinator](Context *,
+                                                            const std::vector<HeAPClusterCandidate> &candidates) {
+                return coordinator->place(candidates);
+            };
+        }
         if (!placer_heap(getCtx(), cfg))
             return false;
+        if (coordinator)
+            report_placement_batch_stats(*coordinator);
     } else if (placer == "sa") {
         if (!placer1(getCtx(), Placer1Cfg(getCtx())))
             return false;

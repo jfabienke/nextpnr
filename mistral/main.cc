@@ -60,6 +60,10 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "write a bounded sample of live FF-control queries as JSONL for profiling");
     specific.add_options()("lab-legality", po::value<std::string>()->default_value("legacy"),
                            "complete LAB evaluator: legacy, shadow, verify, or rust (experimental)");
+    specific.add_options()("placer-lookahead", po::value<int>(),
+                           "speculate this many candidates per clustered HeAP move and evaluate them detached "
+                           "on --threads workers; results are identical to the serial search (0 = serial, "
+                           "default; experimental)");
 
     return specific;
 }
@@ -120,6 +124,11 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     else
         log_error("Unknown --lab-legality mode '%s'; use legacy, shadow, verify, or rust.\n", legality_mode.c_str());
     require_lab_legality_mode(chipArgs.lab_legality);
+    if (vm.count("placer-lookahead")) {
+        chipArgs.placer_lookahead = vm["placer-lookahead"].as<int>();
+        if (chipArgs.placer_lookahead < 0)
+            log_error("--placer-lookahead must be zero or positive.\n");
+    }
     if (chipArgs.lab_legality != LabLegalityMode::Legacy && chipArgs.lab_controls != LabControlMode::Legacy)
         log_error("--lab-legality owns its internal control check; do not combine it with a non-legacy "
                   "--lab-controls mode.\n");

@@ -404,6 +404,10 @@ class HeAPPlacer
                      ", unsupported=%" PRIu64 "\n",
                      frozen_cluster_attempted, frozen_cluster_committed, frozen_cluster_rejected,
                      frozen_cluster_unsupported);
+        if (cfg.place_cluster_transactions && cfg.clusterLookahead > 0)
+            log_info("  cluster lookahead: candidates/batch=%d, batches=%" PRIu64 ", largest batch=%" PRIu64
+                     ", discarded after commit=%" PRIu64 "\n",
+                     cfg.clusterLookahead, frozen_cluster_batches, frozen_cluster_batch_max, frozen_cluster_discarded);
 
         if (ctx->verbose) {
             for (auto pair : time_per_cell_type) {
@@ -445,6 +449,9 @@ class HeAPPlacer
     uint64_t frozen_cluster_committed = 0;
     uint64_t frozen_cluster_rejected = 0;
     uint64_t frozen_cluster_unsupported = 0;
+    uint64_t frozen_cluster_batches = 0;
+    uint64_t frozen_cluster_discarded = 0;
+    uint64_t frozen_cluster_batch_max = 0;
 
     TimingAnalyser tmg;
 
@@ -1201,58 +1208,16 @@ class HeAPPlacer
                 }
             }
 
+            if (ci->cluster != ClusterId() && p->cfg.place_cluster_transactions && p->cfg.clusterLookahead > 0) {
+                legalise_cluster_lookahead(ci);
+                return;
+            }
+
             while (!placed) {
-                if (p->cfg.cell_placement_timeout > 0 && total_iters_for_cell > p->cfg.cell_placement_timeout)
-                    log_error("Unable to find legal placement for cell '%s' of type '%s' after %d attempts, check "
-                              "constraints and "
-                              "utilisation. Use `--placer-heap-cell-placement-timeout` to change the number of "
-                              "attempts.\n",
-                              ctx->nameOf(ci), ci->type.c_str(ctx), total_iters_for_cell);
+                check_cell_placement_timeout(ci);
                 int nx, ny;
-                std::tie(nx, ny) = pick_random_loc_for_cell(ci);
-
-                iter++;
-                iter_at_radius++;
-                if (iter >= (10 * (radius + 1))) {
-                    // No luck yet, increase radius
-                    radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
-                    while (radius < std::max(p->max_x, p->max_y)) {
-                        // Keep increasing the radius until it will actually increase the number of cells we are
-                        // checking (e.g. BRAM and DSP will not be in all cols/rows), so we don't waste effort
-                        for (int x = std::max(0, p->cell_locs.at(ci->name).x - radius);
-                             x <= std::min(p->max_x, p->cell_locs.at(ci->name).x + radius); x++) {
-                            if (x >= int(fb->size()))
-                                break;
-                            for (int y = std::max(0, p->cell_locs.at(ci->name).y - radius);
-                                 y <= std::min(p->max_y, p->cell_locs.at(ci->name).y + radius); y++) {
-                                if (y >= int(fb->at(x).size()))
-                                    break;
-                                if (fb->at(x).at(y).size() > 0)
-                                    goto notempty;
-                            }
-                        }
-                        radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
-                    }
-                notempty:
-                    iter_at_radius = 0;
-                    iter = 0;
-                }
-                // If our randomly chosen cooridnate is out of bounds; or points to a tile with no relevant bels; ignore
-                // it
-                if (nx < 0 || nx > p->max_x)
+                if (!next_random_location(ci, nx, ny))
                     continue;
-                if (ny < 0 || ny > p->max_y)
-                    continue;
-
-                if (nx >= int(fb->size()))
-                    continue;
-                if (ny >= int(fb->at(nx).size()))
-                    continue;
-                if (fb->at(nx).at(ny).empty())
-                    continue;
-
-                // The number of attempts to find a location to try
-                need_to_explore = 2 * radius;
 
                 // If we have found at least one legal location; and made enough attempts; assume it's good enough and
                 // finish
@@ -1300,6 +1265,174 @@ class HeAPPlacer
         typedef decltype(CellInfo::udata) cell_udata_t;
         cell_udata_t dont_solve = std::numeric_limits<cell_udata_t>::max();
         std::priority_queue<std::pair<int, IdString>> remaining;
+
+        void check_cell_placement_timeout(CellInfo *ci)
+        {
+            if (p->cfg.cell_placement_timeout > 0 && total_iters_for_cell > p->cfg.cell_placement_timeout)
+                log_error("Unable to find legal placement for cell '%s' of type '%s' after %d attempts, check "
+                          "constraints and "
+                          "utilisation. Use `--placer-heap-cell-placement-timeout` to change the number of "
+                          "attempts.\n",
+                          ctx->nameOf(ci), ci->type.c_str(ctx), total_iters_for_cell);
+        }
+
+        // One step of the random search: draw a location and update the radius schedule exactly as the
+        // serial loop always has. Returns false when the loop would skip this draw (out of bounds or an
+        // empty tile); the search state has still advanced. Shared by the serial and lookahead paths so
+        // that both consume the RNG identically.
+        bool next_random_location(CellInfo *ci, int &nx, int &ny)
+        {
+            std::tie(nx, ny) = pick_random_loc_for_cell(ci);
+
+            iter++;
+            iter_at_radius++;
+            if (iter >= (10 * (radius + 1))) {
+                // No luck yet, increase radius
+                radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
+                while (radius < std::max(p->max_x, p->max_y)) {
+                    // Keep increasing the radius until it will actually increase the number of cells we are
+                    // checking (e.g. BRAM and DSP will not be in all cols/rows), so we don't waste effort
+                    for (int x = std::max(0, p->cell_locs.at(ci->name).x - radius);
+                         x <= std::min(p->max_x, p->cell_locs.at(ci->name).x + radius); x++) {
+                        if (x >= int(fb->size()))
+                            break;
+                        for (int y = std::max(0, p->cell_locs.at(ci->name).y - radius);
+                             y <= std::min(p->max_y, p->cell_locs.at(ci->name).y + radius); y++) {
+                            if (y >= int(fb->at(x).size()))
+                                break;
+                            if (fb->at(x).at(y).size() > 0)
+                                goto notempty;
+                        }
+                    }
+                    radius = std::min(std::max(p->max_x, p->max_y), radius + 1);
+                }
+            notempty:
+                iter_at_radius = 0;
+                iter = 0;
+            }
+            // If our randomly chosen cooridnate is out of bounds; or points to a tile with no relevant bels; ignore
+            // it
+            if (nx < 0 || nx > p->max_x)
+                return false;
+            if (ny < 0 || ny > p->max_y)
+                return false;
+
+            if (nx >= int(fb->size()))
+                return false;
+            if (ny >= int(fb->at(nx).size()))
+                return false;
+            if (fb->at(nx).at(ny).empty())
+                return false;
+
+            // The number of attempts to find a location to try
+            need_to_explore = 2 * radius;
+            return true;
+        }
+
+        // Everything the random cluster search depends on besides live bindings. Saving and restoring
+        // this around a speculated batch makes the lookahead trajectory identical to the serial one.
+        struct ClusterSearchState
+        {
+            uint64_t rng = 0;
+            int radius = 0, iter = 0, iter_at_radius = 0, total_iters_for_cell = 0, need_to_explore = 0;
+        };
+        ClusterSearchState save_search_state() const
+        {
+            return {ctx->rngstate, radius, iter, iter_at_radius, total_iters_for_cell, need_to_explore};
+        }
+        void restore_search_state(const ClusterSearchState &state)
+        {
+            ctx->rngstate = state.rng;
+            radius = state.radius;
+            iter = state.iter;
+            iter_at_radius = state.iter_at_radius;
+            total_iters_for_cell = state.total_iters_for_cell;
+            need_to_explore = state.need_to_explore;
+        }
+
+        // Lookahead form of the random cluster search. Candidates are generated serially, in exactly
+        // the order try_place_cluster would try them, without touching live bindings; the architecture
+        // evaluates the batch detached and commits the first legal candidate in sequence order. Search
+        // state is then restored to the point just after that candidate, so RNG draws and the radius
+        // schedule match the serial trajectory. A batch holds at most clusterLookahead candidates and
+        // may stop part-way through a tile's shapes; the cursor resumes there if nothing committed.
+        void legalise_cluster_lookahead(CellInfo *ci)
+        {
+            struct Origin
+            {
+                int nx, ny;
+                ClusterSearchState at_location; // state at the moment try_place_cluster would be called
+            };
+            struct Cursor
+            {
+                bool active = false;
+                int nx = 0, ny = 0;
+                size_t next_shape = 0;
+                ClusterSearchState at_location;
+            } cursor;
+            const size_t budget = size_t(p->cfg.clusterLookahead);
+            std::vector<HeAPClusterCandidate> batch;
+            std::vector<Origin> origins;
+            while (!placed) {
+                batch.clear();
+                origins.clear();
+                while (batch.size() < budget) {
+                    if (!cursor.active) {
+                        if (!batch.empty() && p->cfg.cell_placement_timeout > 0 &&
+                            total_iters_for_cell > p->cfg.cell_placement_timeout)
+                            break; // consume the batch first; the serial check reports this afterwards
+                        check_cell_placement_timeout(ci);
+                        int nx, ny;
+                        if (!next_random_location(ci, nx, ny))
+                            continue;
+                        cursor = {true, nx, ny, 0, save_search_state()};
+                    }
+                    const auto &shapes = fb->at(cursor.nx).at(cursor.ny);
+                    while (cursor.next_shape < shapes.size() && batch.size() < budget) {
+                        const BelId sz = shapes.at(cursor.next_shape++);
+                        HeAPClusterCandidate candidate;
+                        if (!build_cluster_candidate(ci, sz, -1, candidate))
+                            continue;
+                        batch.push_back(std::move(candidate));
+                        origins.push_back({cursor.nx, cursor.ny, cursor.at_location});
+                    }
+                    if (cursor.next_shape >= shapes.size()) {
+                        total_iters_for_cell++; // the serial loop's post-location increment
+                        cursor.active = false;
+                    }
+                }
+                if (batch.empty())
+                    continue;
+
+                ++p->frozen_cluster_batches;
+                p->frozen_cluster_attempted += batch.size();
+                p->frozen_cluster_batch_max = std::max<uint64_t>(p->frozen_cluster_batch_max, batch.size());
+                auto outcome = p->cfg.place_cluster_transactions(ctx, batch);
+                if (outcome.status == HeAPClusterBatchStatus::Committed) {
+                    NPNR_ASSERT(outcome.index < batch.size());
+                    ++p->frozen_cluster_committed;
+                    p->frozen_cluster_rejected += outcome.index;
+                    p->frozen_cluster_discarded += batch.size() - outcome.index - 1;
+                    // Serially, a commit leaves the shape loop and the location iteration ends.
+                    restore_search_state(origins.at(outcome.index).at_location);
+                    total_iters_for_cell++;
+                    finish_cluster_move(batch[outcome.index].targets, batch[outcome.index].displaced);
+                } else if (outcome.status == HeAPClusterBatchStatus::Unsupported) {
+                    NPNR_ASSERT(outcome.index < batch.size());
+                    p->frozen_cluster_rejected += outcome.index;
+                    p->frozen_cluster_discarded += batch.size() - outcome.index - 1;
+                    // Replay this location through the serial path, which handles the unsupported
+                    // candidate with the live bind/check/revert sequence.
+                    const auto &origin = origins.at(outcome.index);
+                    restore_search_state(origin.at_location);
+                    try_place_cluster(ci, origin.nx, origin.ny);
+                    total_iters_for_cell++;
+                    cursor.active = false;
+                } else {
+                    p->frozen_cluster_rejected += batch.size();
+                }
+            }
+        }
 
         std::pair<int, int> pick_random_loc_for_cell(CellInfo *ci)
         {
@@ -1404,58 +1537,100 @@ class HeAPPlacer
             }
         }
 
+        // Build the clustered move rooted at `sz` without touching live state. Returns false where the
+        // serial loop would move to the next shape before any mutation.
+        bool build_cluster_candidate(CellInfo *ci, BelId sz, int ctrl_set_group, HeAPClusterCandidate &candidate)
+        {
+            auto &targets = candidate.targets;
+            auto &expected_moves = candidate.displaced;
+            targets.clear();
+            expected_moves.clear();
+            if (!ctx->getClusterPlacement(ci->cluster, sz, targets))
+                return false;
+
+            bool ctrl_set_match = false;
+
+            for (auto &target : targets) {
+                // Check it satisfies the region constraint if applicable
+                if (!target.first->testRegion(target.second))
+                    return false;
+                if (ctrl_set_group != -1 && ctx->getBelBucketForBel(target.second) == p->cfg.ff_bel_bucket &&
+                    p->z_to_ctrl_set.at(ctx->getBelLocation(target.second).z) == ctrl_set_group)
+                    ctrl_set_match = true;
+                CellInfo *bound = ctx->getBoundBelCell(target.second);
+                // Chains cannot overlap; so if we have to ripup a cell make sure it isn't part of a chain
+                if (bound != nullptr) {
+                    if (ctrl_set_group != -1)
+                        return false;
+                    if (bound->belStrength > (p->cfg.chainRipup ? STRENGTH_STRONG : STRENGTH_WEAK))
+                        return false;
+                    if (bound->cluster != ClusterId() && (!p->cfg.chainRipup || radius < chain_ripup_radius))
+                        return false;
+                }
+            }
+
+            if (ctrl_set_group != -1 && !ctrl_set_match)
+                return false;
+
+            // Capture the complete expected displacement without changing live occupancy.
+            // Architecture callbacks may use this to evaluate and commit a frozen overlay.
+            for (auto &target : targets) {
+                CellInfo *bound = ctx->getBoundBelCell(target.second);
+                if (bound != nullptr && bound->cluster != ClusterId()) {
+                    for (auto cell : p->cluster2cells[bound->cluster]) {
+                        if (cell->bel != BelId())
+                            expected_moves[cell->bel] = {cell, cell->belStrength};
+                    }
+                }
+                if (!expected_moves.count(target.second))
+                    expected_moves[target.second] = {bound, bound == nullptr ? STRENGTH_NONE : bound->belStrength};
+            }
+            return true;
+        }
+
+        // Bookkeeping after a clustered move has been applied to the live design, whether by the
+        // architecture's transaction or by the bind/check path below.
+        void finish_cluster_move(const std::vector<std::pair<CellInfo *, BelId>> &targets,
+                                 const HeAPDisplacedBindings &moves_made)
+        {
+            for (auto &move : moves_made) {
+                if (move.second.cell)
+                    p->unbind_ctrl_set(move.first);
+            }
+            for (auto &target : targets) {
+                Loc loc = ctx->getBelLocation(target.second);
+                p->cell_locs[target.first->name].x = loc.x;
+                p->cell_locs[target.first->name].y = loc.y;
+                p->bind_ctrl_set(target.second, target.first->name);
+                // log_info("%s %d %d %d\n", target.first->name.c_str(ctx), loc.x, loc.y, loc.z);
+            }
+            for (auto &move : moves_made) {
+                // Where we have ripped up cells; add them to the queue
+                if (move.second.cell != nullptr &&
+                    (move.second.cell->cluster == ClusterId() ||
+                     ctx->getClusterRootCell(move.second.cell->cluster) == move.second.cell))
+                    remaining.emplace(p->chain_size[move.second.cell->name] *
+                                              p->cfg.get_cell_legalisation_weight(ctx, move.second.cell),
+                                      move.second.cell->name);
+            }
+            placed = true;
+        }
+
         void try_place_cluster(CellInfo *ci, int nx, int ny, int ctrl_set_group = -1)
         {
             // We do have relative constraints
             for (auto sz : fb->at(nx).at(ny)) {
-                // List of cells and their destination
-                std::vector<std::pair<CellInfo *, BelId>> targets;
+                HeAPClusterCandidate candidate;
                 // List of bels we placed things at; and the cell that was there before if applicable
                 HeAPDisplacedBindings moves_made;
-                HeAPDisplacedBindings expected_moves;
                 bool transaction_committed = false;
                 bool live_legal = true;
 
-                if (!ctx->getClusterPlacement(ci->cluster, sz, targets))
+                if (!build_cluster_candidate(ci, sz, ctrl_set_group, candidate))
                     continue;
+                const auto &targets = candidate.targets;
+                const auto &expected_moves = candidate.displaced;
 
-                bool ctrl_set_match = false;
-
-                for (auto &target : targets) {
-                    // Check it satisfies the region constraint if applicable
-                    if (!target.first->testRegion(target.second))
-                        goto fail;
-                    if (ctrl_set_group != -1 && ctx->getBelBucketForBel(target.second) == p->cfg.ff_bel_bucket &&
-                        p->z_to_ctrl_set.at(ctx->getBelLocation(target.second).z) == ctrl_set_group)
-                        ctrl_set_match = true;
-                    CellInfo *bound = ctx->getBoundBelCell(target.second);
-                    // Chains cannot overlap; so if we have to ripup a cell make sure it isn't part of a chain
-                    if (bound != nullptr) {
-                        if (ctrl_set_group != -1)
-                            goto fail;
-                        if (bound->belStrength > (p->cfg.chainRipup ? STRENGTH_STRONG : STRENGTH_WEAK))
-                            goto fail;
-                        if (bound->cluster != ClusterId() && (!p->cfg.chainRipup || radius < chain_ripup_radius))
-                            goto fail;
-                    }
-                }
-
-                if (ctrl_set_group != -1 && !ctrl_set_match)
-                    goto fail;
-
-                // Capture the complete expected displacement without changing live occupancy.
-                // Architecture callbacks may use this to evaluate and commit a frozen overlay.
-                for (auto &target : targets) {
-                    CellInfo *bound = ctx->getBoundBelCell(target.second);
-                    if (bound != nullptr && bound->cluster != ClusterId()) {
-                        for (auto cell : p->cluster2cells[bound->cluster]) {
-                            if (cell->bel != BelId())
-                                expected_moves[cell->bel] = {cell, cell->belStrength};
-                        }
-                    }
-                    if (!expected_moves.count(target.second))
-                        expected_moves[target.second] = {bound, bound == nullptr ? STRENGTH_NONE : bound->belStrength};
-                }
                 if (p->cfg.place_cluster_transaction) {
                     ++p->frozen_cluster_attempted;
                     auto outcome = p->cfg.place_cluster_transaction(ctx, targets, expected_moves);
@@ -1498,38 +1673,14 @@ class HeAPPlacer
                             break;
                         }
                     }
-                    if (!live_legal)
-                        goto fail;
+                    if (!live_legal) {
+                        // If the move turned out to be illegal; revert all the moves we made
+                        restore_heap_cluster_bindings(ctx, moves_made);
+                        continue;
+                    }
                 }
 
-                if (false) {
-                fail:
-                    // If the move turned out to be illegal; revert all the moves we made
-                    restore_heap_cluster_bindings(ctx, moves_made);
-                    continue;
-                }
-                for (auto &move : moves_made) {
-                    if (move.second.cell)
-                        p->unbind_ctrl_set(move.first);
-                }
-                for (auto &target : targets) {
-                    Loc loc = ctx->getBelLocation(target.second);
-                    p->cell_locs[target.first->name].x = loc.x;
-                    p->cell_locs[target.first->name].y = loc.y;
-                    p->bind_ctrl_set(target.second, target.first->name);
-                    // log_info("%s %d %d %d\n", target.first->name.c_str(ctx), loc.x, loc.y, loc.z);
-                }
-                for (auto &move : moves_made) {
-                    // Where we have ripped up cells; add them to the queue
-                    if (move.second.cell != nullptr &&
-                        (move.second.cell->cluster == ClusterId() ||
-                         ctx->getClusterRootCell(move.second.cell->cluster) == move.second.cell))
-                        remaining.emplace(p->chain_size[move.second.cell->name] *
-                                                  p->cfg.get_cell_legalisation_weight(ctx, move.second.cell),
-                                          move.second.cell->name);
-                }
-
-                placed = true;
+                finish_cluster_move(targets, moves_made);
                 break;
             }
         }

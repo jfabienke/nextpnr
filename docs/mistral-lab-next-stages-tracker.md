@@ -44,8 +44,8 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 4A: mutation audit and revisioning | Stage 3 | Complete | Every active mutation advances or invalidates its revision | [Mutation audit validation](#2026-09-15-unit-4a) |
 | 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
 | 4C: owned frozen batches | 4B | Complete | Lifetime, panic, malformed-input, cancellation, and memory tests pass | [Frozen batch validation](#2026-09-15-unit-4c) |
-| 4D: deterministic parallel evaluation | 4C | In progress | Reproducible decisions, zero stale commits, bounded retries, measured scaling | [Benchmark baseline](#2026-09-15-unit-4d-benchmark-baseline) |
-| 4E: incremental reuse | 4D | Blocked | Incremental results match full recomputation and final signoff | — |
+| 4D: deterministic parallel evaluation | 4C | Complete | Reproducible decisions, zero stale commits, bounded retries, measured scaling | [Deterministic lookahead validation](#2026-09-15-unit-4d-deterministic-lookahead) |
+| 4E: incremental reuse | 4D | Ready | Incremental results match full recomputation and final signoff | — |
 
 ## Active unit
 
@@ -99,13 +99,24 @@ handle stores no C++ pointer, supports concurrent immutable range evaluation wit
 private outputs, and has atomic cancellation. Rust enforces 64 candidates, two
 outstanding batches per worker, and 64 MiB aggregate retained storage.
 
-Unit 4D is active. The next boundary is deterministic proposal sequencing using
-the existing C++ scheduler: freeze proposals and RNG decisions serially, evaluate
-owned batches concurrently, consume in sequence order, and reject stale commits
-against the global revision with two bounded retries before synchronous fallback.
-Frozen evaluator scaling through 16 workers and Apple performance-QoS experiments
-are complete. Live scheduler integration, ordered result consumption, stale-retry
-handling, and deterministic full-placement validation remain outstanding.
+Unit 4D is complete. HeAP's random cluster search now has a lookahead form
+(`legalise_cluster_lookahead` in `common/place/placer_heap.cc`) that generates
+up to `--placer-lookahead N` candidates in exactly the serial order, without
+touching live bindings, and snapshots the RNG and radius state at each
+location. Mistral's `PlacementCandidateCoordinator`
+(`mistral/placement_coordinator.h/.cc`) prepares and freezes every candidate on
+the owner, evaluates them on a persistent pool of `--threads` workers (C++
+authority, Rust cross-check through Rust-owned frozen handles), consumes
+assessments strictly in proposal order, and commits the first legal one after
+rechecking the revision stamp and every expected owner. HeAP restores search
+state to the point just after the committed candidate, so the trajectory is
+byte-identical to the serial search at every budget and worker count. The
+option is carried in `ArchArgs`, not `ctx->settings`, because interning a new
+settings key shifts `IdString` indices and changes both log checksums and routed
+JSON net numbering. Lookahead is off by default. Measured end-to-end it buys
+nothing on Fabi386: strict legalisation is under 1 s of a 40 s run, and the
+owner-side capture of speculated candidates costs more than the workers save.
+4E is ready to start.
 
 ## Validation log
 
@@ -541,6 +552,115 @@ repeat `27e90a2b7e2a9587e648772856319a129b260f22614badf7aa057de6f8c5a9b2`.
 The original resource-run SHA-256 remains
 `41cacb1abac1c0cdfec9f896853838e555d6b0d34d1d3799646a862db723717a`.
 
+### 2026-09-15: Unit 4D deterministic lookahead
+
+`StrictLegaliser::try_place_cluster` was split into `build_cluster_candidate`
+(no mutation) and `finish_cluster_move` (post-commit bookkeeping), and the random
+location step into `next_random_location`, so the serial and lookahead paths
+share one implementation of the RNG draws and radius schedule. The serial path
+is unchanged in behavior: a rebuilt serial run reproduces the Stage 4C Fabi386
+artifacts byte for byte (routed JSON minus the `creator` line, report, placement
+checksum `0xbb18ede9`, routing checksum `0xbc1365c6`).
+
+The lookahead path speculates a batch of at most N candidates, cutting through a
+tile's shapes where the budget ends and resuming there if nothing commits. Each
+candidate records the search state at its location; a commit restores that state
+and applies the serial loop's post-location increment, and an unsupported
+candidate restores it and replays the location through the serial path. Only the
+owner thread mutates, so a stale stamp at commit is structurally impossible; the
+documented policy (two asynchronous retries, then synchronous re-evaluation) is
+implemented and counted anyway.
+
+`PlacementCandidateCoordinator` flattens each batch's V2 queries into 64-record
+Rust-owned frozen handles created on the owner before dispatch (a candidate that
+would straddle a handle starts a new one; one with more than 64 queries uses the
+one-shot FFI). Workers evaluate the detached C++ reference per candidate,
+short-circuiting like the live BEL loop, then evaluate the same prefix through
+the frozen handle and require exact agreement. Each worker owns its scratch and
+writes only the result slots it claimed.
+
+Fabi386 (`--seed 1`, `--freq 12`, `--router2-max-iter 100`) with the same inputs
+as Stage 4B, every configuration listed below produced a report and routed JSON
+byte-identical to the Stage 4C artifact (report SHA-256
+`56e3b75e84be78a30659aa5e3860c3899eb7597e375cfa34a90d13d94a8a034a`; routed JSON
+minus `creator` and `threads` settings lines `748de61b…`, which equals the
+Stage 4C file under the same normalization), identical placement/routing
+checksums, 1,632 commits, 1,260 rejections, zero unsupported, zero stale, zero
+retries, and zero synchronous fallbacks:
+
+| Budget | Workers | Candidates evaluated | Discarded after commit | V2 queries | Strict legalisation | Peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| serial | 1 | 2,892 | 0 | 2,892 transactions | 0.81 s | 1,397 MiB |
+| 2 | 1 | 4,524 | 1,632 | — | 1.11 s | 1,291 MiB |
+| 4 | 1 | 7,788 | 4,896 | — | 1.02 s | 1,683 MiB |
+| 8 | 1 | 14,304 | 11,412 | 315,464 | 1.39 s | 1,425 MiB |
+| 8 | 2 | 14,304 | 11,412 | 315,464 | 1.25 s | 1,714 MiB |
+| 8 | 4 | 14,304 | 11,412 | 315,464 | 1.32 s | 1,468 MiB |
+| 8 | 8 | 14,304 | 11,412 | 315,464 | 1.31 s | 1,942 MiB |
+| 8 | 16 | 14,304 | 11,412 | 315,464 | 1.44 s | 1,961 MiB |
+| 20 | 8 | 33,900 | 31,008 | — | 2.00 s | 1,963 MiB |
+| 64 | 8 | 105,600 | 102,708 | 1,957,056 | 4.38 s | 2,034 MiB |
+| 64 | 16 | 105,600 | 102,708 | 1,957,056 | 4.29 s | 2,056 MiB |
+
+The decision trace is identical everywhere and the exit criteria for
+determinism are met. The scaling result is negative for this workload: the
+serial search rejects only 0.77 candidates per commit, so a budget of N discards
+about N−1.8 evaluated candidates per commit, and their capture (owner-side V2
+overlay construction) dominates. Strict legalisation grows with the budget and
+does not fall with workers, and it is under 2.5% of wall time to begin with.
+Wall time and HeAP totals varied by several seconds between otherwise identical
+runs, more than the legalisation phase itself; the repeated timing runs below
+report medians.
+
+Three sequential repeats each, nothing else running, medians (the individual
+serial wall times were 42.69, 35.52, and 42.59 s, so the wall-time column is
+run-to-run noise, not an effect):
+
+| Configuration | Wall | HeAP total | Strict legalisation | Router2 | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| serial | 42.59 s | 9.06 s | 0.95 s | 9.17 s | 1,714 MiB |
+| budget 8, 1 worker | 34.92 s | 9.01 s | 1.44 s | 8.78 s | 1,953 MiB |
+| budget 8, 8 workers | 34.35 s | 8.44 s | 1.35 s | 9.12 s | 1,954 MiB |
+
+All nine repeats are byte-identical to the Stage 4C report and routed JSON. The
+only phase lookahead changes is strict legalisation, and it is slower with
+lookahead at either worker count; eight workers recover roughly 0.1 s of the
+0.5 s that speculative capture adds. Peak RSS is about 240 MiB higher with
+lookahead, at one worker as much as eight, which points at the retained frozen
+facts and result buffers rather than threads.
+
+An earlier iteration batched whole locations (all shapes of a tile, up to 20)
+instead of a candidate budget. It was also decision-identical but evaluated
+33,900 candidates for one location per batch and 125,200 for four, with strict
+legalisation at 2.1–2.3 s regardless of worker count; its outputs are retained
+under `build/stage4d-validation/location-granularity/` (routed JSON there
+differs from the reference only by the IdString shift described next).
+
+The first serial run after the refactor had a different routing checksum and a
+routed JSON that differed in 20 net ids by exactly +1 while the report was
+byte-identical. Cause: reading a new `placerHeap/clusterLookahead` settings key
+interned one IdString, and both `Context::checksum` and the JSON writer use
+IdString indices. The option now travels in `ArchArgs::placer_lookahead` and
+nothing is interned in either mode, which is why the table above compares
+byte-identical against Stage 4C.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 45/45 pass (5 new `BatchCoordinator*` cases: first-legal-in-order at 1/2/4/8 workers, displacing commit, unsupported truncation, two-handle batches, detached parity without mutation) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 35/35 pass; the coordinator falls back to detached C++ only |
+| Fabi386 serial after refactor | Byte-identical to Stage 4C; checksums `0xbb18ede9` / `0xbc1365c6` |
+| Fabi386 `--placer-lookahead {2,4,8,20,64}` × `--threads {1,2,4,8,16}` (11 runs) | All byte-identical to Stage 4C; decisions, checksums, and counters as tabulated |
+| Unmodified HEAD `0d2b6a4` reference run (scratch worktree build) | Byte-identical report and routed JSON, checksums `0xbb18ede9` / `0xbc1365c6`; 2,892/1,632/1,260 |
+| Feature fixture (`lab_features`: CLKBUF, FF, MLAB) serial, budget 8 × 1/8 workers, budget 64 × 4 workers | All four byte-identical (report SHA-256 `3a9d40d1…` as recorded for Stage 3C/4B; checksums `0xf3d0465e` / `0xc3f59dd1`); 20 commits, 0 rejections, 0 unsupported/stale; budget 64 evaluated 1,280 candidates and discarded 1,260 |
+| `cargo test --manifest-path rust/Cargo.toml --offline --workspace` | 28 Rust tests/doctests pass (no Rust source changed in this unit) |
+| `cargo clippy … -p npnr_mistral_lab -p npnr_mistral_lab_ffi --all-targets -- -D warnings` | Pass |
+| `cargo fmt --all -- --check` | Fails only in the untouched upstream `rust/nextpnr/src/lib.rs` (edition-2024 import style; last changed in `3232450`); `cargo fmt -p npnr_mistral_lab -p npnr_mistral_lab_ffi -- --check` passes |
+| `git diff --check`, `clang-format --dry-run -Werror` on every touched C++ file | Pass |
+
+Logs, JSON, reports, and console output with `/usr/bin/time -l` resource lines
+are retained under `build/stage4d-validation/` (`summarise.sh` regenerates the
+comparison table).
+
 ### 2026-09-15: Apple Silicon performance-core scheduling experiment
 
 The benchmark host is a Mac Studio with an Apple M1 Ultra, 16 performance cores,
@@ -613,6 +733,10 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | 2026-09-15 | 4D | Retain validated V2 facts when a frozen batch will be reused | 804.63 ns/record direct versus 389.73 ns frozen; creation amortizes after two serial evaluations |
 | 2026-09-15 | 4D | Continue with bounded parallel scheduling | Frozen evaluation scales 1.97x, 3.82x, 7.21x, 9.77x, and 12.85x at 2/4/8/12/16 workers; live determinism remains gated |
 | 2026-09-15 | 4D | Reject performance QoS for default promotion; retain it as benchmark instrumentation | Public macOS APIs cannot hard-pin P-cores, and `QOS_CLASS_USER_INTERACTIVE` changed contemporaneous medians by -2.01% to +2.36% |
+| 2026-09-15 | 4D | Implement serial-compatible lookahead rather than a new frozen-epoch search policy | Byte-identical Fabi386 artifacts at every budget and worker count; the existing search order and RNG stream are preserved by state restore |
+| 2026-09-15 | 4D | Carry `--placer-lookahead` in `ArchArgs`, never in `ctx->settings` | A settings key interned one IdString and shifted the routing checksum and 20 JSON net ids while the report stayed identical |
+| 2026-09-15 | 4D | Budget candidates, not locations, and let a batch cut through a tile's shapes | Location batches evaluated 12x the serial candidate count; candidate budgets bound discarded work to N−1 per commit |
+| 2026-09-15 | 4D | Keep lookahead off by default and do not promote parallel evaluation | Decision-identical, but strict legalisation is <2.5% of wall time and owner-side capture of discarded candidates outweighs worker savings on Fabi386 |
 
 ## Stage gates and promotion
 
@@ -621,4 +745,4 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode |
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
-| Stage 4: transactions and reuse | In progress (4A–4C complete; 4D active) | Serial transaction authority and owned frozen batches enabled; parallel scheduling not promoted |
+| Stage 4: transactions and reuse | In progress (4A–4D complete; 4E ready) | Serial transaction authority and owned frozen batches enabled; deterministic parallel lookahead available via `--placer-lookahead`, off by default and not promoted |

@@ -13,11 +13,12 @@ Handover point:
 - Branch: `cyclonev-compress-default`
 - Commit: `16a233e0c19b732554594c5f4d4df52b18ef4dba`
 - Stages 1, 2, and 3 are closed.
-- Stage 4A, 4B, and 4C are complete.
-- Stage 4D is active.
-- Stage 4E is blocked on 4D.
+- Stage 4A, 4B, 4C, and 4D are complete.
+- Stage 4E is ready to start.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
-- Parallel placement evaluation has not been enabled in production.
+- Parallel placement evaluation exists behind `--placer-lookahead N` (with
+  `--threads W`), is byte-identical to the serial search, and is off by default.
+  It is not promoted: it measured no end-to-end gain on Fabi386.
 
 The worktree at handover contains the untracked `AGENTS.md` and
 `mistral/tests/__pycache__/`. They are not part of this work and must not be
@@ -109,6 +110,44 @@ Key files:
 - `rust/npnr_mistral_lab_ffi/src/tests.rs`
 - `mistral/tests/lab_ffi.cc`
 
+### Stage 4D: deterministic parallel evaluation
+
+HeAP's random cluster search gained a lookahead form. `legalise_cluster_lookahead`
+generates up to N candidates in exactly the serial order without touching live
+bindings, records the RNG and radius state at each location, and after the
+architecture commits the first legal candidate restores that state so the
+trajectory matches the serial search. `try_place_cluster` was split into
+`build_cluster_candidate` and `finish_cluster_move`, and the location step into
+`next_random_location`, so both paths share one implementation.
+
+`PlacementCandidateCoordinator` (Mistral) prepares and freezes every candidate
+on the owner thread, evaluates them on a persistent pool of `--threads` workers
+(detached C++ authority plus Rust cross-check through Rust-owned frozen
+handles), consumes results strictly in proposal order, and commits after
+rechecking the stamp and every expected owner. The stale policy (two
+asynchronous retries, then synchronous) is implemented and counted; it cannot
+trigger because only the owner mutates. Unsupported candidates truncate the
+batch and HeAP replays that location through the serial path.
+
+Every Fabi386 configuration from budget 2 to 64 and 1 to 16 workers is
+byte-identical to the Stage 4C artifacts. The measured outcome is negative for
+speed: the serial search rejects 0.77 candidates per commit, so almost all
+speculated work is discarded, and its owner-side capture outweighs what the
+workers save; strict legalisation is under 2.5% of wall time anyway. The
+tracker records the full table.
+
+The option travels in `ArchArgs::placer_lookahead`, not `ctx->settings`.
+Interning a new settings key shifted `IdString` indices and changed both the
+routing checksum and routed JSON net numbering while the report stayed
+identical; do not reintroduce a settings key for it.
+
+Key files:
+
+- `common/place/placer_heap.h/.cc`
+- `mistral/placement_coordinator.h/.cc`
+- `mistral/arch.h` (`ArchArgs::placer_lookahead`), `mistral/arch.cc`, `mistral/main.cc`
+- `mistral/tests/lab_legality.cc` (`BatchCoordinator*`)
+
 ## Benchmark evidence
 
 The dedicated release benchmark is
@@ -155,48 +194,23 @@ outputs belong under `build/` and are intentionally not source-controlled.
 
 ## Remaining critical path
 
-### Stage 4D: deterministic parallel evaluation
+### Stage 4D exit evidence (recorded)
 
-This is the immediate next unit. The implementation must preserve candidate and
-RNG order exactly; concurrency is allowed only for detached evaluation.
+Stage 4D closed with identical decision traces, zero stale commits, zero
+retries, identical final placement/routing artifacts at 1, 2, 4, 8, and 16
+workers, Fabi386 plus the feature fixture, and end-to-end wall time, placement
+and routing time, RSS, and counters recorded in the tracker. It is not promoted.
 
-Required sequence:
-
-1. Generate candidate proposals and all RNG decisions serially in the existing
-   HeAP order.
-2. Prepare and freeze complete candidate transactions while the serial owner has
-   the necessary live context.
-3. Form Rust-owned batches of no more than 64 candidates.
-4. Submit immutable ranges through the existing C++ scheduler. Each worker must
-   own its output and scratch.
-5. Consume assessments strictly by proposal sequence, never completion order.
-6. Before commit, check the global session/revision stamp and every expected
-   binding owner and strength.
-7. On stale work, regenerate and retry at most twice. After two stale retries,
-   evaluate that proposal synchronously against current state.
-8. Record proposals, accepted/rejected decisions, stale results, retry counts,
-   synchronous fallbacks, and commits.
-
-Important constraint: preparing many candidates from one revision means the
-first successful commit invalidates later candidates under the current global
-revision policy. Batching must therefore include a deliberate retry strategy;
-benchmark throughput alone does not solve commit serialization. Do not introduce
-fine-grained dependency versions until global-revision correctness is proven.
-
-Stage 4D exit evidence:
-
-- Identical decision traces for the selected deterministic policy.
-- Zero stale commits.
-- No more than two asynchronous stale retries per proposal.
-- Identical final placement/routing artifacts at 1, 2, 4, and 8 workers.
-- 12/16-worker measurements where the workload supplies enough parallel work.
-- Fabi386 plus carry, MLAB, odd-FF, E/F-input, and policy-boundary fixtures.
-- End-to-end wall time, placement time, routing time, RSS, retry counters, and
-  final timing/utilization—not evaluator microbenchmarks alone.
+Anyone revisiting lookahead for speed should note that the useful work per batch
+is bounded by the rejection run before the next commit (0.77 on Fabi386), so a
+budget above 2 mostly discards candidates. A frozen-epoch search policy
+(evaluate several alternatives per cell and choose in sequence order) would
+change the search trajectory and needs its own reproducibility gate; that is a
+new decision, not a continuation of 4D.
 
 ### Stage 4E: incremental reuse
 
-Start only after Stage 4D is reproducible and stable.
+This is the immediate next unit; Stage 4D is reproducible and stable.
 
 Required work:
 

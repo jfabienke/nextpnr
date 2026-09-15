@@ -15,6 +15,7 @@
 #include "lab_v2_replay.h"
 #include "log.h"
 #include "nextpnr.h"
+#include "placement_coordinator.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
 
@@ -477,6 +478,218 @@ TEST_F(LabControlCaptureTest, FrozenPlacementOverlayEvaluatesWithoutLiveMutation
     ctx->bindBel(even, cells[2], STRENGTH_WEAK);
     ctx->unbindBel(even);
     EXPECT_EQ(freeze_placement_candidate(*ctx, illegal_transaction).status, FrozenPlacementStatus::Stale);
+}
+
+namespace {
+// A HeAP-shaped candidate: `cell` moves onto `bel`, displacing whatever is bound there.
+HeAPClusterCandidate cluster_candidate(const Context &ctx, CellInfo *cell, BelId bel)
+{
+    HeAPClusterCandidate candidate;
+    candidate.targets.emplace_back(cell, bel);
+    CellInfo *bound = ctx.getBoundBelCell(bel);
+    candidate.displaced[bel] = {bound, bound == nullptr ? STRENGTH_NONE : bound->belStrength};
+    return candidate;
+}
+
+BelId first_non_lab_bel(const Context &ctx)
+{
+    for (BelId bel : ctx.getBels()) {
+        IdString type = ctx.getBelType(bel);
+        if (!type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF))
+            return bel;
+    }
+    return BelId();
+}
+} // namespace
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorCommitsFirstLegalInProposalOrderForEveryWorkerCount)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId odd_a = alms.at(0).ff_bels.at(1);
+    const BelId odd_b = alms.at(1).ff_bels.at(3);
+    const BelId even_a = alms.at(2).ff_bels.at(0);
+    const BelId even_b = alms.at(3).ff_bels.at(2);
+
+    for (unsigned workers : {1u, 2u, 4u, 8u}) {
+        SCOPED_TRACE(workers);
+        std::vector<HeAPClusterCandidate> batch;
+        batch.push_back(cluster_candidate(*ctx, cells[0], odd_a));  // illegal: odd FF slot
+        batch.push_back(cluster_candidate(*ctx, cells[1], odd_b));  // illegal: odd FF slot
+        batch.push_back(cluster_candidate(*ctx, cells[2], even_a)); // first legal
+        batch.push_back(cluster_candidate(*ctx, cells[3], even_b)); // legal, must be discarded
+
+        const auto before = ctx->placement_revision.stamp();
+        const auto bindings_before = ctx->placement_revision.mutation_count(PlacementMutation::BelBinding);
+        PlacementCandidateCoordinator coordinator(*ctx, workers);
+        EXPECT_EQ(coordinator.workers(), workers);
+        const auto outcome = coordinator.place(batch);
+        EXPECT_EQ(outcome.status, HeAPClusterBatchStatus::Committed);
+        EXPECT_EQ(outcome.index, 2u);
+        EXPECT_EQ(ctx->getBoundBelCell(even_a), cells[2]);
+        EXPECT_EQ(cells[2]->belStrength, STRENGTH_STRONG);
+        EXPECT_EQ(ctx->getBoundBelCell(even_b), nullptr);
+        EXPECT_EQ(ctx->getBoundBelCell(odd_a), nullptr);
+        EXPECT_EQ(ctx->getBoundBelCell(odd_b), nullptr);
+        // Exactly one live mutation: the commit itself. Nothing was bound provisionally.
+        EXPECT_EQ(ctx->placement_revision.mutation_count(PlacementMutation::BelBinding), bindings_before + 1);
+        EXPECT_FALSE(ctx->placement_revision.is_current(before));
+
+        const auto &s = coordinator.stats();
+        EXPECT_EQ(s.batches, 1u);
+        EXPECT_EQ(s.candidates, 4u);
+        EXPECT_EQ(s.evaluated, 4u);
+        EXPECT_EQ(s.queries, 4u);
+        EXPECT_EQ(s.committed, 1u);
+        EXPECT_EQ(s.rejected, 2u);
+        EXPECT_EQ(s.discarded, 1u);
+        EXPECT_EQ(s.unsupported, 0u);
+        EXPECT_EQ(s.stale, 0u);
+        EXPECT_EQ(s.stale_retries, 0u);
+        EXPECT_EQ(s.synchronous_fallbacks, 0u);
+#ifndef NO_RUST
+        EXPECT_EQ(s.rust_batches, 1u);
+        EXPECT_EQ(s.rust_direct, 0u);
+#endif
+        ctx->unbindBel(even_a);
+    }
+}
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorCommitsDisplacingMoveAndRejectsEverythingElse)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId home = alms.at(0).ff_bels.at(0);
+    const BelId odd = alms.at(0).ff_bels.at(1);
+    ctx->bindBel(home, cells[4], STRENGTH_WEAK);
+
+    // Every candidate illegal: no mutation, revision untouched, NoneLegal.
+    {
+        std::vector<HeAPClusterCandidate> batch;
+        batch.push_back(cluster_candidate(*ctx, cells[5], odd));
+        batch.push_back(cluster_candidate(*ctx, cells[6], odd));
+        const auto before = ctx->placement_revision.stamp();
+        PlacementCandidateCoordinator coordinator(*ctx, 3);
+        const auto outcome = coordinator.place(batch);
+        EXPECT_EQ(outcome.status, HeAPClusterBatchStatus::NoneLegal);
+        EXPECT_TRUE(ctx->placement_revision.is_current(before));
+        EXPECT_EQ(ctx->getBoundBelCell(home), cells[4]);
+        EXPECT_EQ(coordinator.stats().rejected, 2u);
+        EXPECT_EQ(coordinator.stats().committed, 0u);
+        EXPECT_EQ(coordinator.stats().discarded, 0u);
+    }
+
+    // A displacing move: cells[5] takes cells[4]'s BEL; cells[4] ends up unplaced.
+    {
+        std::vector<HeAPClusterCandidate> batch;
+        batch.push_back(cluster_candidate(*ctx, cells[5], odd));
+        batch.push_back(cluster_candidate(*ctx, cells[5], home));
+        ASSERT_EQ(batch[1].displaced.at(home).cell, cells[4]);
+        ASSERT_EQ(batch[1].displaced.at(home).strength, STRENGTH_WEAK);
+        PlacementCandidateCoordinator coordinator(*ctx, 2);
+        const auto outcome = coordinator.place(batch);
+        EXPECT_EQ(outcome.status, HeAPClusterBatchStatus::Committed);
+        EXPECT_EQ(outcome.index, 1u);
+        EXPECT_EQ(ctx->getBoundBelCell(home), cells[5]);
+        EXPECT_EQ(cells[5]->belStrength, STRENGTH_STRONG);
+        EXPECT_EQ(cells[4]->bel, BelId());
+        EXPECT_EQ(cells[4]->belStrength, STRENGTH_NONE);
+        ctx->unbindBel(home);
+    }
+}
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorTruncatesAtUnsupportedCandidate)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId odd = alms.at(0).ff_bels.at(1);
+    const BelId even = alms.at(1).ff_bels.at(0);
+    const BelId foreign = first_non_lab_bel(*ctx);
+    ASSERT_NE(foreign, BelId());
+    ASSERT_EQ(ctx->getBoundBelCell(foreign), nullptr);
+
+    std::vector<HeAPClusterCandidate> batch;
+    batch.push_back(cluster_candidate(*ctx, cells[0], odd));     // illegal
+    batch.push_back(cluster_candidate(*ctx, cells[1], foreign)); // not a LAB bel: unsupported
+    batch.push_back(cluster_candidate(*ctx, cells[2], even));    // legal, but never proposed
+    const auto before = ctx->placement_revision.stamp();
+    PlacementCandidateCoordinator coordinator(*ctx, 4);
+    const auto outcome = coordinator.place(batch);
+    EXPECT_EQ(outcome.status, HeAPClusterBatchStatus::Unsupported);
+    EXPECT_EQ(outcome.index, 1u);
+    EXPECT_TRUE(ctx->placement_revision.is_current(before));
+    EXPECT_EQ(ctx->getBoundBelCell(even), nullptr);
+    EXPECT_EQ(ctx->getBoundBelCell(foreign), nullptr);
+    const auto &s = coordinator.stats();
+    EXPECT_EQ(s.candidates, 3u);
+    EXPECT_EQ(s.evaluated, 1u);
+    EXPECT_EQ(s.rejected, 1u);
+    EXPECT_EQ(s.unsupported, 1u);
+    EXPECT_EQ(s.committed, 0u);
+}
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorSpansSeveralFrozenHandlesAndKeepsOrder)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId odd = alms.at(0).ff_bels.at(1);
+    const BelId even = alms.at(1).ff_bels.at(0);
+    // 100 single-query candidates need two 64-record Rust handles; only the last is legal.
+    std::vector<HeAPClusterCandidate> batch;
+    for (unsigned i = 0; i < 99; ++i)
+        batch.push_back(cluster_candidate(*ctx, cells[i % 40], odd));
+    batch.push_back(cluster_candidate(*ctx, cells[7], even));
+    for (unsigned workers : {1u, 5u}) {
+        SCOPED_TRACE(workers);
+        PlacementCandidateCoordinator coordinator(*ctx, workers);
+        const auto outcome = coordinator.place(batch);
+        EXPECT_EQ(outcome.status, HeAPClusterBatchStatus::Committed);
+        EXPECT_EQ(outcome.index, 99u);
+        EXPECT_EQ(ctx->getBoundBelCell(even), cells[7]);
+        const auto &s = coordinator.stats();
+        EXPECT_EQ(s.rejected, 99u);
+        EXPECT_EQ(s.discarded, 0u);
+        EXPECT_EQ(s.max_candidates, 100u);
+        EXPECT_EQ(s.max_queries, 100u);
+#ifndef NO_RUST
+        EXPECT_EQ(s.rust_batches, 2u);
+        EXPECT_EQ(s.rust_direct, 0u);
+#endif
+        ctx->unbindBel(even);
+    }
+}
+
+TEST_F(LabControlCaptureTest, BatchCoordinatorDetachedEvaluationMatchesSerialAndNeverMutates)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    std::vector<FrozenPlacementCandidate> frozen;
+    std::vector<PlacementCandidateAssessment> serial;
+    for (unsigned i = 0; i < 24; ++i) {
+        const BelId bel = alms.at(i % 10).ff_bels.at(i % 4); // mixes legal even and illegal odd slots
+        auto transaction =
+                prepare_placement_transaction(*ctx, {{bel, nullptr, STRENGTH_NONE, cells[i], STRENGTH_STRONG}});
+        ASSERT_TRUE(transaction);
+        frozen.push_back(freeze_placement_candidate(*ctx, transaction));
+        ASSERT_EQ(frozen.back().status, FrozenPlacementStatus::Ready);
+        serial.push_back(evaluate_placement_candidate(frozen.back()));
+    }
+    const auto before = ctx->placement_revision.stamp();
+    for (unsigned workers : {1u, 3u, 8u}) {
+        SCOPED_TRACE(workers);
+        PlacementCandidateCoordinator coordinator(*ctx, workers);
+        std::vector<PlacementCandidateAssessment> results;
+        std::vector<uint8_t> agrees;
+        coordinator.evaluate(frozen, results, agrees);
+        ASSERT_EQ(results.size(), frozen.size());
+        for (size_t i = 0; i < frozen.size(); ++i) {
+            EXPECT_TRUE(agrees[i]);
+            EXPECT_EQ(results[i].status, FrozenPlacementStatus::Ready);
+            EXPECT_EQ(results[i].legal, serial[i].legal);
+            EXPECT_EQ(results[i].legal, (i % 4) % 2 == 0);
+            ASSERT_EQ(results[i].results.size(), serial[i].results.size());
+            for (size_t q = 0; q < results[i].results.size(); ++q)
+                EXPECT_TRUE(lab_v2_results_match(results[i].results[q], serial[i].results[q]));
+        }
+    }
+    EXPECT_TRUE(ctx->placement_revision.is_current(before));
+    for (auto *cell : cells)
+        EXPECT_EQ(cell->bel, BelId());
 }
 
 TEST_F(LabControlCaptureTest, ProfilingReservoirPreservesLiveStateAndIsReproducible)

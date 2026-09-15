@@ -42,6 +42,7 @@ struct ArchArgs
     LabControlMode lab_controls = LabControlMode::Legacy;
     std::string lab_control_profile_path;
     LabLegalityMode lab_legality = LabLegalityMode::Legacy;
+    int placer_lookahead = 0; // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
 };
 
 // These structures are used for fast ALM validity checking
