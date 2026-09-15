@@ -44,7 +44,7 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 4A: mutation audit and revisioning | Stage 3 | Complete | Every active mutation advances or invalidates its revision | [Mutation audit validation](#2026-09-15-unit-4a) |
 | 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
 | 4C: owned frozen batches | 4B | Complete | Lifetime, panic, malformed-input, cancellation, and memory tests pass | [Frozen batch validation](#2026-09-15-unit-4c) |
-| 4D: deterministic parallel evaluation | 4C | In progress | Reproducible decisions, zero stale commits, bounded retries, measured scaling | — |
+| 4D: deterministic parallel evaluation | 4C | In progress | Reproducible decisions, zero stale commits, bounded retries, measured scaling | [Benchmark baseline](#2026-09-15-unit-4d-benchmark-baseline) |
 | 4E: incremental reuse | 4D | Blocked | Incremental results match full recomputation and final signoff | — |
 
 ## Active unit
@@ -103,8 +103,9 @@ Unit 4D is active. The next boundary is deterministic proposal sequencing using
 the existing C++ scheduler: freeze proposals and RNG decisions serially, evaluate
 owned batches concurrently, consume in sequence order, and reject stale commits
 against the global revision with two bounded retries before synchronous fallback.
-The first 4D throughput benchmark is now in place; live scheduling and stale-retry
-integration remain outstanding.
+Frozen evaluator scaling through 16 workers and Apple performance-QoS experiments
+are complete. Live scheduler integration, ordered result consumption, stale-retry
+handling, and deterministic full-placement validation remain outstanding.
 
 ## Validation log
 
