@@ -5,9 +5,15 @@
 #[cfg(not(panic = "unwind"))]
 compile_error!("LAB FFI requires panic=unwind for its containment boundary");
 
-use npnr_mistral_lab::{evaluate_lab_v2_wire_into, evaluate_wire_into, v2_wire::*, wire::*};
+use npnr_mistral_lab::{
+    ValidatedLabSnapshotV2, evaluate_lab_v2, evaluate_lab_v2_wire_into, evaluate_wire_into,
+    v2_wire::*, wire::*,
+};
+use std::collections::HashMap;
 use std::mem::{align_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub const MAX_BATCH: u32 = 64;
 pub const CALL_OK: u32 = 0;
@@ -18,6 +24,70 @@ pub const CALL_MISALIGNED: u32 = 4;
 pub const CALL_BAD_RANGE: u32 = 5;
 pub const CALL_OVERLAP: u32 = 6;
 pub const CALL_PANIC: u32 = 7;
+pub const CALL_BAD_SNAPSHOT: u32 = 8;
+pub const CALL_LIMIT: u32 = 9;
+pub const CALL_CANCELLED: u32 = 10;
+pub const MAX_BATCHES_PER_WORKER: u32 = 2;
+pub const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+
+struct BatchQuota {
+    retained_bytes: usize,
+    workers: HashMap<u64, u32>,
+}
+
+fn batch_quota() -> &'static Mutex<BatchQuota> {
+    static QUOTA: OnceLock<Mutex<BatchQuota>> = OnceLock::new();
+    QUOTA.get_or_init(|| {
+        Mutex::new(BatchQuota {
+            retained_bytes: 0,
+            workers: HashMap::new(),
+        })
+    })
+}
+
+#[repr(C)]
+pub struct NpnrLabFrozenBatchV2 {
+    worker_id: u64,
+    retained_bytes: usize,
+    cancelled: AtomicBool,
+    snapshots: Box<[ValidatedLabSnapshotV2]>,
+}
+
+fn retained_batch_bytes(count: usize) -> Option<usize> {
+    size_of::<NpnrLabFrozenBatchV2>()
+        .checked_add(count.checked_mul(size_of::<ValidatedLabSnapshotV2>())?)
+}
+
+fn reserve_batch(worker_id: u64, bytes: usize) -> Result<(), u32> {
+    let mut quota = batch_quota()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let worker_count = quota.workers.get(&worker_id).copied().unwrap_or(0);
+    if worker_count >= MAX_BATCHES_PER_WORKER
+        || quota.retained_bytes.checked_add(bytes).is_none()
+        || quota.retained_bytes + bytes > MAX_RETAINED_BYTES
+    {
+        return Err(CALL_LIMIT);
+    }
+    quota.retained_bytes += bytes;
+    quota.workers.insert(worker_id, worker_count + 1);
+    Ok(())
+}
+
+fn release_batch(worker_id: u64, bytes: usize) {
+    let mut quota = batch_quota()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    quota.retained_bytes -= bytes;
+    let worker_count = quota
+        .workers
+        .get_mut(&worker_id)
+        .expect("owned batch quota");
+    *worker_count -= 1;
+    if *worker_count == 0 {
+        quota.workers.remove(&worker_id);
+    }
+}
 
 fn check_buffers(
     inputs: *const LabControlsV1,
@@ -243,6 +313,226 @@ pub unsafe extern "C" fn npnr_mistral_eval_lab_v2(
     }
     // SAFETY: envelope checked above; caller retains liveness/exclusivity obligations.
     unsafe { run_batch_v2(inputs, count as usize, outputs) }
+}
+
+fn check_frozen_create(
+    inputs: *const LabFactsV2,
+    count: u32,
+    output: *mut *mut NpnrLabFrozenBatchV2,
+) -> Result<(), u32> {
+    if count == 0 || count > MAX_BATCH {
+        return Err(CALL_BAD_COUNT);
+    }
+    if inputs.is_null() || output.is_null() {
+        return Err(CALL_NULL);
+    }
+    let start = inputs.addr();
+    let output_start = output.addr();
+    if start % align_of::<LabFactsV2>() != 0
+        || output_start % align_of::<*mut NpnrLabFrozenBatchV2>() != 0
+    {
+        return Err(CALL_MISALIGNED);
+    }
+    let end = start
+        .checked_add(count as usize * size_of::<LabFactsV2>())
+        .ok_or(CALL_BAD_RANGE)?;
+    let output_end = output_start
+        .checked_add(size_of::<*mut NpnrLabFrozenBatchV2>())
+        .ok_or(CALL_BAD_RANGE)?;
+    if start < output_end && output_start < end {
+        return Err(CALL_OVERLAP);
+    }
+    Ok(())
+}
+
+/// Copy and validate a bounded batch into Rust-owned immutable storage.
+///
+/// # Safety
+/// `inputs` must cover `count` initialized immutable records and `output` must
+/// identify exclusive writable pointer storage. Their live ranges must not overlap.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_frozen_batch_v2_create(
+    inputs: *const LabFactsV2,
+    count: u32,
+    worker_id: u64,
+    output: *mut *mut NpnrLabFrozenBatchV2,
+) -> u32 {
+    if let Err(status) = check_frozen_create(inputs, count, output) {
+        return status;
+    }
+    // SAFETY: the checked envelope plus caller obligations establish live storage.
+    unsafe { output.write(std::ptr::null_mut()) };
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: checked above; caller owns the remaining liveness obligation.
+        let inputs = unsafe { std::slice::from_raw_parts(inputs, count as usize) };
+        let snapshots = inputs
+            .iter()
+            .map(ValidatedLabSnapshotV2::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CALL_BAD_SNAPSHOT)?
+            .into_boxed_slice();
+        let retained_bytes = retained_batch_bytes(snapshots.len()).ok_or(CALL_BAD_RANGE)?;
+        let batch = Box::new(NpnrLabFrozenBatchV2 {
+            worker_id,
+            retained_bytes,
+            cancelled: AtomicBool::new(false),
+            snapshots,
+        });
+        reserve_batch(worker_id, retained_bytes)?;
+        // No fallible operation follows quota reservation.
+        let raw = Box::into_raw(batch);
+        // SAFETY: checked exclusive pointer storage remains live for this call.
+        unsafe { output.write(raw) };
+        Ok::<(), u32>(())
+    }));
+    match outcome {
+        Ok(Ok(())) => CALL_OK,
+        Ok(Err(status)) => status,
+        Err(payload) => {
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            CALL_PANIC
+        }
+    }
+}
+
+unsafe fn run_frozen_range(
+    batch: &NpnrLabFrozenBatchV2,
+    offset: usize,
+    count: usize,
+    outputs: *mut LabAssessmentV2,
+    mut evaluate: impl FnMut(&ValidatedLabSnapshotV2) -> LabAssessmentV2,
+) -> u32 {
+    if batch.cancelled.load(Ordering::Acquire) {
+        return CALL_CANCELLED;
+    }
+    for i in 0..count {
+        // SAFETY: exported caller checked writable capacity and exclusivity.
+        unsafe { outputs.add(i).write(LabAssessmentV2::default()) };
+    }
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        for (i, snapshot) in batch.snapshots[offset..offset + count].iter().enumerate() {
+            if batch.cancelled.load(Ordering::Acquire) {
+                return Err(CALL_CANCELLED);
+            }
+            // SAFETY: initialization above established a live exclusive value.
+            unsafe { *outputs.add(i) = evaluate(snapshot) };
+        }
+        Ok(())
+    }));
+    match outcome {
+        Ok(Ok(())) => CALL_OK,
+        Ok(Err(status)) => status,
+        Err(payload) => {
+            for i in 0..count {
+                // SAFETY: same active output range as above.
+                unsafe { outputs.add(i).write(LabAssessmentV2::default()) };
+            }
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            CALL_PANIC
+        }
+    }
+}
+
+/// Evaluate an immutable range. Calls on the same handle may run concurrently
+/// when each caller exclusively owns its output range.
+///
+/// # Safety
+/// `batch` must remain live for the call. `outputs` must cover `count` exclusive,
+/// aligned records and must not alias the handle allocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_frozen_batch_v2_evaluate(
+    batch: *const NpnrLabFrozenBatchV2,
+    offset: u32,
+    count: u32,
+    outputs: *mut LabAssessmentV2,
+    output_capacity: u32,
+) -> u32 {
+    if batch.is_null() {
+        return CALL_NULL;
+    }
+    if batch.addr() % align_of::<NpnrLabFrozenBatchV2>() != 0 {
+        return CALL_MISALIGNED;
+    }
+    // SAFETY: caller guarantees this aligned pointer identifies a live handle.
+    let batch = unsafe { &*batch };
+    let Some(end) = (offset as usize).checked_add(count as usize) else {
+        return CALL_BAD_RANGE;
+    };
+    if end > batch.snapshots.len() {
+        return CALL_BAD_RANGE;
+    }
+    if count == 0 {
+        return if batch.cancelled.load(Ordering::Acquire) {
+            CALL_CANCELLED
+        } else {
+            CALL_OK
+        };
+    }
+    if output_capacity < count {
+        return CALL_BAD_CAPACITY;
+    }
+    if outputs.is_null() {
+        return CALL_NULL;
+    }
+    if outputs.addr() % align_of::<LabAssessmentV2>() != 0 {
+        return CALL_MISALIGNED;
+    }
+    if outputs
+        .addr()
+        .checked_add(count as usize * size_of::<LabAssessmentV2>())
+        .is_none()
+    {
+        return CALL_BAD_RANGE;
+    }
+    // SAFETY: envelope checked; caller guarantees liveness and exclusive outputs.
+    unsafe {
+        run_frozen_range(
+            batch,
+            offset as usize,
+            count as usize,
+            outputs,
+            evaluate_lab_v2,
+        )
+    }
+}
+
+/// Mark a live batch cancelled. Concurrent readers observe cancellation at a
+/// record boundary and must discard the complete range on `CALL_CANCELLED`.
+///
+/// # Safety
+/// `batch` must identify a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_frozen_batch_v2_cancel(
+    batch: *mut NpnrLabFrozenBatchV2,
+) -> u32 {
+    if batch.is_null() {
+        return CALL_NULL;
+    }
+    if batch.addr() % align_of::<NpnrLabFrozenBatchV2>() != 0 {
+        return CALL_MISALIGNED;
+    }
+    // SAFETY: caller guarantees a live handle; AtomicBool permits shared access.
+    unsafe { &*batch }.cancelled.store(true, Ordering::Release);
+    CALL_OK
+}
+
+/// Release a handle after all readers have completed.
+///
+/// # Safety
+/// `batch` must be null or a live handle returned by create and not yet destroyed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_frozen_batch_v2_destroy(batch: *mut NpnrLabFrozenBatchV2) {
+    if batch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees unique ownership and no active readers.
+    let batch = unsafe { Box::from_raw(batch) };
+    release_batch(batch.worker_id, batch.retained_bytes);
+    drop(batch);
 }
 
 #[cfg(test)]

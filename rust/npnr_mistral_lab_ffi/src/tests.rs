@@ -3,6 +3,9 @@ use super::*;
 use npnr_mistral_lab::evaluate_wire;
 use std::mem::MaybeUninit;
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
+
+static FROZEN_BATCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn empty_and_rejected_envelopes_do_not_touch_outputs() {
@@ -213,4 +216,169 @@ fn concurrent_calls_share_only_immutable_inputs() {
             });
         }
     });
+}
+
+#[test]
+fn frozen_batch_owns_validated_inputs_and_supports_concurrent_ranges() {
+    let _serial = FROZEN_BATCH_TEST_LOCK.lock().unwrap();
+    let mut inputs = [LabFactsV2::default(); 8];
+    for (i, input) in inputs.iter_mut().enumerate() {
+        input.request_id = 100 + i as u64;
+    }
+    let mut batch = null_mut();
+    // SAFETY: separate initialized inputs and exclusive output pointer storage.
+    assert_eq!(
+        unsafe { npnr_mistral_frozen_batch_v2_create(inputs.as_ptr(), 8, 7, &mut batch) },
+        CALL_OK
+    );
+    assert!(!batch.is_null());
+    inputs.fill(LabFactsV2::default());
+
+    std::thread::scope(|scope| {
+        for range in 0..4 {
+            let batch_addr = batch.addr();
+            scope.spawn(move || {
+                let batch = std::ptr::with_exposed_provenance::<NpnrLabFrozenBatchV2>(batch_addr);
+                let mut outputs = [LabAssessmentV2::default(); 2];
+                // SAFETY: the owner outlives this scope and each thread has private outputs.
+                assert_eq!(
+                    unsafe {
+                        npnr_mistral_frozen_batch_v2_evaluate(
+                            batch,
+                            2 * range,
+                            2,
+                            outputs.as_mut_ptr(),
+                            2,
+                        )
+                    },
+                    CALL_OK
+                );
+                assert_eq!(outputs[0].request_id, 100 + (2 * range) as u64);
+                assert_eq!(outputs[1].request_id, 101 + (2 * range) as u64);
+            });
+        }
+    });
+    // SAFETY: all scoped readers completed and this is the unique owner.
+    unsafe { npnr_mistral_frozen_batch_v2_destroy(batch) };
+}
+
+#[test]
+fn frozen_batch_rejects_malformed_inputs_and_enforces_worker_limit() {
+    let _serial = FROZEN_BATCH_TEST_LOCK.lock().unwrap();
+    let malformed = LabFactsV2 {
+        reserved: 1,
+        ..Default::default()
+    };
+    let mut batch = null_mut();
+    // SAFETY: live input and exclusive output pointer storage.
+    assert_eq!(
+        unsafe { npnr_mistral_frozen_batch_v2_create(&malformed, 1, 9, &mut batch) },
+        CALL_BAD_SNAPSHOT
+    );
+    assert!(batch.is_null());
+
+    let valid = LabFactsV2::default();
+    let mut first = null_mut();
+    let mut second = null_mut();
+    let mut third = null_mut();
+    // SAFETY: each call uses live input and separate exclusive output storage.
+    unsafe {
+        assert_eq!(
+            npnr_mistral_frozen_batch_v2_create(&valid, 1, 11, &mut first),
+            CALL_OK
+        );
+        assert_eq!(
+            npnr_mistral_frozen_batch_v2_create(&valid, 1, 11, &mut second),
+            CALL_OK
+        );
+        assert_eq!(
+            npnr_mistral_frozen_batch_v2_create(&valid, 1, 11, &mut third),
+            CALL_LIMIT
+        );
+        assert!(third.is_null());
+        npnr_mistral_frozen_batch_v2_destroy(first);
+        npnr_mistral_frozen_batch_v2_destroy(second);
+    }
+}
+
+#[test]
+fn frozen_batch_cancellation_and_panics_fail_the_complete_range() {
+    let _serial = FROZEN_BATCH_TEST_LOCK.lock().unwrap();
+    let inputs = [LabFactsV2::default(); 3];
+    let mut batch = null_mut();
+    // SAFETY: initialized inputs and exclusive output pointer storage.
+    assert_eq!(
+        unsafe { npnr_mistral_frozen_batch_v2_create(inputs.as_ptr(), 3, 13, &mut batch) },
+        CALL_OK
+    );
+    let sentinel = LabAssessmentV2 {
+        reason: 12345,
+        ..Default::default()
+    };
+    let mut outputs = [sentinel; 3];
+    // SAFETY: batch is live and outputs are exclusive.
+    assert_eq!(
+        unsafe { npnr_mistral_frozen_batch_v2_cancel(batch) },
+        CALL_OK
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_frozen_batch_v2_evaluate(batch, 0, 3, outputs.as_mut_ptr(), 3) },
+        CALL_CANCELLED
+    );
+    assert_eq!(outputs, [sentinel; 3]);
+    // SAFETY: batch remains live; helper uses the same checked output contract.
+    let batch_ref = unsafe { &*batch };
+    let mut calls = 0;
+    batch_ref.cancelled.store(false, Ordering::Release);
+    assert_eq!(
+        unsafe {
+            run_frozen_range(batch_ref, 0, 3, outputs.as_mut_ptr(), |_| {
+                calls += 1;
+                assert_ne!(calls, 2, "injected frozen evaluator panic");
+                LabAssessmentV2::default()
+            })
+        },
+        CALL_PANIC
+    );
+    assert_eq!(outputs, [LabAssessmentV2::default(); 3]);
+    // SAFETY: unique owner after the synchronous calls.
+    unsafe { npnr_mistral_frozen_batch_v2_destroy(batch) };
+}
+
+#[test]
+fn frozen_batch_aggregate_retention_is_bounded() {
+    let _serial = FROZEN_BATCH_TEST_LOCK.lock().unwrap();
+    let inputs = [LabFactsV2::default(); MAX_BATCH as usize];
+    let bytes = retained_batch_bytes(inputs.len()).unwrap();
+    let maximum = MAX_RETAINED_BYTES / bytes;
+    let mut batches = Vec::with_capacity(maximum);
+    for worker in 0..maximum {
+        let mut batch = null_mut();
+        // SAFETY: initialized inputs and exclusive output pointer storage.
+        assert_eq!(
+            unsafe {
+                npnr_mistral_frozen_batch_v2_create(
+                    inputs.as_ptr(),
+                    MAX_BATCH,
+                    1_000 + worker as u64,
+                    &mut batch,
+                )
+            },
+            CALL_OK
+        );
+        batches.push(batch);
+    }
+    let mut excess = null_mut();
+    // SAFETY: same valid envelope; aggregate quota rejects before publication.
+    assert_eq!(
+        unsafe {
+            npnr_mistral_frozen_batch_v2_create(inputs.as_ptr(), MAX_BATCH, u64::MAX, &mut excess)
+        },
+        CALL_LIMIT
+    );
+    assert!(excess.is_null());
+    for batch in batches {
+        // SAFETY: each pointer is a distinct live handle with no readers.
+        unsafe { npnr_mistral_frozen_batch_v2_destroy(batch) };
+    }
 }

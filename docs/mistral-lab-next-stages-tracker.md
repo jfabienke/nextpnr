@@ -42,8 +42,8 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 3C: live rollout | 3B | Complete | Scoped live parity across Fabi386 and feature fixtures | [Live rollout validation](#2026-09-15-unit-3c) |
 | 4A: mutation audit and revisioning | Stage 3 | Complete | Every active mutation advances or invalidates its revision | [Mutation audit validation](#2026-09-15-unit-4a) |
 | 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
-| 4C: owned frozen batches | 4B | In progress | Lifetime, panic, malformed-input, cancellation, and memory tests pass | — |
-| 4D: deterministic parallel evaluation | 4C | Blocked | Reproducible decisions, zero stale commits, bounded retries, measured scaling | — |
+| 4C: owned frozen batches | 4B | Complete | Lifetime, panic, malformed-input, cancellation, and memory tests pass | [Frozen batch validation](#2026-09-15-unit-4c) |
+| 4D: deterministic parallel evaluation | 4C | In progress | Reproducible decisions, zero stale commits, bounded retries, measured scaling | — |
 | 4E: incremental reuse | 4D | Blocked | Incremental results match full recomputation and final signoff | — |
 
 ## Active unit
@@ -92,10 +92,16 @@ candidates retain the original bind/check/revert path. Fabi386 preserved all
 2,892 candidate decisions and final bytes, then repeated them under transaction
 authority with 1,632 commits and 1,260 mutation-free rejections.
 
-Unit 4C is active. The next boundary is a Rust-owned immutable batch handle whose
-creation copies and validates every V2 fact, whose readers retain no C++ pointers,
-and whose RAII host owner enforces the 64-candidate, two-outstanding-per-worker,
-64 MiB aggregate limits before concurrency is introduced in Unit 4D.
+Unit 4C is complete. A move-only C++ RAII owner now holds an opaque Rust batch.
+Creation copies and validates every V2 fact before publishing the handle; the
+handle stores no C++ pointer, supports concurrent immutable range evaluation with
+private outputs, and has atomic cancellation. Rust enforces 64 candidates, two
+outstanding batches per worker, and 64 MiB aggregate retained storage.
+
+Unit 4D is active. The next boundary is deterministic proposal sequencing using
+the existing C++ scheduler: freeze proposals and RNG decisions serially, evaluate
+owned batches concurrently, consume in sequence order, and reject stale commits
+against the global revision with two bounded retries before synchronous fallback.
 
 ## Validation log
 
@@ -455,6 +461,40 @@ and its report to
 `3a9d40d123f387cac9c0d215afeaa40e65beea31a3d112f2655d771005a0f281`.
 Logs and outputs are retained under `build/stage4-validation/`.
 
+### 2026-09-15: Unit 4C
+
+The V2 ABI now exposes an opaque Rust-owned frozen batch. Creation accepts one to
+64 value records, validates every record through `ValidatedLabSnapshotV2`, copies
+the validated snapshots into boxed Rust storage, and publishes no handle on any
+envelope, validation, panic, or quota failure. Evaluation takes an immutable
+handle plus a bounded range; independent callers may share the handle only while
+owning disjoint output storage. Atomic cancellation is observed before work and
+between records, and non-OK range results must be discarded as a unit.
+
+Quota accounting is process-wide and synchronized: at most two live handles per
+worker and 64 MiB of aggregate retained snapshot storage. Destroying the move-only
+C++ `RustFrozenLabBatchV2` owner releases both quotas. Rust tests exhaust the real
+64 MiB bound, inject an evaluator panic, reject malformed snapshots, verify quota
+recovery after destruction, exercise cancellation, mutate/drop the source after
+creation, and run concurrent readers. Native C++ tests additionally verify move
+ownership and RAII quota release.
+
+| Command | Result |
+| --- | --- |
+| `cargo test --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab_ffi` | 11/11 tests pass, including allocation test |
+| `cargo test --manifest-path rust/Cargo.toml --offline --workspace` | 28 Rust tests/doctests pass |
+| `cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab_ffi --all-targets -- -D warnings` | Pass |
+| `./build/rust-enabled/nextpnr-mistral-test '--gtest_filter=LabControl*:PlacementRevision.*'` | 40/40 pass |
+| `./build/nextpnr-mistral-test '--gtest_filter=LabControl*:PlacementRevision.*'` | 30/30 pass, Rust disabled |
+| Fabi386 Unit 4C regression | Completed normally; placement/routing checksums and normalized routed JSON unchanged |
+
+The Fabi386 report remains byte-identical with SHA-256
+`56e3b75e84be78a30659aa5e3860c3899eb7597e375cfa34a90d13d94a8a034a`.
+The routed JSON differs only in its expected build-version `creator` line after
+commit `bf30a82`; removing that provenance line gives identical SHA-256
+`963a6262c7ae50d2791f92a98e4e35ed92200d7c706f516f2f0666117a2adfa9`.
+Placement and routing checksums remain `0xbb18ede9` and `0xbc1365c6`.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -481,6 +521,8 @@ Logs and outputs are retained under `build/stage4-validation/`.
 | 2026-09-15 | 4A | Use a conservative global revision before fine-grained dependencies | Typed-key, ABA, exhaustion, connectivity, fact, and binding tests |
 | 2026-09-15 | 4B | Promote supported HeAP candidates from shadow comparison to serial frozen transaction authority | 2,892 exact shadow comparisons, then byte-identical Fabi386 and feature-fixture authority runs |
 | 2026-09-15 | 4B | Preserve the original live path for facts outside the frozen Mistral LAB model | Explicit `Unsupported` transaction outcome; candidate and RNG order are unchanged |
+| 2026-09-15 | 4C | Publish only fully copied and validated Rust-owned batches | Malformed and panic tests leave the output handle null; source lifetime test mutates and drops host inputs |
+| 2026-09-15 | 4C | Bound retained work before enabling scheduler concurrency | 64 records per batch, two handles per worker, real 64 MiB aggregate exhaustion and quota-recovery tests |
 
 ## Stage gates and promotion
 
@@ -489,4 +531,4 @@ Logs and outputs are retained under `build/stage4-validation/`.
 | Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode |
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
-| Stage 4: transactions and reuse | In progress (4A–4B complete; 4C active) | Serial Mistral HeAP transaction authority enabled; batching and reuse not promoted |
+| Stage 4: transactions and reuse | In progress (4A–4C complete; 4D active) | Serial transaction authority and owned frozen batches enabled; parallel scheduling not promoted |

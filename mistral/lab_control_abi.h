@@ -114,7 +114,10 @@ enum
     NPNR_LAB_CALL_MISALIGNED = 4,
     NPNR_LAB_CALL_BAD_RANGE = 5,
     NPNR_LAB_CALL_OVERLAP = 6,
-    NPNR_LAB_CALL_PANIC = 7
+    NPNR_LAB_CALL_PANIC = 7,
+    NPNR_LAB_CALL_BAD_SNAPSHOT = 8,
+    NPNR_LAB_CALL_LIMIT = 9,
+    NPNR_LAB_CALL_CANCELLED = 10
 };
 
 /* Synchronous: no ownership transfer or retained pointers. Count zero accepts null.

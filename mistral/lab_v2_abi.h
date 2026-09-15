@@ -120,9 +120,24 @@ typedef struct NpnrLabAssessmentV2
     NpnrLabControlResultV1 control;
 } NpnrLabAssessmentV2;
 
+typedef struct NpnrLabFrozenBatchV2 NpnrLabFrozenBatchV2;
+
 // Same synchronous caller-owned envelope contract and status codes as V1.
 uint32_t npnr_mistral_eval_lab_v2(const NpnrLabFactsV2 *inputs, uint32_t count, NpnrLabAssessmentV2 *outputs,
                                   uint32_t output_capacity);
+
+/* Copies and validates every input before publishing an immutable Rust-owned
+ * handle. At most two handles may be retained per worker and aggregate retained
+ * input storage is bounded to 64 MiB. */
+uint32_t npnr_mistral_frozen_batch_v2_create(const NpnrLabFactsV2 *inputs, uint32_t count, uint64_t worker_id,
+                                             NpnrLabFrozenBatchV2 **output);
+
+/* Concurrent readers may share a handle when their output ranges are disjoint.
+ * The owner must keep the handle alive for every call. */
+uint32_t npnr_mistral_frozen_batch_v2_evaluate(const NpnrLabFrozenBatchV2 *batch, uint32_t offset, uint32_t count,
+                                               NpnrLabAssessmentV2 *outputs, uint32_t output_capacity);
+uint32_t npnr_mistral_frozen_batch_v2_cancel(NpnrLabFrozenBatchV2 *batch);
+void npnr_mistral_frozen_batch_v2_destroy(NpnrLabFrozenBatchV2 *batch);
 
 #ifdef __cplusplus
 }

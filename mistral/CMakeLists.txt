@@ -34,6 +34,8 @@ set(SOURCES
     lab_v2.cc
     lab_v2_replay.h
     lab_v2_replay.cc
+    lab_frozen_batch.h
+    lab_frozen_batch.cc
     placement_revision.h
     placement_revision.cc
     placement_transaction.h

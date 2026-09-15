@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: ISC */
 #include <array>
 #include <cstring>
+#include <thread>
+#include <type_traits>
 #include "gtest/gtest.h"
 #include "lab_dispatch.h"
+#include "lab_frozen_batch.h"
 #include "lab_v2.h"
 
 USING_NEXTPNR_NAMESPACE
@@ -125,4 +128,62 @@ TEST(LabControlFfi, V2EnvelopeAndStructuredResults)
     EXPECT_EQ(output.reason, NPNR_LAB_V2_ODD_FF);
     EXPECT_EQ(output.failing_alm, 0u);
     EXPECT_EQ(output.failing_slot, 1u);
+}
+
+TEST(LabControlFfi, RustOwnedFrozenBatchHasRaiiLifetimeAndConcurrentReaders)
+{
+    static_assert(!std::is_copy_constructible<RustFrozenLabBatchV2>::value, "batch owner must be move-only");
+    std::vector<NpnrLabFactsV2> inputs(8);
+    for (unsigned i = 0; i < inputs.size(); ++i) {
+        auto &input = inputs[i];
+        input.abi_version = NPNR_LAB_ABI_V2;
+        input.struct_size = sizeof(input);
+        input.request_id = 100 + i;
+        input.snapshot_epoch = 77;
+        input.query = NPNR_LAB_QUERY_WHOLE_LAB;
+        input.query_alm = UINT32_MAX;
+        input.input_limit = 42;
+    }
+    uint32_t status = UINT32_MAX;
+    auto first = RustFrozenLabBatchV2::create(inputs, 0x4c4142, status);
+    ASSERT_EQ(status, NPNR_LAB_CALL_OK);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first.size(), inputs.size());
+    auto second = RustFrozenLabBatchV2::create(inputs, 0x4c4142, status);
+    ASSERT_EQ(status, NPNR_LAB_CALL_OK);
+    auto limited = RustFrozenLabBatchV2::create(inputs, 0x4c4142, status);
+    EXPECT_EQ(status, NPNR_LAB_CALL_LIMIT);
+    EXPECT_FALSE(limited);
+
+    RustFrozenLabBatchV2 owner = std::move(first);
+    EXPECT_FALSE(first);
+    const auto retained_input = inputs.front();
+    inputs.clear();
+    std::array<NpnrLabAssessmentV2, 4> low, high;
+    uint32_t low_status = UINT32_MAX, high_status = UINT32_MAX;
+    std::thread low_reader([&] { low_status = owner.evaluate(0, low.size(), low.data(), low.size()); });
+    std::thread high_reader([&] { high_status = owner.evaluate(4, high.size(), high.data(), high.size()); });
+    low_reader.join();
+    high_reader.join();
+    ASSERT_EQ(low_status, NPNR_LAB_CALL_OK);
+    ASSERT_EQ(high_status, NPNR_LAB_CALL_OK);
+    for (unsigned i = 0; i < 4; ++i) {
+        EXPECT_EQ(low[i].request_id, 100 + i);
+        EXPECT_EQ(high[i].request_id, 104 + i);
+    }
+
+    ASSERT_EQ(second.cancel(), NPNR_LAB_CALL_OK);
+    auto sentinel = high;
+    EXPECT_EQ(second.evaluate(0, high.size(), high.data(), high.size()), NPNR_LAB_CALL_CANCELLED);
+    EXPECT_EQ(std::memcmp(high.data(), sentinel.data(), sizeof(high)), 0);
+    owner.reset();
+    auto replacement = RustFrozenLabBatchV2::create({retained_input}, 0x4c4142, status);
+    EXPECT_EQ(status, NPNR_LAB_CALL_OK);
+    EXPECT_TRUE(replacement);
+    auto malformed = retained_input;
+    malformed.reserved = 1;
+    replacement.reset();
+    replacement = RustFrozenLabBatchV2::create({malformed}, 0x4c4142, status);
+    EXPECT_EQ(status, NPNR_LAB_CALL_BAD_SNAPSHOT);
+    EXPECT_FALSE(replacement);
 }
