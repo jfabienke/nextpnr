@@ -10,12 +10,14 @@
 #include "lab_control_plan.h"
 #include "lab_preparation.h"
 #include "lab_replay.h"
+#include "lab_reuse.h"
 #include "lab_snapshot.h"
 #include "lab_v2.h"
 #include "lab_v2_replay.h"
 #include "log.h"
 #include "nextpnr.h"
 #include "placement_coordinator.h"
+#include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
 
@@ -690,6 +692,280 @@ TEST_F(LabControlCaptureTest, BatchCoordinatorDetachedEvaluationMatchesSerialAnd
     EXPECT_TRUE(ctx->placement_revision.is_current(before));
     for (auto *cell : cells)
         EXPECT_EQ(cell->bel, BelId());
+}
+
+namespace {
+struct LabReuseScope
+{
+    Context &ctx;
+    LabReuseScope(Context &ctx, LabReuseMode mode) : ctx(ctx)
+    {
+        ctx.args.lab_reuse = mode;
+        ctx.lab_reuse_begin();
+    }
+    ~LabReuseScope()
+    {
+        ctx.lab_reuse_active = false;
+        ctx.lab_assessments.clear();
+        ctx.args.lab_reuse = LabReuseMode::Off;
+    }
+};
+} // namespace
+
+TEST_F(LabControlCaptureTest, LabReuseStampsFollowBindingsAndFacts)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId even = alms.at(0).ff_bels.at(0);
+    const BelId other_lab = ctx->labs.at(1).alms.at(0).ff_bels.at(0);
+    LabReuseScope scope(*ctx, LabReuseMode::On);
+    ASSERT_EQ(ctx->lab_versions.size(), ctx->labs.size());
+    const uint64_t v0 = ctx->lab_versions[0];
+    const uint64_t v1 = ctx->lab_versions[1];
+    const uint64_t epoch = ctx->lab_facts_epoch;
+
+    ctx->bindBel(even, cells[0], STRENGTH_WEAK);
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 1);
+    EXPECT_EQ(ctx->lab_versions[1], v1);
+    ctx->unbindBel(even);
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 2); // ABA: restoring occupancy is a new version
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch);
+    ctx->bindBel(other_lab, cells[1], STRENGTH_WEAK);
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 2);
+    EXPECT_EQ(ctx->lab_versions[1], v1 + 1);
+    ctx->unbindBel(other_lab);
+
+    // Every audited fact path moves the global epoch: kernel notifications and Mistral's rewrites.
+    cells[2]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 1);
+    cells[2]->unsetAttr(ctx->id("lab_reuse_probe"));
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 2);
+    cells[3]->addInput(id_CLK);
+    cells[3]->connectPort(id_CLK, nets[0]);
+    const uint64_t after_connect = ctx->lab_facts_epoch;
+    EXPECT_GT(after_connect, epoch + 2);
+    ctx->assign_ff_info(cells[3]);
+    EXPECT_EQ(ctx->lab_facts_epoch, after_connect + 1);
+    cells[3]->disconnectPort(id_CLK);
+    EXPECT_GT(ctx->lab_facts_epoch, after_connect + 1);
+    EXPECT_EQ(ctx->lab_reuse_stats.lab_invalidations, 4u);
+    EXPECT_GE(ctx->lab_reuse_stats.facts_invalidations, 5u);
+}
+
+TEST_F(LabControlCaptureTest, LabReuseServesCurrentEntriesAndInvalidatesPrecisely)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId even_a = alms.at(0).ff_bels.at(0);
+    const BelId even_b = alms.at(1).ff_bels.at(0);
+    const BelId other_lab = ctx->labs.at(1).alms.at(0).ff_bels.at(0);
+    LabReuseScope scope(*ctx, LabReuseMode::On);
+    auto &s = ctx->lab_reuse_stats;
+
+    ctx->bindBel(even_a, cells[0], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a)); // FF query: inputs, ctrlset, mlab all live
+    EXPECT_EQ(s.queries, 1u);
+    EXPECT_EQ(s.misses, 3u);
+    EXPECT_EQ(s.hits, 0u);
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a)); // unchanged LAB: all three served
+    EXPECT_EQ(s.hits, 3u);
+    EXPECT_EQ(s.misses, 3u);
+
+    // A binding elsewhere leaves LAB 0's entry current.
+    ctx->bindBel(other_lab, cells[1], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a));
+    EXPECT_EQ(s.hits, 6u);
+    EXPECT_EQ(s.stale_lab, 0u);
+
+    // A binding in LAB 0 invalidates exactly that entry.
+    ctx->bindBel(even_b, cells[2], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(even_b));
+    EXPECT_EQ(s.stale_lab, 1u);
+    EXPECT_EQ(s.misses, 6u);
+    EXPECT_TRUE(ctx->isBelLocationValid(other_lab)); // LAB 1 entry still fresh from nothing: misses
+    EXPECT_EQ(s.misses, 9u);
+    EXPECT_TRUE(ctx->isBelLocationValid(other_lab));
+    EXPECT_EQ(s.hits, 9u);
+
+    // A fact change invalidates every LAB even though no BEL moved.
+    cells[5]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a));
+    EXPECT_EQ(s.stale_facts, 1u);
+    EXPECT_TRUE(ctx->isBelLocationValid(other_lab));
+    EXPECT_EQ(s.stale_facts, 2u);
+    cells[5]->unsetAttr(ctx->id("lab_reuse_probe"));
+
+    // A cached illegal result stays illegal until the LAB changes: odd FF slot makes the ALM
+    // illegal, which is not cached, but a control-set conflict is a LAB-level cached result.
+    ctx->unbindBel(even_a);
+    ctx->unbindBel(even_b);
+    ctx->unbindBel(other_lab);
+    EXPECT_EQ(s.mismatches, 0u);
+}
+
+TEST_F(LabControlCaptureTest, LabReuseShadowAgreesWithLiveAcrossRandomTraffic)
+{
+    // Random bind/unbind/query traffic over three LABs, including control-set conflicts and
+    // full LABs, in shadow mode: every cached sub-result must equal the live evaluation.
+    for (unsigned i = 0; i < 12; ++i) {
+        cells[i]->addInput(id_CLK);
+        cells[i]->connectPort(id_CLK, nets[i % 3]); // three distinct clocks force control-set conflicts
+        ctx->assign_ff_info(cells[i]);
+    }
+    LabReuseScope scope(*ctx, LabReuseMode::Shadow);
+    auto &s = ctx->lab_reuse_stats;
+    std::vector<BelId> slots;
+    for (unsigned lab = 0; lab < 3; ++lab)
+        for (unsigned alm = 0; alm < 4; ++alm)
+            slots.push_back(ctx->labs.at(lab).alms.at(alm).ff_bels.at(0));
+    std::mt19937 rng(20260915);
+    std::vector<CellInfo *> bound(slots.size(), nullptr);
+    unsigned legal_count = 0, illegal_count = 0;
+    for (unsigned step = 0; step < 600; ++step) {
+        const unsigned k = rng() % slots.size();
+        if (bound[k] == nullptr) {
+            CellInfo *cell = cells[k];
+            if (cell->bel != BelId())
+                continue;
+            ctx->bindBel(slots[k], cell, STRENGTH_WEAK);
+            bound[k] = cell;
+        } else if (rng() % 3 == 0) {
+            ctx->unbindBel(slots[k]);
+            bound[k] = nullptr;
+        }
+        for (unsigned q = 0; q < 3; ++q) {
+            const unsigned j = rng() % slots.size();
+            if (bound[j] == nullptr)
+                continue;
+            if (ctx->isBelLocationValid(slots[j]))
+                ++legal_count;
+            else
+                ++illegal_count;
+        }
+    }
+    for (unsigned k = 0; k < slots.size(); ++k)
+        if (bound[k])
+            ctx->unbindBel(slots[k]);
+    EXPECT_EQ(s.mismatches, 0u);
+    EXPECT_GT(s.hits, 0u);
+    EXPECT_GT(s.stale_lab, 0u);
+    EXPECT_GT(legal_count, 0u);
+    EXPECT_GT(illegal_count, 0u);
+    for (unsigned i = 0; i < 12; ++i)
+        cells[i]->disconnectPort(id_CLK);
+}
+
+TEST_F(LabControlCaptureTest, LabReuseIsGatedToLegacyModesAndInactiveOutsidePlacement)
+{
+    const BelId even = ctx->labs.at(0).alms.at(0).ff_bels.at(0);
+    ctx->bindBel(even, cells[0], STRENGTH_WEAK);
+    {
+        ctx->args.lab_legality = LabLegalityMode::Shadow;
+        LabReuseScope scope(*ctx, LabReuseMode::On);
+        EXPECT_EQ(ctx->lab_reuse_effective, LabReuseMode::Off);
+        ctx->args.lab_legality = LabLegalityMode::Legacy;
+    }
+    {
+        ctx->args.verify_lab_controls = true;
+        LabReuseScope scope(*ctx, LabReuseMode::On);
+        EXPECT_EQ(ctx->lab_reuse_effective, LabReuseMode::Off);
+        ctx->args.verify_lab_controls = false;
+    }
+    {
+        LabReuseScope scope(*ctx, LabReuseMode::On);
+        EXPECT_EQ(ctx->lab_reuse_effective, LabReuseMode::On);
+        EXPECT_TRUE(ctx->isBelLocationValid(even));
+        EXPECT_EQ(ctx->lab_reuse_stats.queries, 1u);
+        ctx->lab_reuse_active = false; // outside place(): queries bypass the cache entirely
+        EXPECT_TRUE(ctx->isBelLocationValid(even));
+        EXPECT_EQ(ctx->lab_reuse_stats.queries, 1u);
+    }
+    ctx->unbindBel(even);
+}
+
+TEST_F(LabControlCaptureTest, PlacementReuseClassifiesCellsBySignatureAndTransplantsBels)
+{
+    // Build a previous-output JSON around the fixture: nets 0..3 and FF cells 0..6.
+    const auto &alms = ctx->labs.at(0).alms;
+    auto bel_name = [&](BelId bel) { return ctx->getBelName(bel).str(ctx.get()); };
+    for (unsigned i = 0; i < 7; ++i) {
+        cells[i]->addInput(id_CLK);
+        cells[i]->addInput(id_DATAIN);
+        cells[i]->connectPort(id_CLK, nets[0]);
+        cells[i]->connectPort(id_DATAIN, nets[1 + (i % 3)]);
+    }
+    cells[3]->setParam(ctx->id("INIT"), Property(1, 1)); // current param differs from the previous run below
+    cells[4]->disconnectPort(id_DATAIN);
+    cells[4]->connectPort(id_DATAIN, nets[3]);                       // reconnected: connectivity differs
+    ctx->bindBel(alms.at(9).ff_bels.at(0), cells[5], STRENGTH_USER); // already bound (as QSF pins are) wins
+
+    auto net_name = [&](unsigned i) { return nets[i]->name.str(ctx.get()); };
+    std::ostringstream json;
+    json << "{\"modules\":{\"top\":{\"cells\":{";
+    auto cell_entry = [&](unsigned i, const std::string &bel, unsigned datain_net, const char *extra_params) {
+        json << (i ? "," : "") << "\"" << cells[i]->name.str(ctx.get()) << "\":{\"type\":\"MISTRAL_FF\","
+             << "\"attributes\":{\"NEXTPNR_BEL\":\"" << bel << "\",\"BEL_STRENGTH\":\"3\"},"
+             << "\"parameters\":{" << extra_params << "},"
+             << "\"connections\":{\"CLK\":[100],\"DATAIN\":[" << 101 + datain_net << "]}}";
+    };
+    cell_entry(0, bel_name(alms.at(0).ff_bels.at(0)), 0, "");               // reused
+    cell_entry(1, bel_name(alms.at(1).ff_bels.at(0)), 1, "");               // reused
+    cell_entry(2, bel_name(alms.at(2).ff_bels.at(0)), 2, "");               // reused, through a route-through
+    cell_entry(3, bel_name(alms.at(3).ff_bels.at(0)), 0, "\"INIT\":\"0\""); // param changed
+    cell_entry(4, bel_name(alms.at(4).ff_bels.at(0)), 1, "");               // connectivity changed
+    cell_entry(5, bel_name(alms.at(5).ff_bels.at(0)), 2, "");               // user-constrained now
+    cell_entry(6, "MISTRAL_FF.999.999.0", 0, "");                           // BEL no longer resolves
+    // A previous cell that no longer exists, and a route-through buffer feeding cell 2.
+    json << ",\"vanished\":{\"type\":\"MISTRAL_FF\",\"attributes\":{\"NEXTPNR_BEL\":\""
+         << bel_name(alms.at(6).ff_bels.at(0)) << "\"},\"parameters\":{},\"connections\":{\"CLK\":[100]}}";
+    json << ",\"rt$ROUTETHRU\":{\"type\":\"MISTRAL_BUF\",\"attributes\":{},\"parameters\":{},"
+            "\"connections\":{\"A\":[103],\"Q\":[200]}}";
+    json << "},\"netnames\":{";
+    json << "\"" << net_name(0) << "\":{\"bits\":[100]},\"" << net_name(1) << "\":{\"bits\":[101]},\"" << net_name(2)
+         << "\":{\"bits\":[102]},\"" << net_name(3) << "\":{\"bits\":[103]},"
+         << "\"rt_out\":{\"bits\":[200]}}}}}";
+    // Cell 2 previously read DATAIN from the route-through output (bit 200), whose input is net 3;
+    // it currently reads net 3 directly, so folding the buffer out must make it match.
+    std::string text = json.str();
+    const std::string cell2 = "\"" + cells[2]->name.str(ctx.get()) + "\":";
+    const auto at = text.find(cell2);
+    ASSERT_NE(at, std::string::npos);
+    const auto datain = text.find("\"DATAIN\":[103]", at);
+    ASSERT_NE(datain, std::string::npos);
+    text.replace(datain, std::string("\"DATAIN\":[103]").size(), "\"DATAIN\":[200]");
+    cells[2]->disconnectPort(id_DATAIN);
+    cells[2]->connectPort(id_DATAIN, nets[3]);
+
+    const std::string path = std::string(::testing::TempDir()) + "/lab_reuse_previous.json";
+    {
+        std::ofstream out(path);
+        out << text;
+    }
+    const auto report = apply_placement_reuse(*ctx, path);
+    EXPECT_EQ(report.previous_cells, 8u);
+    EXPECT_EQ(report.previous_routethru, 1u);
+    EXPECT_EQ(report.current_cells, cells.size());
+    EXPECT_EQ(report.matched, 3u);
+    EXPECT_EQ(report.changed, 2u);
+    EXPECT_EQ(report.user_constrained, 1u);
+    EXPECT_EQ(report.missing_bel, 1u);
+    EXPECT_EQ(report.removed, 1u);
+    EXPECT_EQ(report.added, cells.size() - 7);
+    const IdString id_bel = ctx->id("BEL");
+    EXPECT_EQ(ctx->getBelByNameStr(cells[0]->attrs.at(id_bel).as_string()), alms.at(0).ff_bels.at(0));
+    EXPECT_EQ(ctx->getBelByNameStr(cells[1]->attrs.at(id_bel).as_string()), alms.at(1).ff_bels.at(0));
+    EXPECT_EQ(ctx->getBelByNameStr(cells[2]->attrs.at(id_bel).as_string()), alms.at(2).ff_bels.at(0));
+    EXPECT_EQ(cells[3]->attrs.count(id_bel), 0u);
+    EXPECT_EQ(cells[4]->attrs.count(id_bel), 0u);
+    EXPECT_EQ(cells[5]->attrs.count(id_bel), 0u);
+    EXPECT_EQ(cells[5]->bel, alms.at(9).ff_bels.at(0));
+    EXPECT_EQ(cells[6]->attrs.count(id_bel), 0u);
+    for (unsigned i = 0; i < 7; ++i)
+        if (i != 5)
+            EXPECT_EQ(cells[i]->bel, BelId()); // annotation only; the placer binds
+    ctx->unbindBel(alms.at(9).ff_bels.at(0));
+    for (unsigned i = 0; i < 7; ++i) {
+        cells[i]->unsetAttr(id_bel);
+        cells[i]->unsetParam(ctx->id("INIT"));
+    }
 }
 
 TEST_F(LabControlCaptureTest, ProfilingReservoirPreservesLiveStateAndIsReproducible)

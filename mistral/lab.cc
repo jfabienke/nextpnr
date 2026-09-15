@@ -269,6 +269,7 @@ dict<IdString, IdString> Arch::get_mlab_key(const CellInfo *cell, bool include_r
 
 void Arch::assign_comb_info(CellInfo *cell) const
 {
+    note_lab_facts_mutation();
     cell->combInfo.is_carry = false;
     cell->combInfo.is_shared = false;
     cell->combInfo.is_extended = false;
@@ -370,6 +371,7 @@ void Arch::assign_comb_info(CellInfo *cell) const
 
 void Arch::assign_ff_info(CellInfo *cell) const
 {
+    note_lab_facts_mutation();
     cell->ffInfo.ctrlset.clk = get_ctrlsig(getCtx(), cell, id_CLK);
     cell->ffInfo.ctrlset.ena = get_ctrlsig(getCtx(), cell, id_ENA, true);
     cell->ffInfo.ctrlset.aclr = get_ctrlsig(getCtx(), cell, id_ACLR);

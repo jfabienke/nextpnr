@@ -36,12 +36,16 @@ set(SOURCES
     lab_v2_replay.cc
     lab_frozen_batch.h
     lab_frozen_batch.cc
+    lab_reuse.h
+    lab_reuse.cc
     placement_revision.h
     placement_revision.cc
     placement_transaction.h
     placement_transaction.cc
     placement_coordinator.h
     placement_coordinator.cc
+    placement_reuse.h
+    placement_reuse.cc
     m10k.cc
     pll.cc
     pack.cc

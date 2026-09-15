@@ -26,6 +26,7 @@
 #include "base_arch.h"
 #include "lab_dispatch.h"
 #include "lab_profile.h"
+#include "lab_reuse.h"
 #include "lab_v2.h"
 #include "nextpnr_types.h"
 #include "placement_revision.h"
@@ -42,7 +43,9 @@ struct ArchArgs
     LabControlMode lab_controls = LabControlMode::Legacy;
     std::string lab_control_profile_path;
     LabLegalityMode lab_legality = LabLegalityMode::Legacy;
-    int placer_lookahead = 0; // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
+    int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
+    LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
+    std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
 };
 
 // These structures are used for fast ALM validity checking
@@ -309,6 +312,7 @@ struct Arch : BaseArch<ArchRanges>
     ArchArgs archArgs() const override { return args; }
     void notifyContextMutation(ContextMutationKind kind) override
     {
+        note_lab_facts_mutation();
         switch (kind) {
         case ContextMutationKind::Connectivity:
             placement_revision.note_mutation(PlacementMutation::Connectivity);
@@ -394,6 +398,7 @@ struct Arch : BaseArch<ArchRanges>
                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
                     int(strength));
         update_bel(bel);
+        note_lab_binding(data);
         placement_revision.note_mutation(PlacementMutation::BelBinding);
     }
     void unbindBel(BelId bel) override
@@ -408,6 +413,7 @@ struct Arch : BaseArch<ArchRanges>
         data.bound->belStrength = STRENGTH_NONE;
         data.bound = nullptr;
         update_bel(bel);
+        note_lab_binding(data);
         placement_revision.note_mutation(PlacementMutation::BelBinding);
     }
     bool checkBelAvail(BelId bel) const override { return bel_data(bel).bound == nullptr; }
@@ -611,6 +617,31 @@ struct Arch : BaseArch<ArchRanges>
     mutable LabControlProfile lab_control_profile;
     mutable LabLegalityStats lab_legality_stats;
     mutable PlacementRevisionState placement_revision;
+
+    // Stage 4E-1 reuse state (lab_reuse.cc). Active only inside place().
+    mutable LabReuseMode lab_reuse_effective = LabReuseMode::Off;
+    mutable bool lab_reuse_active = false;
+    mutable std::vector<uint64_t> lab_versions;
+    mutable uint64_t lab_facts_epoch = 1;
+    mutable std::vector<LabAssessmentEntry> lab_assessments;
+    mutable LabReuseStats lab_reuse_stats;
+    void note_lab_binding(const BelInfo &data) const
+    {
+        if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && data.lab_data.lab < lab_versions.size()) {
+            ++lab_versions[data.lab_data.lab];
+            if (lab_reuse_active)
+                ++lab_reuse_stats.lab_invalidations;
+        }
+    }
+    void note_lab_facts_mutation() const
+    {
+        ++lab_facts_epoch;
+        if (lab_reuse_active)
+            ++lab_reuse_stats.facts_invalidations;
+    }
+    // Sizes the per-LAB stamps, applies the mode gate, and clears statistics.
+    void lab_reuse_begin();
+    void lab_reuse_end();
     bool check_lab_input_count(uint32_t lab) const; // lab.cc
     bool check_mlab_groups(uint32_t lab) const;     // lab.cc
 

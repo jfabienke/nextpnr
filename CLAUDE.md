@@ -107,6 +107,12 @@ sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared w
   serial search. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.
+- Stage 4E reuse is also opt-in: `--lab-reuse shadow|on` caches LAB-level legality sub-results
+  behind per-LAB binding versions and a global facts epoch (`mistral/lab_reuse.*`, active only
+  inside `Arch::place()`); `--reuse-placement prev.json` transplants previous BELs onto cells
+  with an identical name and signature (`mistral/placement_reuse.*`), and HeAP's constraint
+  placer validates them. Reuse runs re-route from a different RNG state, so compare quality,
+  not bytes.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
@@ -127,11 +133,11 @@ measured and decided:
   bridges, DSP, M10K, router deadlock mechanisms). Several "obvious fixes" recorded there were
   tried and reverted; check it before re-deriving one.
 
-State at last handover: Stages 1–3 and 4A–4C complete; **4D (deterministic parallel evaluation)
-in progress**; 4E blocked on 4D. Hard rules for 4D: candidate and RNG order stay serial, workers
-only do detached evaluation, results are consumed in proposal order, stale work is retried at
-most twice then evaluated synchronously, and final artifacts must be byte-identical across
-1/2/4/8 workers.
+State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; every new capability is off by
+default and unpromoted. Next is a design for cross-build checkpoints and physical artifact
+provenance (design doc section 6.8, levels three and four). Hard rules that still apply: the
+serial search order and RNG stream are the reference, every reuse path must be validated against
+full recomputation, and nothing may silently certify a partial result.
 
 ## Conventions
 

@@ -13,8 +13,9 @@ Handover point:
 - Branch: `cyclonev-compress-default`
 - Commit: `9c7e56f` (Stage 4D)
 - Stages 1, 2, and 3 are closed.
-- Stage 4A, 4B, 4C, and 4D are complete.
-- Stage 4E is ready to start.
+- Stage 4A through 4E are complete for the Stage 4 scope.
+- Next: cross-build checkpoints and physical artifact provenance (design
+  section 6.8 levels three and four), which are a new design decision.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -148,6 +149,35 @@ Key files:
 - `mistral/arch.h` (`ArchArgs::placer_lookahead`), `mistral/arch.cc`, `mistral/main.cc`
 - `mistral/tests/lab_legality.cc` (`BatchCoordinator*`)
 
+### Stage 4E: incremental reuse
+
+Level one (`mistral/lab_reuse.h/.cc`, `--lab-reuse off|shadow|on`): per-LAB
+binding versions plus a global facts epoch stamp a cached copy of the live
+legacy query's LAB-level sub-results. Active only inside `Arch::place()` and
+only in plain legacy LAB modes. Fabi386 is byte-identical in both modes with
+zero shadow mismatches; the hit rate is 14.5% and the saving is not measurable
+end to end. Its value is the invalidation contract.
+
+Level two (`mistral/placement_reuse.h/.cc`, `--reuse-placement prev.json`):
+cells whose name and semantic signature match the previous output get a hard
+`BEL` attribute; HeAP's constraint placer binds and validity-checks them and
+everything else is placed normally. Route-through buffers in the previous
+output are folded out of consumers' signatures, and already-bound cells (QSF
+pins) are never annotated. An unchanged rebuild reproduces the previous
+placement exactly with placement time under 1 s instead of ~21 s; controlled
+edits keep 99.3–99.6% of cells. Routing is re-run in full and is not
+byte-identical because the RNG state at route start differs.
+
+Not done, by design: entity matching across re-synthesis name churn, reuse of
+routes or preparation artifacts, and checkpoint persistence.
+
+Key files:
+
+- `mistral/lab_reuse.h/.cc`, `mistral/arch.h` (stamps and hooks), `mistral/lab.cc` (fact rewrites bump the epoch)
+- `mistral/placement_reuse.h/.cc`, `mistral/arch.cc`, `mistral/main.cc`
+- `mistral/tests/lab_legality.cc` (`LabReuse*`, `PlacementReuse*`)
+- `build/stage4e-validation/make_edits.py`, `compare_reuse.py`
+
 ## Benchmark evidence
 
 The dedicated release benchmark is
@@ -208,27 +238,20 @@ budget above 2 mostly discards candidates. A frozen-epoch search policy
 change the search trajectory and needs its own reproducibility gate; that is a
 new decision, not a continuation of 4D.
 
-### Stage 4E: incremental reuse
+### Stage 4E exit evidence (recorded)
 
-This is the immediate next unit; Stage 4D is reproducible and stable.
+Same-session assessment reuse is byte-identical and mismatch-free on Fabi386;
+placement reuse reproduces an unchanged rebuild exactly and keeps 99.3–99.6%
+of cells on controlled edits, with full preparation, routing, and signoff.
+Neither mode is promoted. The tracker records counters, timings, and Fmax.
 
-Required work:
+### What comes after Stage 4
 
-1. Track `DirtyLab`, `EvaluatedLab`, `PreparedLab`, and routed dependencies as
-   distinct states.
-2. Begin with one current versioned assessment per LAB.
-3. Add reverse incidence from net and cell changes to affected LABs.
-4. Invalidate precisely on controlled connectivity, fact, constraint, binding,
-   generated-object, and routing changes.
-5. Reuse placement outside conservative dirty repair regions.
-6. Compare unchanged and controlled-edit incremental builds with full
-   recomputation.
-7. Add a bounded content cache only after versioned per-LAB reuse is correct.
-8. Continue full control preparation and routing until artifact provenance and
-   teardown rules are implemented.
-
-Stage 4E exits only when incremental and full recomputation agree on legality,
-connectivity, timing, utilization, routing, and final artifacts.
+The remaining reuse levels in design section 6.8 (prepared/routed artifact
+reuse and separate-process checkpoints) need artifact provenance for
+reservations, generated cells, pin rewrites, and routes, plus durable entity
+matching. Start with a design document; do not extend `--reuse-placement` to
+routes without it.
 
 ## Validation before changing status
 

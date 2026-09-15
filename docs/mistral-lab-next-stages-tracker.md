@@ -45,7 +45,7 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
 | 4C: owned frozen batches | 4B | Complete | Lifetime, panic, malformed-input, cancellation, and memory tests pass | [Frozen batch validation](#2026-09-15-unit-4c) |
 | 4D: deterministic parallel evaluation | 4C | Complete | Reproducible decisions, zero stale commits, bounded retries, measured scaling | [Deterministic lookahead validation](#2026-09-15-unit-4d-deterministic-lookahead) |
-| 4E: incremental reuse | 4D | Ready | Incremental results match full recomputation and final signoff | — |
+| 4E: incremental reuse | 4D | Complete (same-session assessment reuse and conservative placement reuse; artifact provenance and cross-build checkpoints remain later work) | Incremental results match full recomputation and final signoff | [Reuse validation](#2026-09-15-unit-4e-incremental-reuse) |
 
 ## Active unit
 
@@ -117,6 +117,24 @@ JSON net numbering. Lookahead is off by default. Measured end-to-end it buys
 nothing on Fabi386: strict legalisation is under 1 s of a 40 s run, and the
 owner-side capture of speculated candidates costs more than the workers save.
 4E is ready to start.
+
+Unit 4E is complete at the two levels the design assigns to Stage 4. Level one
+is same-session LAB assessment reuse (`mistral/lab_reuse.h/.cc`): every LAB
+carries a binding version bumped by each bind/unbind of one of its BELs, the
+design carries a facts epoch bumped by every kernel mutation notification and
+by Mistral's own `assign_comb_info`/`assign_ff_info`, and the live legacy
+query's three LAB-level sub-results (input budget, control sets, MLAB groups)
+are cached per LAB behind both stamps. `--lab-reuse off|shadow|on` selects it;
+it is active only inside `Arch::place()`, only with plain legacy LAB modes, and
+off by default. Level two is a conservative placement-reuse adapter for edited
+packed designs (`mistral/placement_reuse.h/.cc`, `--reuse-placement prev.json`):
+cells with the same name and an identical semantic signature (type, params,
+attributes, port-to-net-name connectivity with route-through buffers folded
+out) as a cell in the previous output receive a hard `BEL` attribute, HeAP's
+constraint placer binds and validity-checks them, and everything else is placed
+normally; preparation and routing run in full. Cross-build checkpoints, physical
+artifact provenance, and entity matching that survives re-synthesis name churn
+are not part of this unit.
 
 ## Validation log
 
@@ -661,6 +679,87 @@ Logs, JSON, reports, and console output with `/usr/bin/time -l` resource lines
 are retained under `build/stage4d-validation/` (`summarise.sh` regenerates the
 comparison table).
 
+### 2026-09-15: Unit 4E incremental reuse
+
+**Level one: same-session assessment reuse.** The reverse incidence is
+deliberately two-tiered, as the design allows initially: bindings invalidate
+precisely (only the LAB whose BEL changed), while every audited fact,
+connectivity, constraint, or generated-object mutation invalidates every LAB
+through one epoch. Routing changes do not invalidate legality entries because
+no LAB legality fact reads routing; routed-dependency states are left for the
+artifact-provenance work. Shadow mode evaluates live on every hit and compares.
+
+Fabi386 with `--lab-reuse shadow` and `--lab-reuse on` both produced the Stage
+4C report and routed JSON byte for byte and the checksums `0xbb18ede9` /
+`0xbc1365c6`:
+
+| Counter | Value |
+| --- | ---: |
+| LAB-level composite queries during placement | 10,704,787 |
+| Sub-results served from cache | 2,841,674 (14.5%) |
+| Sub-results evaluated live and stored | 16,741,223 |
+| Entries dropped by a LAB version change | 9,456,307 |
+| Entries dropped by a facts epoch change | 0 |
+| Per-LAB invalidations / facts invalidations | 45,069,307 / 0 |
+| Shadow mismatches | 0 |
+
+The hit rate is bounded by the placers' access pattern: nearly every query
+follows a bind in the same LAB. Hits come from multi-BEL cluster checks. The
+facts epoch never moved during placement, which confirms the audit that no
+placer mutates cell or net facts. The saving is a few hundred milliseconds of
+evaluation inside a 30–45 s run and is not separable from run-to-run noise;
+the unit is kept for its invalidation contract, which level two and later
+artifact reuse depend on, not for speed.
+
+**Level two: conservative placement reuse.** Three experiments, each against a
+clean full run of the same input, previous placement = the Stage 4D serial
+output:
+
+| Design | Reused | Dirty | Placement identical to previous for reused cells | HeAP + SA time | Router2 | Wall | Fmax reuse / clean |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| unchanged rebuild | 11,618 / 11,620 (2 pin-constrained) | 0 | Yes, all 11,620 cells on the same BEL as the clean run | 0.54 s vs 21.6 s | 9.46 s vs 10.07 s | 20.3 s vs 45.5 s | 34.04 / 35.87 MHz |
+| 40 LUT INIT edits | 11,578 (99.6%) | 40 changed | 11,585 unchanged BELs; 35 of the 40 dirty cells moved, 5 re-placed onto their old BEL | 0.72 s vs 20.5 s | 8.65 s vs 9.35 s | 13.8 s vs 34.3 s | 33.16 / 35.87 MHz |
+| + 40 input swaps | 11,538 (99.3%) | 80 changed | 11,554 unchanged BELs; 66 of the 80 dirty cells moved | 0.65 s vs 18.9 s | 8.41 s vs 10.21 s | 13.5 s vs 33.5 s | 34.36 / 34.97 MHz |
+
+Every reuse run completed placement validity checks, preparation, routing, and
+signoff normally; utilization is identical apart from one or two additional
+route-through buffers. Placement time collapses because HeAP has nothing to
+solve and simulated annealing has nothing movable. The edited designs place
+everything differently in a clean run (HeAP is chaotic under any change), so
+the clean-run comparison is quality, not bytes, as the gate requires.
+
+Routing is not byte-identical even on the unchanged rebuild: the placer no
+longer consumes RNG draws, so router2 starts from a different RNG state and
+reaches a different Fmax on the identical placement. That is ordinary router
+variance: clean full runs of the unchanged design at seeds 1, 2, and 3 reach
+35.87, 34.98, and 32.96 MHz, and every reuse result above (33.16–34.36 MHz)
+lies inside that spread.
+
+The first attempt failed on `probe_MISTRAL_OB_PAD`: QSF pin constraints bind
+IO cells during packing, and HeAP's constraint placer refuses a second bind.
+Already-bound cells now count as user-constrained and are never annotated; the
+unit test covers that path, a changed parameter, changed connectivity, a
+previous BEL that no longer resolves, a removed cell, and a route-through
+buffer folded back out of a consumer's signature.
+
+Why the transplanted set cannot be illegal: changed and new cells are never
+constrained, and under the current rules removing an occupant from a LAB never
+makes the remaining occupants illegal (input budget, control-set pools, MLAB
+grouping, and ALM sharing all only gain headroom). The constraint placer still
+validity-checks every transplanted cell and fails the run rather than certify
+a wrong placement.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 50/50 pass (4 `LabReuse*` cases: stamps follow bindings and facts, precise and global invalidation with ABA safety, shadow agreement over 600 random bind/unbind/query steps with control-set conflicts, mode gating and inactivity outside placement; 1 `PlacementReuse*` case) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 40/40 pass |
+| Fabi386 `--lab-reuse shadow` / `on` | Byte-identical to Stage 4C; zero mismatches; counters as tabulated |
+| Fabi386 `--reuse-placement` unchanged / INIT edit / INIT+swap edit vs clean runs | As tabulated; all runs completed signoff |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
+Artifacts, logs, the edit generator (`make_edits.py`), and the comparison
+script (`compare_reuse.py`) are under `build/stage4e-validation/`.
+
 ### 2026-09-15: Apple Silicon performance-core scheduling experiment
 
 The benchmark host is a Mac Studio with an Apple M1 Ultra, 16 performance cores,
@@ -737,6 +836,10 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | 2026-09-15 | 4D | Carry `--placer-lookahead` in `ArchArgs`, never in `ctx->settings` | A settings key interned one IdString and shifted the routing checksum and 20 JSON net ids while the report stayed identical |
 | 2026-09-15 | 4D | Budget candidates, not locations, and let a batch cut through a tile's shapes | Location batches evaluated 12x the serial candidate count; candidate budgets bound discarded work to N−1 per commit |
 | 2026-09-15 | 4D | Keep lookahead off by default and do not promote parallel evaluation | Decision-identical, but strict legalisation is <2.5% of wall time and owner-side capture of discarded candidates outweighs worker savings on Fabi386 |
+| 2026-09-15 | 4E | Invalidate bindings per LAB and every fact mutation globally, rather than building net/cell reverse incidence now | Facts epoch never moves during placement (0 of 10.7 M queries), so precise fact incidence would buy nothing yet |
+| 2026-09-15 | 4E | Reuse placement as hard `BEL` constraints validated by the constraint placer, not as soft preferences | Unchanged rebuild reproduces the previous placement exactly; edited designs keep 99.3–99.6% of cells and cut placement from ~20 s to under 1 s |
+| 2026-09-15 | 4E | Match cells by name plus full semantic signature, folding route-through buffers out of the previous output | 100% reuse on an unchanged rebuild with 549 generated buffers present in the previous output |
+| 2026-09-15 | 4E | Keep both reuse modes off by default | Assessment reuse is not measurable end to end; placement reuse changes routing RNG state and needs a provenance decision before promotion |
 
 ## Stage gates and promotion
 
@@ -745,4 +848,4 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode |
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
-| Stage 4: transactions and reuse | In progress (4A–4D complete; 4E ready) | Serial transaction authority and owned frozen batches enabled; deterministic parallel lookahead available via `--placer-lookahead`, off by default and not promoted |
+| Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |

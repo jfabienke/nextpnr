@@ -17,6 +17,7 @@
  */
 
 #include <algorithm>
+#include <cinttypes>
 
 #include "log.h"
 #include "nextpnr.h"
@@ -24,6 +25,7 @@
 #include <memory>
 
 #include "placement_coordinator.h"
+#include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer1.h"
 #include "placer_heap.h"
@@ -334,13 +336,11 @@ bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
     if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB)) {
         if (args.lab_legality != LabLegalityMode::Legacy)
             return dispatch_lab_legality(*this, data.lab_data.lab, NPNR_LAB_QUERY_COMB_BEL, data.lab_data.alm);
-        return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
-               check_mlab_groups(data.lab_data.lab);
+        return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && lab_level_legal(*this, data.lab_data.lab, false);
     } else if (data.type == id_MISTRAL_FF) {
         if (args.lab_legality != LabLegalityMode::Legacy)
             return dispatch_lab_legality(*this, data.lab_data.lab, NPNR_LAB_QUERY_FF_BEL, data.lab_data.alm);
-        return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
-               is_lab_ctrlset_legal(data.lab_data.lab) && check_mlab_groups(data.lab_data.lab);
+        return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && lab_level_legal(*this, data.lab_data.lab, true);
     } else if (data.type == id_MISTRAL_CLKENA) {
         // A CLKBUF bel and a PLLCLK bel at the same (tile, index) drive the SAME physical
         // CMUX*G CLKOUT -- create_clkbuf and create_pllclk both bind that port. They are two models
@@ -654,9 +654,40 @@ BoundingBox Arch::getRouteBoundingBox(WireId src, WireId dst) const
     return bounds;
 }
 
+void Arch::lab_reuse_begin()
+{
+    lab_versions.assign(labs.size(), 0);
+    lab_assessments.assign(labs.size(), LabAssessmentEntry{});
+    lab_reuse_stats = LabReuseStats{};
+    lab_reuse_effective = args.lab_reuse;
+    // Reuse is validated against the plain legacy query only. Modes with their
+    // own comparison or sampling semantics keep every query live.
+    if (lab_reuse_effective != LabReuseMode::Off &&
+        (args.lab_legality != LabLegalityMode::Legacy || args.lab_controls != LabControlMode::Legacy ||
+         args.verify_lab_controls || !args.lab_control_profile_path.empty())) {
+        log_warning("LAB assessment reuse disabled: it requires legacy LAB modes without verification or profiling.\n");
+        lab_reuse_effective = LabReuseMode::Off;
+    }
+    if (lab_reuse_effective != LabReuseMode::Off)
+        log_info("LAB assessment reuse: %s (%zu LABs).\n", lab_reuse_mode_name(lab_reuse_effective), labs.size());
+    lab_reuse_active = true;
+}
+
+void Arch::lab_reuse_end()
+{
+    lab_reuse_active = false;
+    report_lab_reuse_stats(*this);
+    if (lab_reuse_effective == LabReuseMode::Shadow && lab_reuse_stats.mismatches != 0)
+        log_error("LAB assessment reuse shadow found %" PRIu64 " mismatches.\n", lab_reuse_stats.mismatches);
+    lab_assessments.clear();
+}
+
 bool Arch::place()
 {
     std::string placer = str_or_default(settings, id_placer, defaultPlacer);
+    if (!args.reuse_placement_path.empty())
+        report_placement_reuse(apply_placement_reuse(*getCtx(), args.reuse_placement_path));
+    lab_reuse_begin();
 
     if (placer == "heap") {
         PlacerHeapCfg cfg(getCtx());
@@ -720,12 +751,16 @@ bool Arch::place()
                 return coordinator->place(candidates);
             };
         }
-        if (!placer_heap(getCtx(), cfg))
-            return false;
+        const bool ok = placer_heap(getCtx(), cfg);
         if (coordinator)
             report_placement_batch_stats(*coordinator);
+        lab_reuse_end();
+        if (!ok)
+            return false;
     } else if (placer == "sa") {
-        if (!placer1(getCtx(), Placer1Cfg(getCtx())))
+        const bool ok = placer1(getCtx(), Placer1Cfg(getCtx()));
+        lab_reuse_end();
+        if (!ok)
             return false;
     } else {
         log_error("Mistral architecture does not support placer '%s'\n", placer.c_str());

@@ -60,6 +60,11 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "write a bounded sample of live FF-control queries as JSONL for profiling");
     specific.add_options()("lab-legality", po::value<std::string>()->default_value("legacy"),
                            "complete LAB evaluator: legacy, shadow, verify, or rust (experimental)");
+    specific.add_options()("lab-reuse", po::value<std::string>()->default_value("off"),
+                           "same-session reuse of LAB-level legality sub-results: off, shadow, or on (experimental)");
+    specific.add_options()("reuse-placement", po::value<std::string>(),
+                           "previous nextpnr output JSON; cells with an identical name and signature are "
+                           "constrained to their previous BEL, everything else is placed normally (experimental)");
     specific.add_options()("placer-lookahead", po::value<int>(),
                            "speculate this many candidates per clustered HeAP move and evaluate them detached "
                            "on --threads workers; results are identical to the serial search (0 = serial, "
@@ -124,6 +129,17 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     else
         log_error("Unknown --lab-legality mode '%s'; use legacy, shadow, verify, or rust.\n", legality_mode.c_str());
     require_lab_legality_mode(chipArgs.lab_legality);
+    const auto reuse_mode = vm["lab-reuse"].as<std::string>();
+    if (reuse_mode == "off")
+        chipArgs.lab_reuse = LabReuseMode::Off;
+    else if (reuse_mode == "shadow")
+        chipArgs.lab_reuse = LabReuseMode::Shadow;
+    else if (reuse_mode == "on")
+        chipArgs.lab_reuse = LabReuseMode::On;
+    else
+        log_error("Unknown --lab-reuse mode '%s'; use off, shadow, or on.\n", reuse_mode.c_str());
+    if (vm.count("reuse-placement"))
+        chipArgs.reuse_placement_path = vm["reuse-placement"].as<std::string>();
     if (vm.count("placer-lookahead")) {
         chipArgs.placer_lookahead = vm["placer-lookahead"].as<int>();
         if (chipArgs.placer_lookahead < 0)
