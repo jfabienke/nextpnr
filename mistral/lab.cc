@@ -396,8 +396,20 @@ bool Arch::is_alm_legal(uint32_t lab, uint8_t alm) const
     // of those while searching cluster placements (profiled: the .at() bounds-check chains under
     // this function were the second-largest cycle sink after the search itself). Unchecked
     // indexing; the indices come from the arch's own tables.
-    auto &alm_data = labs[lab].alms[alm];
     auto bound_fast = [&](BelId b) -> const CellInfo * { return bels_by_tile[pos2idx(b.pos)][b.z].bound; };
+    return alm_legal_with(labs[lab].alms[alm], bound_fast);
+}
+
+bool Arch::is_alm_legal_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const
+{
+    auto bound = [&](BelId b) -> const CellInfo * {
+        return overlay.lookup(b, bels_by_tile[pos2idx(b.pos)][b.z].bound);
+    };
+    return alm_legal_with(labs[lab].alms[alm], bound);
+}
+
+template <typename Bound> bool Arch::alm_legal_with(const ALMInfo &alm_data, Bound bound_fast) const
+{
     // Get cells into an array for fast access
     std::array<const CellInfo *, 2> luts{bound_fast(alm_data.lut_bels[0]), bound_fast(alm_data.lut_bels[1])};
     std::array<const CellInfo *, 4> ffs{bound_fast(alm_data.ff_bels[0]), bound_fast(alm_data.ff_bels[1]),
@@ -496,13 +508,24 @@ bool Arch::is_alm_legal(uint32_t lab, uint8_t alm) const
 
 void Arch::update_alm_input_count(uint32_t lab, uint8_t alm)
 {
-    // TODO: duplication with above
     // HOT PATH: called on every bind/unbind of a LAB cell, and the strict legaliser does millions
     // of those while searching cluster placements (profiled: the .at() bounds-check chains under
     // this function were the second-largest cycle sink after the search itself). Unchecked
     // indexing; the indices come from the arch's own tables.
-    auto &alm_data = labs[lab].alms[alm];
     auto bound_fast = [&](BelId b) -> const CellInfo * { return bels_by_tile[pos2idx(b.pos)][b.z].bound; };
+    labs[lab].alms[alm].unique_input_count = alm_input_count_with(labs[lab].alms[alm], bound_fast);
+}
+
+int Arch::alm_input_count_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const
+{
+    auto bound = [&](BelId b) -> const CellInfo * {
+        return overlay.lookup(b, bels_by_tile[pos2idx(b.pos)][b.z].bound);
+    };
+    return alm_input_count_with(labs[lab].alms[alm], bound);
+}
+
+template <typename Bound> int Arch::alm_input_count_with(const ALMInfo &alm_data, Bound bound_fast) const
+{
     // Get cells into an array for fast access
     std::array<const CellInfo *, 2> luts{bound_fast(alm_data.lut_bels[0]), bound_fast(alm_data.lut_bels[1])};
     std::array<const CellInfo *, 4> ffs{bound_fast(alm_data.ff_bels[0]), bound_fast(alm_data.ff_bels[1]),
@@ -513,10 +536,8 @@ void Arch::update_alm_input_count(uint32_t lab, uint8_t alm)
         if (!luts[i])
             continue;
         // MLAB that has been clustered with other MLABs (due to shared read port) costs no extra inputs
-        if (luts[i]->combInfo.mlab_group != -1 && luts[i]->constr_z > 2) {
-            alm_data.unique_input_count = 0;
-            return;
-        }
+        if (luts[i]->combInfo.mlab_group != -1 && luts[i]->constr_z > 2)
+            return 0;
 
         total_lut_inputs += luts[i]->combInfo.used_lut_input_count - luts[i]->combInfo.chain_shared_input_count;
     }
@@ -550,7 +571,21 @@ void Arch::update_alm_input_count(uint32_t lab, uint8_t alm)
         if (ff->ffInfo.datain && (!luts[i / 2] || ff->ffInfo.datain != luts[i / 2]->combInfo.comb_out))
             ++total_inputs;
     }
-    alm_data.unique_input_count = total_inputs;
+    return total_inputs;
+}
+
+bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const
+{
+    // Stored counts for untouched ALMs, recomputed counts for ALMs the overlay changes.
+    int count = 0;
+    const auto &lab_data = labs[lab];
+    for (uint8_t alm = 0; alm < 10; alm++) {
+        if (overlay.touches_alm(lab_data.alms[alm]))
+            count += alm_input_count_overlay(lab, alm, overlay);
+        else
+            count += lab_data.alms[alm].unique_input_count;
+    }
+    return count <= resolved_lab_input_limit();
 }
 
 bool Arch::check_lab_input_count(uint32_t lab) const
@@ -576,13 +611,22 @@ bool Arch::check_lab_input_count(uint32_t lab) const
 
 bool Arch::check_mlab_groups(uint32_t lab) const
 {
+    return mlab_groups_with(lab, [&](BelId b) { return getBoundBelCell(b); });
+}
+
+bool Arch::check_mlab_groups_overlay(uint32_t lab, const BelOverlay &overlay) const
+{
+    return mlab_groups_with(lab, [&](BelId b) { return overlay.lookup(b, getBoundBelCell(b)); });
+}
+
+template <typename Bound> bool Arch::mlab_groups_with(uint32_t lab, Bound bound) const
+{
     auto &lab_data = labs.at(lab);
     if (!lab_data.is_mlab)
         return true;
     int found_group = -2;
     for (const auto &alm_data : lab_data.alms) {
-        std::array<const CellInfo *, 2> luts{getBoundBelCell(alm_data.lut_bels[0]),
-                                             getBoundBelCell(alm_data.lut_bels[1])};
+        std::array<const CellInfo *, 2> luts{bound(alm_data.lut_bels[0]), bound(alm_data.lut_bels[1])};
         for (const CellInfo *lut : luts) {
             if (!lut)
                 continue;
@@ -594,14 +638,52 @@ bool Arch::check_mlab_groups(uint32_t lab) const
     }
     if (found_group >= 0) {
         for (const auto &alm_data : lab_data.alms) {
-            std::array<const CellInfo *, 4> ffs{
-                    getBoundBelCell(alm_data.ff_bels[0]), getBoundBelCell(alm_data.ff_bels[1]),
-                    getBoundBelCell(alm_data.ff_bels[2]), getBoundBelCell(alm_data.ff_bels[3])};
+            std::array<const CellInfo *, 4> ffs{bound(alm_data.ff_bels[0]), bound(alm_data.ff_bels[1]),
+                                                bound(alm_data.ff_bels[2]), bound(alm_data.ff_bels[3])};
             for (const CellInfo *ff : ffs) {
                 if (ff)
                     return false; // be conservative and don't allow LUTRAMs and FFs together
             }
         }
+    }
+    return true;
+}
+
+bool Arch::is_lab_ctrlset_legal_overlay(uint32_t lab, const BelOverlay &overlay) const
+{
+    return evaluate_lab_controls_native_overlay(*this, lab, overlay).legal;
+}
+
+// Equivalent to binding every overlay entry and asking isBelLocationValid for each
+// overlay BEL, without binding. Only the legacy live rules are modelled.
+bool Arch::overlay_bels_legal(const BelOverlay &overlay) const
+{
+    // Distinct LABs touched, with whether any FF BEL among them needs the control-set check.
+    std::array<uint32_t, BelOverlay::MAX> labs_seen{};
+    std::array<bool, BelOverlay::MAX> need_ctrlset{};
+    unsigned lab_count = 0;
+    for (unsigned i = 0; i < overlay.count; ++i) {
+        const auto &data = bel_data(overlay.bels[i]);
+        const bool is_ff = data.type == id_MISTRAL_FF;
+        if (!is_ff && !data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB))
+            return false; // callers gate on placement_candidate_supported; be safe
+        if (!is_alm_legal_overlay(data.lab_data.lab, data.lab_data.alm, overlay))
+            return false;
+        unsigned k = 0;
+        while (k < lab_count && labs_seen[k] != data.lab_data.lab)
+            ++k;
+        if (k == lab_count)
+            labs_seen[lab_count++] = data.lab_data.lab;
+        need_ctrlset[k] = need_ctrlset[k] || is_ff;
+    }
+    for (unsigned k = 0; k < lab_count; ++k) {
+        const uint32_t lab = labs_seen[k];
+        if (!check_lab_input_count_overlay(lab, overlay))
+            return false;
+        if (need_ctrlset[k] && !is_lab_ctrlset_legal_overlay(lab, overlay))
+            return false;
+        if (!check_mlab_groups_overlay(lab, overlay))
+            return false;
     }
     return true;
 }

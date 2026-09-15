@@ -418,6 +418,52 @@ HeAPClusterBatchOutcome PlacementCandidateCoordinator::place(const std::vector<H
     return {HeAPClusterBatchStatus::NoneLegal, 0};
 }
 
+Placer1SwapAssessment mistral_assess_swap(Context *ctx, const std::vector<Placer1SwapEdit> &edits)
+{
+    Placer1SwapAssessment assessment;
+    const Arch &arch = *ctx;
+    BelOverlay overlay;
+    for (const auto &edit : edits) {
+        if (edit.bel == BelId() || overlay.count >= BelOverlay::MAX)
+            return assessment;
+        const auto &data = arch.bel_data(edit.bel);
+        if (!data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF))
+            return assessment; // Unsupported: the annealer uses its live path
+        if (arch.getBoundBelCell(edit.bel) != edit.expected)
+            log_error("Detached swap assessment saw an unexpected occupant on '%s'.\n", ctx->nameOfBel(edit.bel));
+        overlay.add(edit.bel, edit.replacement);
+    }
+    const auto stamp = arch.placement_revision.stamp();
+    assessment.stamp_session = stamp.session.value;
+    assessment.stamp_revision = stamp.revision;
+    assessment.status = arch.overlay_bels_legal(overlay) ? Placer1SwapAssessment::Status::Legal
+                                                         : Placer1SwapAssessment::Status::Illegal;
+    return assessment;
+}
+
+bool mistral_commit_swap(Context *ctx, const std::vector<Placer1SwapEdit> &edits,
+                         const Placer1SwapAssessment &assessment)
+{
+    Arch &arch = *ctx;
+    if (assessment.status != Placer1SwapAssessment::Status::Legal)
+        return false;
+    const auto stamp = arch.placement_revision.stamp();
+    if (!stamp || stamp.session.value != assessment.stamp_session || stamp.revision != assessment.stamp_revision)
+        return false;
+    for (const auto &edit : edits) {
+        const CellInfo *bound = arch.getBoundBelCell(edit.bel);
+        if (bound != edit.expected || (bound != nullptr && bound->belStrength != edit.expected_strength))
+            return false;
+    }
+    for (const auto &edit : edits)
+        if (edit.expected != nullptr)
+            arch.unbindBel(edit.bel);
+    for (const auto &edit : edits)
+        if (edit.replacement != nullptr)
+            arch.bindBel(edit.bel, edit.replacement, edit.replacement_strength);
+    return true;
+}
+
 void report_placement_batch_stats(const PlacementCandidateCoordinator &coordinator)
 {
     const auto &s = coordinator.stats();

@@ -1027,6 +1027,88 @@ Decisions:
 4. Rust ownership is not extended into the next design (cross-build checkpoints and artifact provenance) on the strength of this stage. The C++ side carries ownership discipline with stamps, transactions, and tests; if that design needs compiler-enforced guarantees, that is a fresh decision with its own case.
 5. Reopening condition: a revision of `LegacyControlRulesV1`. A rules change is the one moment a second implementation earns its keep; it must then be versioned in both, or the Rust authority modes retired.
 
+### 2026-09-15: Stage 5 opening measurement: where placement and routing time goes
+
+Method: one serial Fabi386 run sampled at 1 ms for its full duration
+(`sample`, 22,221 main-thread samples), attributed by inclusive call-graph
+counts. Artifacts under `build/stage5-profile/`.
+
+| Phase | Share of run | Inside the phase |
+| --- | ---: | --- |
+| HeAP proper (solve, spread, strict legalise) | 24.7% | equations and solve direction 46%, conjugate gradient 7%, strict legalise 10%, timing 8% |
+| SA refinement (`placer1_refine`) | 38.1% | cost-delta computation 32.8%, move-set construction 18.3%, bind/unbind with ALM input recount 16.3%, timing analysis 15.0%, legality checks 3.4% |
+| router2 | 30.6% | priority-queue search 44%, pip availability 17%, timing 8.6% |
+| LAB preparation, globals, signoff | under 7% | — |
+
+Timing analysis is 10.7% of the whole run. The design's threshold for
+choosing the timing kernel next was about a third, so it is not chosen:
+candidate 1c (SA refinement through the transaction seam) comes first,
+4b (incremental timing) after it.
+
+One finding changes 1c's shape. In the annealer, the work the seam removes
+outright (speculative bind/unbind, the `update_alm_input_count` recount they
+trigger, and the legality query) is about 20% of the phase. The work that
+can become a detached, parallel assessment is the swap's cost delta and move
+set, about 51%. A swap assessment must therefore carry the wirelength and
+timing cost delta computed from a frozen position snapshot, not only LAB
+legality; otherwise the seam captures a fifth of the phase instead of two
+thirds. Router2's cost is algorithmic search and is not addressed by any
+candidate except route reuse, which reduces the number of nets searched.
+
+### 2026-09-15: Stage 5 unit 1c-A: annealer swap seam, serial
+
+`placer1`'s refinement gained the transaction seam. With `--sa-seam on`, a
+two-cell swap is assessed without touching bindings: legality comes from the
+architecture (`Placer1Cfg::assess_swap`), the cost delta is computed from a
+position overlay inside the annealer (`bel_overlay`, consulted by
+`add_move_cell`, `get_net_bounds`, `ignore_net`, and a bel-based
+`predict_arc_delay` that mirrors `Context::predictArcDelay`), the acceptance
+RNG is drawn in the original order, and only an accepted swap changes
+bindings, through `commit_swap` with a revision-stamp check. Cluster swaps,
+net-share scoring, and swaps touching non-LAB BELs stay on the live path.
+`--sa-seam shadow` runs both paths for every swap and fails the run if
+legality or either cost delta differs.
+
+The first implementation assessed legality by freezing a V2 record per LAB
+per swap. It was correct (shadow: 5,665,634 swaps, zero mismatches) and 3.8x
+slower than live (SA 37.5 s versus 9.9 s): a V2 capture costs about 5 µs
+against roughly 300 ns for the live bind, recount, and checks. It was
+replaced by overlay forms of the live rules themselves: `is_alm_legal`,
+`update_alm_input_count`, `check_mlab_groups`, and the native control-set
+evaluator are now templated on the occupancy lookup, and a `BelOverlay` of up
+to four BELs substitutes occupants without binding (`Arch::overlay_bels_legal`
+composes them exactly as `isBelLocationValid` does for each overlay BEL). A
+64-pattern unit test binds every FF-slot combination across two ALMs and
+requires the overlay answer to equal bind-and-ask.
+
+Fabi386, same session, all byte-identical to the Stage 4C artifacts:
+
+| Mode | SA refinement | Wall | Swaps assessed | Illegal / rejected / committed | Unsupported |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| off (live) | 10.38 s, 10.00 s | 28.5 s, 28.1 s | — | — | — |
+| shadow | 13.50 s | 34.2 s | 5,665,634 | zero mismatches | 293 |
+| on | 9.29 s, 9.31 s | 27.1 s, 27.1 s | 5,665,634 | 2,802,298 / 2,591,524 / 271,812 | 293 |
+
+So the serial seam is about 8% faster than the live path on the phase while
+removing every speculative bind/unbind (the live path performed about
+22.7 million; the seam performs 1.09 million, four per accepted swap). The
+accepted-swap rate of 4.8% is the number that matters for the next unit: a
+batch of speculated swaps evaluated on one snapshot stays valid unless an
+accepted swap shares a net or a LAB with it, so most of a batch survives each
+commit. The Rust oracle does not cover this path (no V2 record is built);
+shadow mode against the live rules is its oracle instead.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 54/54 pass (new: seam assess/commit, stamp refusal, unsupported BEL, 64-pattern overlay parity) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 44/44 pass |
+| Fabi386 `--sa-seam shadow` | Byte-identical; 5,665,634 checked, zero mismatches |
+| Fabi386 `--sa-seam on` (twice) and off (twice) | Byte-identical; timings as tabulated |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
+Artifacts under `build/stage5-validation/` (`seam-*` are the rejected V2
+implementation, `seam2-*` the overlay one) and `build/stage5-profile/`.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1076,6 +1158,9 @@ Decisions:
 | 2026-09-15 | scaling | Implement parallel freezing with per-worker Rust handles and a bounded spin before blocking | Parallel fraction 0.15 to 0.75; budget-64 phase 4.69 s to 1.60 s on 8 workers; budget 8 on 8 workers within 10% of the serial phase; all artifacts byte-identical |
 | 2026-09-15 | scaling | Keep the serial search as the default | The phase is under 3% of wall time on Fabi386; enable lookahead only where rejections per commit are high |
 | 2026-09-15 | Rust | Conclude the Rust evaluator: freeze the ABI, keep it as the parity harness, do not promote or extend it | Safety delivered, memory neutral, +1.3% cost in authority mode, zero oracle findings, dual-implementation maintenance; contract unchanged since 4C |
+| 2026-09-15 | Stage 5 | Take SA refinement (1c) before incremental timing (4b), and make the swap assessment carry cost deltas | Timing is 10.7% of the run; in the annealer the cost delta and move set are 51% of the phase versus 20% for binding and legality |
+| 2026-09-15 | 1c-A | Assess swaps with overlay forms of the live rules, not V2 captures | V2 capture per swap made SA 3.8x slower (37.5 s); overlay rules make it 8% faster (9.3 s) with identical output and zero shadow mismatches |
+| 2026-09-15 | 1c-A | Keep the seam off by default | Serial gain is 1 s of a 28 s run; the unit's purpose is the detached evaluation the parallel batch needs |
 
 ## Stage gates and promotion
 

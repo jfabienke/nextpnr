@@ -28,6 +28,7 @@
 #define PLACER_HEAP_H
 #include "log.h"
 #include "nextpnr.h"
+#include "placer1.h"
 
 #include <functional>
 
@@ -116,6 +117,11 @@ struct PlacerHeapCfg
     std::function<HeAPClusterBatchOutcome(Context *, const std::vector<HeAPClusterCandidate> &)>
             place_cluster_transactions;
     int clusterLookahead = 0;
+
+    // Passed to the simulated-annealing refinement (see Placer1Cfg).
+    std::function<Placer1SwapAssessment(Context *, const std::vector<Placer1SwapEdit> &)> assess_swap;
+    std::function<bool(Context *, const std::vector<Placer1SwapEdit> &, const Placer1SwapAssessment &)> commit_swap;
+    bool swap_seam_shadow = false;
 
     bool disableCtrlSet;
 

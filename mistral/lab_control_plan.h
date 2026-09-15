@@ -32,6 +32,8 @@ struct LabControlEvaluation
 };
 
 LabControlEvaluation evaluate_lab_controls_native(const Arch &arch, uint32_t lab);
+struct BelOverlay;
+LabControlEvaluation evaluate_lab_controls_native_overlay(const Arch &arch, uint32_t lab, const BelOverlay &overlay);
 void consume_lab_control_allocation(Arch &arch, uint32_t lab, const LabControlAllocation &allocation);
 
 NEXTPNR_NAMESPACE_END

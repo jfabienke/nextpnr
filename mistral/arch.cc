@@ -769,6 +769,12 @@ bool Arch::place()
                 return coordinator->place(candidates);
             };
         }
+        if (args.sa_seam != SwapSeamMode::Off) {
+            cfg.assess_swap = mistral_assess_swap;
+            cfg.commit_swap = mistral_commit_swap;
+            cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
+            log_info("Annealer swap seam: %s.\n", cfg.swap_seam_shadow ? "shadow" : "on");
+        }
         const bool ok = placer_heap(getCtx(), cfg);
         if (coordinator)
             report_placement_batch_stats(*coordinator);
@@ -776,7 +782,13 @@ bool Arch::place()
         if (!ok)
             return false;
     } else if (placer == "sa") {
-        const bool ok = placer1(getCtx(), Placer1Cfg(getCtx()));
+        Placer1Cfg sa_cfg(getCtx());
+        if (args.sa_seam != SwapSeamMode::Off) {
+            sa_cfg.assess_swap = mistral_assess_swap;
+            sa_cfg.commit_swap = mistral_commit_swap;
+            sa_cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
+        }
+        const bool ok = placer1(getCtx(), sa_cfg);
         lab_reuse_end();
         if (!ok)
             return false;

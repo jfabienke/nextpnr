@@ -719,6 +719,96 @@ TEST_F(LabControlCaptureTest, BatchCoordinatorParallelFreezeMatchesOwnerFreeze)
         EXPECT_EQ(cell->bel, BelId());
 }
 
+TEST_F(LabControlCaptureTest, SwapSeamAssessesAndCommitsWithoutProvisionalBinding)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId a = alms.at(0).ff_bels.at(0);
+    const BelId b = alms.at(1).ff_bels.at(0);
+    const BelId odd = alms.at(2).ff_bels.at(1);
+    ctx->bindBel(a, cells[0], STRENGTH_WEAK);
+    ctx->bindBel(b, cells[1], STRENGTH_WEAK);
+    const auto before = ctx->placement_revision.stamp();
+    const auto bindings_before = ctx->placement_revision.mutation_count(PlacementMutation::BelBinding);
+
+    // A legal two-cell swap: assessed without any binding change, then committed with exactly
+    // the four binding operations the live path would have needed for an accepted swap.
+    std::vector<Placer1SwapEdit> swap{{b, cells[1], STRENGTH_WEAK, cells[0], STRENGTH_WEAK},
+                                      {a, cells[0], STRENGTH_WEAK, cells[1], STRENGTH_WEAK}};
+    auto assessment = mistral_assess_swap(ctx.get(), swap);
+    EXPECT_EQ(assessment.status, Placer1SwapAssessment::Status::Legal);
+    EXPECT_EQ(assessment.stamp_revision, before.revision);
+    EXPECT_TRUE(ctx->placement_revision.is_current(before));
+    EXPECT_EQ(ctx->placement_revision.mutation_count(PlacementMutation::BelBinding), bindings_before);
+    EXPECT_TRUE(mistral_commit_swap(ctx.get(), swap, assessment));
+    EXPECT_EQ(ctx->getBoundBelCell(a), cells[1]);
+    EXPECT_EQ(ctx->getBoundBelCell(b), cells[0]);
+    EXPECT_EQ(cells[0]->belStrength, STRENGTH_WEAK);
+    EXPECT_EQ(ctx->placement_revision.mutation_count(PlacementMutation::BelBinding), bindings_before + 4);
+    EXPECT_FALSE(mistral_commit_swap(ctx.get(), swap, assessment)); // stamp moved: refused
+
+    // An illegal move (odd FF slot) is Illegal and leaves everything alone.
+    std::vector<Placer1SwapEdit> illegal{{odd, nullptr, STRENGTH_NONE, cells[2], STRENGTH_WEAK},
+                                         {alms.at(3).ff_bels.at(0), nullptr, STRENGTH_NONE, nullptr, STRENGTH_NONE}};
+    const auto stamp_illegal = ctx->placement_revision.stamp();
+    auto bad = mistral_assess_swap(ctx.get(), illegal);
+    EXPECT_EQ(bad.status, Placer1SwapAssessment::Status::Illegal);
+    EXPECT_TRUE(ctx->placement_revision.is_current(stamp_illegal));
+    EXPECT_FALSE(mistral_commit_swap(ctx.get(), illegal, bad));
+
+    // A non-LAB BEL is Unsupported so the annealer keeps its live path.
+    const BelId foreign = first_non_lab_bel(*ctx);
+    std::vector<Placer1SwapEdit> unsupported{
+            {foreign, nullptr, STRENGTH_NONE, cells[3], STRENGTH_WEAK},
+            {alms.at(4).ff_bels.at(0), nullptr, STRENGTH_NONE, nullptr, STRENGTH_NONE}};
+    EXPECT_EQ(mistral_assess_swap(ctx.get(), unsupported).status, Placer1SwapAssessment::Status::Unsupported);
+
+    // A legal assessment that the design outruns cannot commit.
+    std::vector<Placer1SwapEdit> back{{a, cells[1], STRENGTH_WEAK, cells[0], STRENGTH_WEAK},
+                                      {b, cells[0], STRENGTH_WEAK, cells[1], STRENGTH_WEAK}};
+    auto stale = mistral_assess_swap(ctx.get(), back);
+    EXPECT_EQ(stale.status, Placer1SwapAssessment::Status::Legal);
+    ctx->bindBel(alms.at(5).ff_bels.at(0), cells[4], STRENGTH_WEAK);
+    ctx->unbindBel(alms.at(5).ff_bels.at(0));
+    EXPECT_FALSE(mistral_commit_swap(ctx.get(), back, stale));
+    EXPECT_EQ(ctx->getBoundBelCell(a), cells[1]);
+
+    // The overlay rules agree with binding and asking, over every FF slot pattern in two ALMs.
+    for (unsigned i = 0; i < 6; ++i) {
+        cells[10 + i]->addInput(id_CLK);
+        cells[10 + i]->connectPort(id_CLK, nets[i % 2]);
+        ctx->assign_ff_info(cells[10 + i]);
+    }
+    unsigned agreed = 0, illegal_seen = 0;
+    for (unsigned pattern = 0; pattern < 64; ++pattern) {
+        BelOverlay overlay;
+        std::vector<std::pair<BelId, CellInfo *>> binds;
+        for (unsigned slot = 0; slot < 6 && overlay.count < BelOverlay::MAX; ++slot) {
+            if (!(pattern & (1u << slot)))
+                continue;
+            const BelId bel = alms.at(6 + slot / 4).ff_bels.at(slot % 4);
+            overlay.add(bel, cells[10 + slot]);
+            binds.emplace_back(bel, cells[10 + slot]);
+        }
+        const bool detached = ctx->overlay_bels_legal(overlay);
+        for (const auto &bind : binds)
+            ctx->bindBel(bind.first, bind.second, STRENGTH_WEAK);
+        bool live = true;
+        for (const auto &bind : binds)
+            live = live && ctx->isBelLocationValid(bind.first);
+        for (const auto &bind : binds)
+            ctx->unbindBel(bind.first);
+        EXPECT_EQ(detached, live) << "pattern " << pattern;
+        agreed += detached == live;
+        illegal_seen += !live;
+    }
+    EXPECT_EQ(agreed, 64u);
+    EXPECT_GT(illegal_seen, 0u);
+    for (unsigned i = 0; i < 6; ++i)
+        cells[10 + i]->disconnectPort(id_CLK);
+    ctx->unbindBel(a);
+    ctx->unbindBel(b);
+}
+
 TEST_F(LabControlCaptureTest, BatchCoordinatorDetachedEvaluationMatchesSerialAndNeverMutates)
 {
     const auto &alms = ctx->labs.at(0).alms;

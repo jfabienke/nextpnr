@@ -305,6 +305,30 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `7fd9482` | Stage 4E list closure: precise incidence, LAB states, content tier |
 | `3aaa173` | Parallel freezing for lookahead candidates; scaling analysis |
 
+## Stage 5: applying the seams to the rest of the flow
+
+The candidate list and its priority order are recorded in the tracker's
+"Stage 5 opening measurement" entry: 1c (annealer through the seam), 4b
+(incremental timing, deferred because timing is 10.7% of the run), 2a/2b
+(checkpoints), the rest of 3b, 3c (route reuse), 3a (typed build states, in
+C++).
+
+Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
+detached swap assessment (legality from `Arch::overlay_bels_legal`, cost
+delta from a position overlay), byte-identical output, and about 8% less SA
+time serially with no provisional binding. Off by default. Next is 1c-B:
+speculate a batch of swaps, evaluate them on workers against the blocked
+owner's state, consume in RNG order, and re-evaluate only candidates that
+share a net or LAB with an accepted swap. The 4.8% accepted-swap rate on
+Fabi386 is why that should scale.
+
+Key files: `common/place/placer1.h/.cc` (seam types, overlay, shadow),
+`common/place/placer_heap.h/.cc` (pass-through), `mistral/lab.cc` and
+`mistral/lab_control_plan.cc` (rules templated on occupancy),
+`mistral/arch.h` (`BelOverlay`), `mistral/placement_coordinator.cc`
+(`mistral_assess_swap`, `mistral_commit_swap`), `mistral/tests/lab_legality.cc`
+(`SwapSeam*`).
+
 ## Rust evaluator: concluded
 
 The two crates (`npnr_mistral_lab`, `npnr_mistral_lab_ffi`) are concluded at

@@ -36,6 +36,13 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+enum class SwapSeamMode
+{
+    Off,    // annealer uses its live bind/check/revert path (default)
+    Shadow, // detached assessment computed and compared; live path decides
+    On      // detached assessment decides; bindings change only on accepted swaps
+};
+
 struct ArchArgs
 {
     std::string device;
@@ -46,6 +53,7 @@ struct ArchArgs
     int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
+    SwapSeamMode sa_seam = SwapSeamMode::Off;   // Stage 5 (1c): annealer swap seam
 };
 
 // These structures are used for fast ALM validity checking
@@ -80,6 +88,43 @@ struct LABInfo
     WireId sclr_wire, sload_wire;
     // TODO: LAB configuration (control set etc)
     std::array<bool, 2> aclr_used;
+};
+
+// A tiny occupancy overlay: up to MAX BELs whose occupant differs from the
+// live binding (nullptr = empty). Used to evaluate the live LAB rules for a
+// proposed move without binding. Linear lookup; MAX is small on purpose.
+struct BelOverlay
+{
+    static constexpr unsigned MAX = 4;
+    std::array<BelId, MAX> bels{};
+    std::array<const CellInfo *, MAX> cells{};
+    unsigned count = 0;
+    void add(BelId bel, const CellInfo *cell)
+    {
+        NPNR_ASSERT(count < MAX);
+        bels[count] = bel;
+        cells[count] = cell;
+        ++count;
+    }
+    const CellInfo *lookup(BelId bel, const CellInfo *live) const
+    {
+        for (unsigned i = 0; i < count; ++i)
+            if (bels[i] == bel)
+                return cells[i];
+        return live;
+    }
+    bool touches_alm(const ALMInfo &alm) const
+    {
+        for (unsigned i = 0; i < count; ++i)
+            for (const BelId &b : alm.lut_bels)
+                if (b == bels[i])
+                    return true;
+        for (unsigned i = 0; i < count; ++i)
+            for (const BelId &b : alm.ff_bels)
+                if (b == bels[i])
+                    return true;
+        return false;
+    }
 };
 
 struct PinInfo
@@ -635,6 +680,17 @@ struct Arch : BaseArch<ArchRanges>
     bool is_comb_cell(IdString cell_type) const;        // lab.cc
     bool is_alm_legal(uint32_t lab, uint8_t alm) const; // lab.cc
     bool is_lab_ctrlset_legal(uint32_t lab) const;      // lab.cc
+    // Overlay forms of the live rules (lab.cc): the same checks with up to
+    // BelOverlay::MAX occupants replaced, no binding, no serialisation.
+    bool is_alm_legal_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const;
+    int alm_input_count_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const;
+    bool check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const;
+    bool is_lab_ctrlset_legal_overlay(uint32_t lab, const BelOverlay &overlay) const;
+    bool check_mlab_groups_overlay(uint32_t lab, const BelOverlay &overlay) const;
+    bool overlay_bels_legal(const BelOverlay &overlay) const;
+    template <typename Bound> bool alm_legal_with(const ALMInfo &alm, Bound bound) const;
+    template <typename Bound> int alm_input_count_with(const ALMInfo &alm, Bound bound) const;
+    template <typename Bound> bool mlab_groups_with(uint32_t lab, Bound bound) const;
     mutable LabControlStats lab_control_stats;
     mutable LabControlProfile lab_control_profile;
     mutable LabLegalityStats lab_legality_stats;

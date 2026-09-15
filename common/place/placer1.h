@@ -19,10 +19,38 @@
 #ifndef PLACE_H
 #define PLACE_H
 
+#include <functional>
+#include <vector>
+
 #include "log.h"
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
+
+// Optional architecture seam for detached swap evaluation. One edit of a swap:
+// `bel` currently holds `expected` (nullptr when empty) at `expected_strength`
+// and would hold `replacement` at `replacement_strength` afterwards.
+struct Placer1SwapEdit
+{
+    BelId bel;
+    CellInfo *expected = nullptr;
+    PlaceStrength expected_strength = STRENGTH_NONE;
+    CellInfo *replacement = nullptr;
+    PlaceStrength replacement_strength = STRENGTH_NONE;
+};
+
+struct Placer1SwapAssessment
+{
+    enum class Status
+    {
+        Unsupported, // the placer must use its live bind/check/revert path
+        Illegal,
+        Legal
+    };
+    Status status = Status::Unsupported;
+    // Architecture-defined freshness stamp of a Legal answer; commit refuses a stale one.
+    uint64_t stamp_session = 0, stamp_revision = 0;
+};
 
 struct Placer1Cfg
 {
@@ -33,6 +61,17 @@ struct Placer1Cfg
     int timingFanoutThresh;
     bool timing_driven;
     int hpwl_scale_x, hpwl_scale_y;
+
+    // Assess a two-cell swap's legality against the live design without
+    // mutating it. When set, the annealer evaluates the swap's cost delta from
+    // a position overlay, draws the acceptance RNG in the original order, and
+    // touches bindings only for an accepted swap through commit_swap. Cluster
+    // swaps and net-share scoring stay on the live path.
+    std::function<Placer1SwapAssessment(Context *, const std::vector<Placer1SwapEdit> &)> assess_swap;
+    std::function<bool(Context *, const std::vector<Placer1SwapEdit> &, const Placer1SwapAssessment &)> commit_swap;
+    // Also run the live path for every seam-evaluated swap and require identical
+    // legality and cost deltas; the live result decides. For validation.
+    bool swap_seam_shadow = false;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

@@ -88,6 +88,16 @@ class PlacementCandidateCoordinator
     PlacementBatchStats stats_;
 };
 
+// Stage 5 (1c): the annealer's swap seam. assess evaluates the live LAB rules
+// under a BelOverlay of the edits (no binding, no serialisation; about the
+// cost of the live checks) and stamps a Legal answer with the current
+// revision; commit rechecks the stamp and every expected owner, then applies
+// the edits. Unsupported when any edited BEL is not a LAB BEL. Parity with
+// the live path is validated by the annealer's shadow mode.
+Placer1SwapAssessment mistral_assess_swap(Context *ctx, const std::vector<Placer1SwapEdit> &edits);
+bool mistral_commit_swap(Context *ctx, const std::vector<Placer1SwapEdit> &edits,
+                         const Placer1SwapAssessment &assessment);
+
 // Shared with Arch::place(): convert HeAP's candidate into ordered binding edits.
 std::vector<PlacementBindingEdit>
 placement_edits_for_candidate(const std::vector<std::pair<CellInfo *, BelId>> &targets,

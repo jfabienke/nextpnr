@@ -63,6 +63,10 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()(
             "lab-reuse", po::value<std::string>()->default_value("off"),
             "same-session reuse of LAB-level legality sub-results: off, shadow, on, or content (experimental)");
+    specific.add_options()("sa-seam", po::value<std::string>()->default_value("off"),
+                           "annealer swap evaluation: off (live bind/check/revert), shadow (detached assessment "
+                           "compared against live), or on (detached decides; identical results, no provisional "
+                           "binding) (experimental)");
     specific.add_options()("reuse-placement", po::value<std::string>(),
                            "previous nextpnr output JSON; cells with an identical name and signature are "
                            "constrained to their previous BEL, everything else is placed normally (experimental)");
@@ -141,6 +145,15 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.lab_reuse = LabReuseMode::Content;
     else
         log_error("Unknown --lab-reuse mode '%s'; use off, shadow, on, or content.\n", reuse_mode.c_str());
+    const auto seam_mode = vm["sa-seam"].as<std::string>();
+    if (seam_mode == "off")
+        chipArgs.sa_seam = SwapSeamMode::Off;
+    else if (seam_mode == "shadow")
+        chipArgs.sa_seam = SwapSeamMode::Shadow;
+    else if (seam_mode == "on")
+        chipArgs.sa_seam = SwapSeamMode::On;
+    else
+        log_error("Unknown --sa-seam mode '%s'; use off, shadow, or on.\n", seam_mode.c_str());
     if (vm.count("reuse-placement"))
         chipArgs.reuse_placement_path = vm["reuse-placement"].as<std::string>();
     if (vm.count("placer-lookahead")) {

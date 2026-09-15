@@ -111,6 +111,10 @@ sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared w
   serial search. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.
+- Stage 5 (1c-A): `--sa-seam off|shadow|on` routes `placer1` refinement swaps through a detached
+  assessment (`Arch::overlay_bels_legal` on a `BelOverlay`, cost delta from the annealer's position
+  overlay). Do not assess swaps by freezing V2 records: measured 3.8x slower. Shadow mode is the
+  oracle for this path.
 - Stage 4E reuse is also opt-in: `--lab-reuse shadow|on` caches LAB-level legality sub-results
   behind per-LAB binding versions and a global facts epoch (`mistral/lab_reuse.*`, active only
   inside `Arch::place()`); `--reuse-placement prev.json` transplants previous BELs onto cells

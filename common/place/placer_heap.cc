@@ -430,6 +430,9 @@ class HeAPPlacer
             placer1_cfg.hpwl_scale_x = cfg.hpwl_scale_x;
             placer1_cfg.hpwl_scale_y = cfg.hpwl_scale_y;
             placer1_cfg.netShareWeight = cfg.netShareWeight;
+            placer1_cfg.assess_swap = cfg.assess_swap;
+            placer1_cfg.commit_swap = cfg.commit_swap;
+            placer1_cfg.swap_seam_shadow = cfg.swap_seam_shadow;
             if (!placer1_refine(ctx, placer1_cfg)) {
                 return false;
             }

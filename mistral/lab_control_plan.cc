@@ -56,14 +56,15 @@ LabControlAllocation LabControlAllocation::from_array(const std::array<ControlSi
     return allocation;
 }
 
-LabControlEvaluation evaluate_lab_controls_native(const Arch &arch, uint32_t lab)
+namespace {
+template <typename Bound> LabControlEvaluation evaluate_lab_controls_with(const Arch &arch, uint32_t lab, Bound bound)
 {
     LabControlAllocation allocation;
     // Strictly speaking the constraint is up to 2 unique CLK and 3 CLK+ENA
     // pairs. Preserve the existing conservative model of 1 CLK and 3 ENA.
     for (uint8_t alm = 0; alm < 10; alm++) {
         for (uint8_t i = 0; i < 4; i++) {
-            const CellInfo *ff = arch.getBoundBelCell(arch.labs.at(lab).alms.at(alm).ff_bels.at(i));
+            const CellInfo *ff = bound(arch.labs.at(lab).alms.at(alm).ff_bels.at(i));
             if (ff == nullptr)
                 continue;
             if (!check_assign_sig(allocation.clk, ff->ffInfo.ctrlset.clk) ||
@@ -94,6 +95,17 @@ LabControlEvaluation evaluate_lab_controls_native(const Arch &arch, uint32_t lab
         return {};
     }
     return {true, allocation};
+}
+} // namespace
+
+LabControlEvaluation evaluate_lab_controls_native(const Arch &arch, uint32_t lab)
+{
+    return evaluate_lab_controls_with(arch, lab, [&](BelId b) { return arch.getBoundBelCell(b); });
+}
+
+LabControlEvaluation evaluate_lab_controls_native_overlay(const Arch &arch, uint32_t lab, const BelOverlay &overlay)
+{
+    return evaluate_lab_controls_with(arch, lab, [&](BelId b) { return overlay.lookup(b, arch.getBoundBelCell(b)); });
 }
 
 void consume_lab_control_allocation(Arch &arch, uint32_t lab, const LabControlAllocation &allocation)

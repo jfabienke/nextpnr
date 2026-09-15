@@ -26,6 +26,7 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 #include <chrono>
+#include <cinttypes>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -390,6 +391,17 @@ class SAPlacer
 
         auto saplace_end = std::chrono::high_resolution_clock::now();
         log_info("SA placement time %.02fs\n", std::chrono::duration<float>(saplace_end - saplace_start).count());
+        if (cfg.assess_swap) {
+            log_info("  swap seam: assessed=%" PRIu64 ", illegal=%" PRIu64 ", rejected=%" PRIu64 ", committed=%" PRIu64
+                     ", unsupported=%" PRIu64 "\n",
+                     seam_assessed, seam_illegal, seam_rejected, seam_committed, seam_unsupported);
+            if (cfg.swap_seam_shadow) {
+                log_info("  swap seam shadow: checked=%" PRIu64 ", mismatches=%" PRIu64 "\n", seam_shadow_checked,
+                         seam_shadow_mismatches);
+                if (seam_shadow_mismatches != 0)
+                    log_error("Swap seam shadow found %" PRIu64 " mismatches.\n", seam_shadow_mismatches);
+            }
+        }
 
         // Final post-placement validity check
         ctx->yield();
@@ -468,6 +480,20 @@ class SAPlacer
     }
 
     // Attempt a SA position swap, return true on success or false on failure
+    void shadow_compare(CellInfo *cell, bool live_legal, wirelen_t live_wirelen_delta, double live_timing_delta)
+    {
+        shadow_pending = false;
+        ++seam_shadow_checked;
+        if (live_legal != shadow_legal ||
+            (live_legal && (live_wirelen_delta != shadow_wirelen_delta || live_timing_delta != shadow_timing_delta))) {
+            if (seam_shadow_mismatches++ < 8)
+                log_warning("Swap seam shadow mismatch for '%s': live legal=%d wl=%d tmg=%.17g, detached legal=%d "
+                            "wl=%d tmg=%.17g\n",
+                            ctx->nameOf(cell), int(live_legal), int(live_wirelen_delta), live_timing_delta,
+                            int(shadow_legal), int(shadow_wirelen_delta), shadow_timing_delta);
+        }
+    }
+
     bool try_swap_position(CellInfo *cell, BelId newBel)
     {
         static const double epsilon = 1e-20;
@@ -494,6 +520,67 @@ class SAPlacer
         }
 
         int net_delta_score = 0;
+
+        // Detached path: legality from the architecture's frozen assessment, cost
+        // delta from the position overlay, RNG drawn in the original order, and
+        // bindings touched only for an accepted swap.
+        if (cfg.assess_swap && cfg.netShareWeight <= 0 && cell->cluster == ClusterId() &&
+            (other_cell == nullptr || other_cell->cluster == ClusterId())) {
+            std::vector<Placer1SwapEdit> edits;
+            edits.push_back(
+                    {newBel, other_cell, other_cell ? other_cell->belStrength : STRENGTH_NONE, cell, STRENGTH_WEAK});
+            edits.push_back({oldBel, cell, cell->belStrength, other_cell, other_cell ? STRENGTH_WEAK : STRENGTH_NONE});
+            auto assessment = cfg.assess_swap(ctx, edits);
+            if (assessment.status == Placer1SwapAssessment::Status::Unsupported) {
+                ++seam_unsupported;
+            } else {
+                ++seam_assessed;
+                const bool legal = assessment.status == Placer1SwapAssessment::Status::Legal;
+                if (legal) {
+                    bel_overlay.clear();
+                    bel_overlay.emplace_back(cell, newBel);
+                    if (other_cell != nullptr)
+                        bel_overlay.emplace_back(other_cell, oldBel);
+                    add_move_cell(moveChange, cell, oldBel);
+                    if (other_cell != nullptr)
+                        add_move_cell(moveChange, other_cell, newBel);
+                    compute_cost_changes(moveChange);
+                    bel_overlay.clear();
+                }
+                if (cfg.swap_seam_shadow) {
+                    // Remember the detached answer, then let the live path run and compare.
+                    shadow_pending = true;
+                    shadow_legal = legal;
+                    shadow_wirelen_delta = moveChange.wirelen_delta;
+                    shadow_timing_delta = moveChange.timing_delta;
+                    moveChange.reset(this);
+                } else {
+                    if (!legal) {
+                        ++seam_illegal;
+                        return false;
+                    }
+                    // Both cells are cluster-free, so their constraint distance is zero before and after.
+                    new_dist = 0;
+                    delta = lambda * (moveChange.timing_delta / std::max<double>(last_timing_cost, epsilon)) +
+                            (1 - lambda) *
+                                    (double(moveChange.wirelen_delta) / std::max<double>(last_wirelen_cost, epsilon));
+                    delta += (cfg.constraintWeight / temp) * (new_dist - old_dist) / last_wirelen_cost;
+                    n_move++;
+                    if (delta < 0 || (temp > 1e-8 && (ctx->rng() / float(0x3fffffff)) <= std::exp(-delta / temp))) {
+                        n_accept++;
+                        if (!cfg.commit_swap(ctx, edits, assessment))
+                            log_error("Detached swap commit found a changed design for cell '%s'.\n",
+                                      ctx->nameOf(cell));
+                        ++seam_committed;
+                        commit_cost_changes(moveChange);
+                        return true;
+                    }
+                    ++seam_rejected;
+                    return false;
+                }
+            }
+        }
+
         if (cfg.netShareWeight > 0)
             net_delta_score += update_nets_by_tile(cell, ctx->getBelLocation(cell->bel), ctx->getBelLocation(newBel));
 
@@ -520,6 +607,8 @@ class SAPlacer
         // Always check both the new and old locations; as in some cases of dedicated routing ripping up a cell can deny
         // use of a dedicated path and thus make a site illegal
         if (!ctx->isBelLocationValid(newBel) || !ctx->isBelLocationValid(oldBel)) {
+            if (shadow_pending)
+                shadow_compare(cell, false, 0, 0);
             ctx->unbindBel(newBel);
             if (other_cell != nullptr)
                 ctx->unbindBel(oldBel);
@@ -528,6 +617,8 @@ class SAPlacer
 
         // Recalculate metrics for all nets touched by the perturbation
         compute_cost_changes(moveChange);
+        if (shadow_pending)
+            shadow_compare(cell, true, moveChange.wirelen_delta, moveChange.timing_delta);
 
         new_dist = get_constraints_distance(ctx, cell);
         if (other_cell != nullptr)
@@ -783,8 +874,10 @@ class SAPlacer
     // Return true if a net is to be entirely ignored
     inline bool ignore_net(NetInfo *net)
     {
-        return net->driver.cell == nullptr || net->driver.cell->bel == BelId() ||
-               ctx->getBelGlobalBuf(net->driver.cell->bel);
+        if (net->driver.cell == nullptr)
+            return true;
+        const BelId driver_bel = overlay_bel(net->driver.cell);
+        return driver_bel == BelId() || ctx->getBelGlobalBuf(driver_bel);
     }
 
     // Get the bounding box for a net
@@ -792,7 +885,7 @@ class SAPlacer
     {
         BoundingBox bb;
         NPNR_ASSERT(net->driver.cell != nullptr);
-        Loc dloc = net->driver.cell->getLocation();
+        Loc dloc = overlay_loc(net->driver.cell);
         bb.x0 = dloc.x;
         bb.x1 = dloc.x;
         bb.y0 = dloc.y;
@@ -802,9 +895,9 @@ class SAPlacer
         bb.ny0 = 1;
         bb.ny1 = 1;
         for (auto user : net->users) {
-            if (!user.cell->isPseudo() && user.cell->bel == BelId())
+            if (!user.cell->isPseudo() && overlay_bel(user.cell) == BelId())
                 continue;
-            Loc uloc = user.cell->getLocation();
+            Loc uloc = overlay_loc(user.cell);
             if (bb.x0 == uloc.x)
                 ++bb.nx0;
             else if (uloc.x < bb.x0) {
@@ -844,7 +937,7 @@ class SAPlacer
             return 0;
 
         float crit = tmg.get_criticality(CellPortKey(user));
-        double delay = ctx->getDelayNS(ctx->predictArcDelay(net, user));
+        double delay = ctx->getDelayNS(predict_arc_delay(net, user));
         return delay * std::pow(crit, crit_exp);
     }
 
@@ -940,9 +1033,55 @@ class SAPlacer
 
     } moveChange;
 
+    // Position overlay for detached swap evaluation: while it is set, cost
+    // computations see the moved cells at their proposed BELs instead of their
+    // live bindings. Empty on the live path, so that path is unchanged.
+    std::vector<std::pair<const CellInfo *, BelId>> bel_overlay;
+    inline BelId overlay_bel(const CellInfo *cell) const
+    {
+        for (const auto &entry : bel_overlay)
+            if (entry.first == cell)
+                return entry.second;
+        return cell->bel;
+    }
+    inline Loc overlay_loc(const CellInfo *cell) const
+    {
+        if (!bel_overlay.empty() && !cell->isPseudo())
+            return ctx->getBelLocation(overlay_bel(cell));
+        return cell->getLocation();
+    }
+    inline delay_t predict_arc_delay(const NetInfo *net, const PortRef &sink) const
+    {
+        if (bel_overlay.empty())
+            return ctx->predictArcDelay(net, sink);
+        // Same selection as Context::predictArcDelay, with overlay BELs.
+        const BelId driver_bel = overlay_bel(net->driver.cell), sink_bel = overlay_bel(sink.cell);
+        if (net->driver.cell == nullptr || driver_bel == BelId() || sink_bel == BelId())
+            return 0;
+        IdString driver_pin, sink_pin;
+        for (auto pin : ctx->getBelPinsForCellPin(net->driver.cell, net->driver.port)) {
+            driver_pin = pin;
+            break;
+        }
+        for (auto pin : ctx->getBelPinsForCellPin(sink.cell, sink.port)) {
+            sink_pin = pin;
+            break;
+        }
+        if (driver_pin == IdString() || sink_pin == IdString())
+            return 0;
+        return ctx->predictDelay(driver_bel, driver_pin, sink_bel, sink_pin);
+    }
+    // Seam statistics.
+    uint64_t seam_assessed = 0, seam_illegal = 0, seam_rejected = 0, seam_committed = 0, seam_unsupported = 0;
+    uint64_t seam_shadow_checked = 0, seam_shadow_mismatches = 0;
+    // Shadow: the detached result awaiting comparison with the live path.
+    bool shadow_pending = false, shadow_legal = false;
+    wirelen_t shadow_wirelen_delta = 0;
+    double shadow_timing_delta = 0;
+
     void add_move_cell(MoveChangeData &mc, CellInfo *cell, BelId old_bel)
     {
-        Loc curr_loc = ctx->getBelLocation(cell->bel);
+        Loc curr_loc = overlay_loc(cell);
         Loc old_loc = ctx->getBelLocation(old_bel);
         // Check net bounds
         for (const auto &port : cell->ports) {
