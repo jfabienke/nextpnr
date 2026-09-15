@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `3aaa173` (parallel freezing)
+- Commit: `dc7fde5d` (Stage 5, 1c-A)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Next: cross-build checkpoints and physical artifact provenance (design
@@ -304,6 +304,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `662383a` | Same-session LAB assessment reuse and placement reuse, Stage 4E |
 | `7fd9482` | Stage 4E list closure: precise incidence, LAB states, content tier |
 | `3aaa173` | Parallel freezing for lookahead candidates; scaling analysis |
+| `dc7fde5d` | Stage 5 unit 1c-A: annealer swap seam |
 
 ## Stage 5: applying the seams to the rest of the flow
 
