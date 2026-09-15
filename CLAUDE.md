@@ -95,7 +95,9 @@ sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared w
 - `rust/npnr_mistral_lab` is the pure evaluator (`model.rs`, `rules.rs`, `v2.rs`, wire formats);
   `rust/npnr_mistral_lab_ffi` is the C ABI consumed by `mistral/lab_v2_abi.h` /
   `lab_control_abi.h`. Rust owns only validated values and scratch; C++ owns the live design,
-  all mutation, and signoff. No live C++ pointer may cross FFI or sit in a cache.
+  all mutation, and signoff. No live C++ pointer may cross FFI or sit in a cache. The crates are
+  **concluded** at this contract (see the tracker's "Rust evaluator concluded" entry): keep them
+  as the parity harness, add no new Rust surface, and reopen only for a rules revision.
 - Evaluator authority is opt-in via `nextpnr-mistral --lab-controls` and `--lab-legality`, each
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Legacy is and must stay the default**;
   promotion needs its own recorded evidence.

@@ -1003,6 +1003,30 @@ parallel fraction applies.
 | Fabi386 budgets 8 and 64, 1/8/16 workers, plus a budget-64 repeat | All byte-identical; as tabulated |
 | `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
 
+### 2026-09-15: Rust evaluator concluded
+
+The parallel/incremental design's stage 4 asked for an evaluation of the
+isolated Rust-owned computation subsystem on safety, memory use,
+maintainability, and execution cost. Recorded here; the component is
+concluded on this basis.
+
+| Criterion | Finding |
+| --- | --- |
+| Safety | Delivered. The evaluator is pure by construction (`#![forbid(unsafe_code)]`, validated value snapshots, no host pointers across the FFI), and the frozen-handle contract ran concurrently on per-worker handles through every lookahead run without incident. |
+| Memory | Neutral. Peak RSS is within 2 MiB of legacy in every mode; the content tier built on the same facts was a measured loss. |
+| Execution cost | Small and real. Rust authority costs about 1.3% of P&R time; the parallel scaling of the lookahead phase came from the value-snapshot contract, which the detached C++ evaluator honours equally, with Rust as the cross-check. |
+| Maintainability | Negative. Every rule change must land in two implementations with the C++ one authoritative by default. |
+| Defects found by the oracle | None. Roughly 340,000 live queries, 2,892 serial transactions, and every lookahead run since agreed exactly. The stage's one real defect (HeAP rollback strength, 4A) was found by the mutation audit. |
+| Stability | No Rust source changed during 4D, 4E, the list closure, or parallel freezing; the contract has been stable since 4C. |
+
+Decisions:
+
+1. The contract is frozen at ABI V1, ABI V2, and the frozen-batch handle. No new Rust surface.
+2. Rust authority is not promoted to the default. The section 8 gate asks for broader device and design evidence that does not exist, and the upside is nil.
+3. The crates, the shadow and verify modes, and the fatal cross-check in the transaction path are kept as the parity harness. They are cheap, tested, and the only independent implementation of the rules.
+4. Rust ownership is not extended into the next design (cross-build checkpoints and artifact provenance) on the strength of this stage. The C++ side carries ownership discipline with stamps, transactions, and tests; if that design needs compiler-enforced guarantees, that is a fresh decision with its own case.
+5. Reopening condition: a revision of `LegacyControlRulesV1`. A rules change is the one moment a second implementation earns its keep; it must then be versioned in both, or the Rust authority modes retired.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1051,6 +1075,7 @@ parallel fraction applies.
 | 2026-09-15 | scaling | Do not implement parallel freezing now (superseded the same day at the user's request) | Only 15% of the lookahead phase was evaluation; implementing it confirmed the phase scales without beating the serial search on this design |
 | 2026-09-15 | scaling | Implement parallel freezing with per-worker Rust handles and a bounded spin before blocking | Parallel fraction 0.15 to 0.75; budget-64 phase 4.69 s to 1.60 s on 8 workers; budget 8 on 8 workers within 10% of the serial phase; all artifacts byte-identical |
 | 2026-09-15 | scaling | Keep the serial search as the default | The phase is under 3% of wall time on Fabi386; enable lookahead only where rejections per commit are high |
+| 2026-09-15 | Rust | Conclude the Rust evaluator: freeze the ABI, keep it as the parity harness, do not promote or extend it | Safety delivered, memory neutral, +1.3% cost in authority mode, zero oracle findings, dual-implementation maintenance; contract unchanged since 4C |
 
 ## Stage gates and promotion
 

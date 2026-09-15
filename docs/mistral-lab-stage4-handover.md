@@ -305,6 +305,17 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `7fd9482` | Stage 4E list closure: precise incidence, LAB states, content tier |
 | `3aaa173` | Parallel freezing for lookahead candidates; scaling analysis |
 
+## Rust evaluator: concluded
+
+The two crates (`npnr_mistral_lab`, `npnr_mistral_lab_ffi`) are concluded at
+their current contract: ABI V1, ABI V2, and the frozen-batch handle. They stay
+in the build as the parity harness (`--lab-controls`/`--lab-legality` shadow
+and verify modes, and the fatal Rust cross-check on every lookahead candidate)
+and are not promoted to default authority or extended into the next design.
+The tracker records the safety, memory, cost, and maintainability evaluation
+behind this. Reopen only for a revision of `LegacyControlRulesV1`, which must
+then be versioned in both implementations or the Rust authority modes retired.
+
 ## Default-mode and promotion policy
 
 Legacy remains the default. Completing a stage gate does not automatically
