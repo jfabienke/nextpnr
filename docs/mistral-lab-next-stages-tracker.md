@@ -539,6 +539,47 @@ repeat `27e90a2b7e2a9587e648772856319a129b260f22614badf7aa057de6f8c5a9b2`.
 The original resource-run SHA-256 remains
 `41cacb1abac1c0cdfec9f896853838e555d6b0d34d1d3799646a862db723717a`.
 
+### 2026-09-15: Apple Silicon performance-core scheduling experiment
+
+The benchmark host is a Mac Studio with an Apple M1 Ultra, 16 performance cores,
+and 4 efficiency cores. Public macOS APIs do not provide hard CPU or cluster
+pinning. `THREAD_AFFINITY_POLICY` is documented only as an experimental L2-cache
+placement hint and its request was rejected on this host, so it is not used. The
+benchmark instead exposes `performance-qos`, which successfully assigns
+`QOS_CLASS_USER_INTERACTIVE` to every evaluation worker. This is a supported
+performance-oriented scheduler request, not proof that a thread remained on a
+specific core.
+
+Two seven-round performance-QoS runs and two contemporaneous default-scheduler
+control runs produced these midpoints of run medians. Negative deltas favor
+performance QoS:
+
+| Workers | Default ns/record | Performance-QoS ns/record | QoS delta |
+| ---: | ---: | ---: | ---: |
+| 1 | 392.86 | 393.52 | +0.17% |
+| 2 | 199.58 | 200.24 | +0.33% |
+| 4 | 102.65 | 102.72 | +0.08% |
+| 8 | 53.47 | 52.43 | -1.95% |
+| 12 | 41.26 | 40.43 | -2.01% |
+| 16 | 33.07 | 33.85 | +2.36% |
+
+The effect is within observed run-to-run variability and provides no
+reproducible throughput improvement. The default macOS scheduler already places
+this sustained CPU-bound workload effectively. Keep the benchmark mode for
+future scheduler experiments, but reject performance QoS for default promotion.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/mistral/nextpnr-mistral-lab-frozen-bench ... 7 20000 performance-qos` (twice) | Complete; QoS request succeeded for every worker |
+| Matching `... 7 20000 default` control (twice) | Complete; no reproducible QoS benefit |
+
+Performance-QoS CSV SHA-256: primary
+`40e0a061d954c594b65be6d0bbfd7ddc052df0c462b265ff18524002f65b1611`;
+repeat `f6361a9ff8c9aa9ec8e30fa210500e13a7e73881b56bdb8f2179440f55ac6bb0`.
+Default control CSV SHA-256: primary
+`b6d1cbada8ac860bbbbf5e841b75af3714dfc10fd8d25d8a8e2144acf6ae8c0c`;
+repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -569,6 +610,7 @@ The original resource-run SHA-256 remains
 | 2026-09-15 | 4C | Bound retained work before enabling scheduler concurrency | 64 records per batch, two handles per worker, real 64 MiB aggregate exhaustion and quota-recovery tests |
 | 2026-09-15 | 4D | Retain validated V2 facts when a frozen batch will be reused | 804.63 ns/record direct versus 389.73 ns frozen; creation amortizes after two serial evaluations |
 | 2026-09-15 | 4D | Continue with bounded parallel scheduling | Frozen evaluation scales 1.97x, 3.82x, 7.21x, 9.77x, and 12.85x at 2/4/8/12/16 workers; live determinism remains gated |
+| 2026-09-15 | 4D | Reject performance QoS for default promotion; retain it as benchmark instrumentation | Public macOS APIs cannot hard-pin P-cores, and `QOS_CLASS_USER_INTERACTIVE` changed contemporaneous medians by -2.01% to +2.36% |
 
 ## Stage gates and promotion
 
