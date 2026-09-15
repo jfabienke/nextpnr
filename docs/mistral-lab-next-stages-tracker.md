@@ -2,7 +2,8 @@
 
 Execution record started 2026-09-15. Architectural rationale belongs in
 [`mistral-lab-next-stages-design.md`](mistral-lab-next-stages-design.md); this
-file records implementation state and evidence.
+file records implementation state and evidence. The current restart guide is
+[`mistral-lab-stage4-handover.md`](mistral-lab-stage4-handover.md).
 
 ## Baseline
 
