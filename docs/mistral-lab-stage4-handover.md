@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `16a233e0c19b732554594c5f4d4df52b18ef4dba`
+- Commit: `9c7e56f` (Stage 4D)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A, 4B, 4C, and 4D are complete.
 - Stage 4E is ready to start.
@@ -261,6 +261,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `3139f9b` | Initial frozen evaluator scaling benchmark |
 | `b8b48ec` | 12/16-worker and uneven-partition benchmark support |
 | `16a233e` | Apple performance-QoS experiment |
+| `9c7e56f` | Deterministic parallel cluster lookahead, Stage 4D |
 
 ## Default-mode and promotion policy
 
