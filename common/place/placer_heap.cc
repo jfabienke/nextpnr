@@ -54,6 +54,16 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+void restore_heap_cluster_bindings(Context *ctx, const HeAPDisplacedBindings &bindings)
+{
+    for (const auto &move : bindings) {
+        if (ctx->getBoundBelCell(move.first) != nullptr)
+            ctx->unbindBel(move.first);
+        if (move.second.cell != nullptr)
+            ctx->bindBel(move.first, move.second.cell, move.second.strength);
+    }
+}
+
 namespace {
 // A simple internal representation for a sparse system of equations Ax = rhs
 // This is designed to decouple the functions that build the matrix to the engine that
@@ -1106,8 +1116,8 @@ class HeAPPlacer
                 // progress heartbeat: strict legalisation can run for hours on large
                 // designs with zero output -- indistinguishable from a hang without this
                 if (++legalised_count % 2000 == 0)
-                    log_info("      strict legalise: %d cells done, %d queued, ripup_radius=%d\n",
-                             legalised_count, int(remaining.size()), ripup_radius);
+                    log_info("      strict legalise: %d cells done, %d queued, ripup_radius=%d\n", legalised_count,
+                             int(remaining.size()), ripup_radius);
                 std::chrono::high_resolution_clock::time_point ci_startt;
                 if (ctx->verbose)
                     ci_startt = std::chrono::high_resolution_clock::now();
@@ -1391,7 +1401,7 @@ class HeAPPlacer
                 // List of cells and their destination
                 std::vector<std::pair<CellInfo *, BelId>> targets;
                 // List of bels we placed things at; and the cell that was there before if applicable
-                dict<BelId, CellInfo *> moves_made;
+                HeAPDisplacedBindings moves_made;
 
                 if (!ctx->getClusterPlacement(ci->cluster, sz, targets))
                     continue;
@@ -1423,11 +1433,12 @@ class HeAPPlacer
                 // Actually perform the move; keeping track of the moves we make so we can revert them if needed
                 for (auto &target : targets) {
                     CellInfo *bound = ctx->getBoundBelCell(target.second);
+                    const PlaceStrength bound_strength = bound == nullptr ? STRENGTH_NONE : bound->belStrength;
                     if (bound != nullptr) {
                         if (bound->cluster != ClusterId()) {
                             for (auto cell : p->cluster2cells[bound->cluster]) {
                                 if (cell->bel != BelId()) {
-                                    moves_made[cell->bel] = cell;
+                                    moves_made[cell->bel] = {cell, cell->belStrength};
                                     ctx->unbindBel(cell->bel);
                                 }
                             }
@@ -1436,7 +1447,7 @@ class HeAPPlacer
                         }
                     }
                     ctx->bindBel(target.second, target.first, STRENGTH_STRONG);
-                    moves_made[target.second] = bound;
+                    moves_made[target.second] = {bound, bound_strength};
                 }
                 // Check that the move we have made is legal
                 for (auto &move : moves_made) {
@@ -1447,18 +1458,11 @@ class HeAPPlacer
                 if (false) {
                 fail:
                     // If the move turned out to be illegal; revert all the moves we made
-                    for (auto &move : moves_made) {
-                        if (ctx->getBoundBelCell(move.first)) {
-                            ctx->unbindBel(move.first);
-                        }
-                        if (move.second != nullptr) {
-                            ctx->bindBel(move.first, move.second, STRENGTH_WEAK);
-                        }
-                    }
+                    restore_heap_cluster_bindings(ctx, moves_made);
                     continue;
                 }
                 for (auto &move : moves_made) {
-                    if (move.second)
+                    if (move.second.cell)
                         p->unbind_ctrl_set(move.first);
                 }
                 for (auto &target : targets) {
@@ -1470,11 +1474,12 @@ class HeAPPlacer
                 }
                 for (auto &move : moves_made) {
                     // Where we have ripped up cells; add them to the queue
-                    if (move.second != nullptr && (move.second->cluster == ClusterId() ||
-                                                   ctx->getClusterRootCell(move.second->cluster) == move.second))
-                        remaining.emplace(p->chain_size[move.second->name] *
-                                                  p->cfg.get_cell_legalisation_weight(ctx, move.second),
-                                          move.second->name);
+                    if (move.second.cell != nullptr &&
+                        (move.second.cell->cluster == ClusterId() ||
+                         ctx->getClusterRootCell(move.second.cell->cluster) == move.second.cell))
+                        remaining.emplace(p->chain_size[move.second.cell->name] *
+                                                  p->cfg.get_cell_legalisation_weight(ctx, move.second.cell),
+                                          move.second.cell->name);
                 }
 
                 placed = true;

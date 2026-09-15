@@ -18,6 +18,11 @@
  */
 
 #include "design_utils.h"
+#include "lab_control_edits.h"
+#include "lab_control_plan.h"
+#include "lab_preparation.h"
+#include "lab_snapshot.h"
+#include "lab_v2.h"
 #include "log.h"
 #include "nextpnr.h"
 #include "util.h"
@@ -360,6 +365,7 @@ void Arch::assign_comb_info(CellInfo *cell) const
     for (int i = 0; i < cell->combInfo.lut_input_count; i++)
         if (cell->combInfo.lut_in[i])
             ++cell->combInfo.used_lut_input_count;
+    placement_revision.note_mutation(PlacementMutation::CellFacts);
 }
 
 void Arch::assign_ff_info(CellInfo *cell) const
@@ -378,6 +384,7 @@ void Arch::assign_ff_info(CellInfo *cell) const
 
     cell->ffInfo.sdata = cell->getPort(id_SDATA);
     cell->ffInfo.datain = cell->getPort(id_DATAIN);
+    placement_revision.note_mutation(PlacementMutation::CellFacts);
 }
 
 // Validity checking functions
@@ -562,10 +569,7 @@ bool Arch::check_lab_input_count(uint32_t lab) const
     // into a LAB that cannot legally route (measured: a 32k-cell design stalls forever at ~40
     // overused TD wires, all on carry chains). MISTRAL_LAB_INPUT_LIMIT makes the threshold sweepable
     // so the trade between density and routability can be measured rather than guessed.
-    static const int limit = getenv("MISTRAL_LAB_INPUT_LIMIT")
-                                     ? atoi(getenv("MISTRAL_LAB_INPUT_LIMIT"))
-                                     : 42;
-    return (count <= limit);
+    return (count <= resolved_lab_input_limit());
 }
 
 bool Arch::check_mlab_groups(uint32_t lab) const
@@ -600,109 +604,29 @@ bool Arch::check_mlab_groups(uint32_t lab) const
     return true;
 }
 
-namespace {
-bool check_assign_sig(ControlSig &sig_set, const ControlSig &sig)
-{
-    if (sig.net == nullptr) {
-        return true;
-    } else if (sig_set == sig) {
-        return true;
-    } else if (sig_set.net == nullptr) {
-        sig_set = sig;
-        return true;
-    } else {
-        return false;
-    }
-};
-
-template <size_t N> bool check_assign_sig(std::array<ControlSig, N> &sig_set, const ControlSig &sig)
-{
-    if (sig.net == nullptr)
-        return true;
-    for (size_t i = 0; i < N; i++)
-        if (sig_set[i] == sig) {
-            return true;
-        } else if (sig_set[i].net == nullptr) {
-            sig_set[i] = sig;
-            return true;
-        }
-    return false;
-};
-
-// DATAIN mapping rules - which LAB DATAIN signals can be used for ENA and ACLR
-static constexpr std::array<int, 3> ena_datain{2, 3, 0};
-static constexpr std::array<int, 2> aclr_datain{3, 2};
-
-struct LabCtrlSetWorker
-{
-
-    ControlSig clk{}, sload{}, sclr{};
-    std::array<ControlSig, 2> aclr{};
-    std::array<ControlSig, 3> ena{};
-
-    std::array<ControlSig, 4> datain{};
-
-    bool run(const Arch *arch, uint32_t lab)
-    {
-        // Strictly speaking the constraint is up to 2 unique CLK and 3 CLK+ENA pairs. For now we simplify this to 1 CLK
-        // and 3 ENA though.
-        for (uint8_t alm = 0; alm < 10; alm++) {
-            for (uint8_t i = 0; i < 4; i++) {
-                const CellInfo *ff = arch->getBoundBelCell(arch->labs.at(lab).alms.at(alm).ff_bels.at(i));
-                if (ff == nullptr)
-                    continue;
-                if (!check_assign_sig(clk, ff->ffInfo.ctrlset.clk))
-                    return false;
-                if (!check_assign_sig(sload, ff->ffInfo.ctrlset.sload))
-                    return false;
-                if (!check_assign_sig(sclr, ff->ffInfo.ctrlset.sclr))
-                    return false;
-                if (!check_assign_sig(aclr, ff->ffInfo.ctrlset.aclr))
-                    return false;
-                if (!check_assign_sig(ena, ff->ffInfo.ctrlset.ena))
-                    return false;
-            }
-        }
-        // Check for overuse of the shared, LAB-wide datain signals
-        if (clk.net != nullptr && !clk.net->is_global)
-            if (!check_assign_sig(datain[0], clk)) // CLK only needs DATAIN[0] if it's not global
-                return false;
-        if (!check_assign_sig(datain[1], sload))
-            return false;
-        if (!check_assign_sig(datain[3], sclr))
-            return false;
-        for (const auto &aclr_sig : aclr) {
-            // Check both possibilities that ACLR can map to
-            // TODO: ACLR could be global, too
-            if (check_assign_sig(datain[aclr_datain[0]], aclr_sig))
-                continue;
-            if (check_assign_sig(datain[aclr_datain[1]], aclr_sig))
-                continue;
-            // Failed to find any free ACLR-capable DATAIN
-            return false;
-        }
-        for (const auto &ena_sig : ena) {
-            // Check all 3 possibilities that ACLR can map to
-            // TODO: ACLR could be global, too
-            if (check_assign_sig(datain[ena_datain[0]], ena_sig))
-                continue;
-            if (check_assign_sig(datain[ena_datain[1]], ena_sig))
-                continue;
-            if (check_assign_sig(datain[ena_datain[2]], ena_sig))
-                continue;
-            // Failed to find any free ENA-capable DATAIN
-            return false;
-        }
-        return true;
-    }
-};
-
-}; // namespace
-
 bool Arch::is_lab_ctrlset_legal(uint32_t lab) const
 {
-    LabCtrlSetWorker worker;
-    return worker.run(this, lab);
+    if (!args.lab_control_profile_path.empty())
+        sample_lab_controls(*this, lab, false);
+    if (args.lab_controls != LabControlMode::Legacy)
+        return dispatch_lab_controls(*this, lab);
+    if (args.verify_lab_controls)
+        return verify_lab_controls_cpp(*this, lab);
+    return evaluate_lab_controls_native(*this, lab).legal;
+}
+
+size_t lab_control_legacy_worker_size() { return sizeof(LabControlAllocation); }
+
+NpnrLabControlResultV1 evaluate_lab_controls_legacy(const Arch &arch, uint32_t lab, const LabControlCapture &capture)
+{
+    const auto evaluation = evaluate_lab_controls_native(arch, lab);
+    auto result = lab_control_result(capture.input, evaluation.legal ? NPNR_CONTROL_LEGAL : NPNR_CONTROL_ILLEGAL);
+    if (evaluation.allocation) {
+        const auto signals = evaluation.allocation->as_array();
+        for (unsigned i = 0; i < signals.size(); ++i)
+            result.allocation[i] = capture.encode_existing(signals[i]);
+    }
+    return result;
 }
 
 void Arch::lab_pre_route()
@@ -718,70 +642,29 @@ void Arch::lab_pre_route()
 
 void Arch::assign_control_sets(uint32_t lab)
 {
+    if (!args.lab_control_profile_path.empty())
+        sample_lab_controls(*this, lab, true);
     // Set up reservations for checkPipAvail for control set signals
     // This will be needed because clock and CE are routed together and must be kept together, there isn't free choice
     // e.g. CLK0 & ENA0 must be use for one control set, and CLK1 & ENA1 for another, they can't be mixed and matched
     // Similarly for how inverted & noninverted variants must be kept separate
-    LabCtrlSetWorker worker;
-    bool legal = worker.run(this, lab);
-    NPNR_ASSERT(legal);
-    auto &lab_data = labs.at(lab);
-
-    for (int j = 0; j < 2; j++) {
-        lab_data.aclr_used[j] = false;
+    auto dispatched = dispatch_lab_controls_for_preparation(*this, lab);
+    NPNR_ASSERT(dispatched.selected_status == PreparationStatus::Legal && dispatched.ticket);
+    auto translated = translate_preparation_ticket(std::move(*dispatched.ticket));
+    NPNR_ASSERT(translated.status == PreparationStatus::Legal && translated.plan);
+    auto prepared = prepare_control_edits(*this, *translated.plan);
+    NPNR_ASSERT(prepared.status == ControlEditStatus::Ready && prepared.prepared);
+    if (translated.comparison_plan) {
+        auto comparison = prepare_control_edits(*this, *translated.comparison_plan);
+        NPNR_ASSERT(comparison.status == ControlEditStatus::Ready && comparison.prepared);
+        const bool same = control_edit_lists_equal(*prepared.prepared, *comparison.prepared);
+        if (!same && args.lab_controls != LabControlMode::Shadow)
+            log_error("LAB control %s preparation edit mismatch at LAB %u.\n", lab_control_mode_name(args.lab_controls),
+                      lab);
+        if (!same)
+            log_warning("LAB control shadow preparation edit mismatch at LAB %u; applying C++ edits.\n", lab);
     }
-
-    for (uint8_t alm = 0; alm < 10; alm++) {
-        auto &alm_data = lab_data.alms.at(alm);
-        if (lab_data.is_mlab) {
-            for (uint8_t i = 0; i < 2; i++) {
-                BelId lut_bel = alm_data.lut_bels.at(i);
-                const CellInfo *lut = getBoundBelCell(lut_bel);
-                if (!lut || lut->combInfo.mlab_group == -1)
-                    continue;
-                WireId wclk_wire = getBelPinWire(lut_bel, id_WCLK);
-                WireId we_wire = getBelPinWire(lut_bel, id_WE);
-                // Force use of CLK0/ENA0 for LUTRAMs. Might have to revisit if we ever support packing LUTRAMs and FFs
-                reserve_route(lab_data.clk_wires[0], wclk_wire);
-                reserve_route(lab_data.ena_wires[0], we_wire);
-            }
-        }
-        for (uint8_t i = 0; i < 4; i++) {
-            BelId ff_bel = alm_data.ff_bels.at(i);
-            const CellInfo *ff = getBoundBelCell(ff_bel);
-            if (ff == nullptr)
-                continue;
-            ControlSig ena_sig = ff->ffInfo.ctrlset.ena;
-            WireId clk_wire = getBelPinWire(ff_bel, id_CLK);
-            WireId ena_wire = getBelPinWire(ff_bel, id_ENA);
-            for (int j = 0; j < 3; j++) {
-                if (ena_sig == worker.datain[ena_datain[j]]) {
-                    if (getCtx()->debug) {
-                        log_info("Assigned CLK/ENA set %d to FF %s (%s)\n", j, nameOf(ff), getCtx()->nameOfBel(ff_bel));
-                    }
-                    // TODO: lock clock according to ENA choice, too, when we support two clocks per ALM
-                    reserve_route(lab_data.clk_wires[0], clk_wire);
-                    reserve_route(lab_data.ena_wires[j], ena_wire);
-                    alm_data.clk_ena_idx[i / 2] = j;
-                    break;
-                }
-            }
-            ControlSig aclr_sig = ff->ffInfo.ctrlset.aclr;
-            WireId aclr_wire = getBelPinWire(ff_bel, id_ACLR);
-            for (int j = 0; j < 2; j++) {
-                // TODO: could be global ACLR, too
-                if (aclr_sig == worker.datain[aclr_datain[j]]) {
-                    if (getCtx()->debug) {
-                        log_info("Assigned ACLR set %d to FF %s (%s)\n", i, nameOf(ff), getCtx()->nameOfBel(ff_bel));
-                    }
-                    reserve_route(lab_data.aclr_wires[j], aclr_wire);
-                    lab_data.aclr_used[j] = (aclr_sig.net != nullptr);
-                    alm_data.aclr_idx[i / 2] = j;
-                    break;
-                }
-            }
-        }
-    }
+    NPNR_ASSERT(apply_prepared_control_edits(*this, std::move(*prepared.prepared)) == ControlEditStatus::Applied);
 }
 
 namespace {

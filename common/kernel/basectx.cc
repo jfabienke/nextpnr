@@ -108,6 +108,7 @@ void BaseCtx::addClock(IdString net, float freq)
         log_warning("net '%s' does not exist in design, ignoring clock constraint\n", net.c_str(this));
         return;
     }
+    notifyContextMutation(ContextMutationKind::Constraints);
     log_info("constraining clock net '%s' to %.02f MHz\n", net.c_str(this), freq);
 }
 
@@ -125,8 +126,13 @@ void BaseCtx::createRectangularRegion(IdString name, int x0, int y0, int x1, int
         }
     }
     region[name] = std::move(new_region);
+    notifyContextMutation(ContextMutationKind::Constraints);
 }
-void BaseCtx::addBelToRegion(IdString name, BelId bel) { region[name]->bels.insert(bel); }
+void BaseCtx::addBelToRegion(IdString name, BelId bel)
+{
+    region[name]->bels.insert(bel);
+    notifyContextMutation(ContextMutationKind::Constraints);
+}
 void BaseCtx::constrainCellToRegion(IdString cell, IdString region_name)
 {
     // Support hierarchical cells as well as leaf ones
@@ -145,6 +151,8 @@ void BaseCtx::constrainCellToRegion(IdString cell, IdString region_name)
     }
     if (!matched)
         log_warning("No cell matched '%s' when constraining to region '%s'\n", nameOf(cell), nameOf(region_name));
+    else
+        notifyContextMutation(ContextMutationKind::Constraints);
 }
 
 void BaseCtx::createRegionPlug(IdString name, IdString type, Loc approx_loc)
@@ -253,6 +261,7 @@ NetInfo *BaseCtx::createNet(IdString name)
     net_aliases[name] = name;
     NetInfo *ptr = net.get();
     nets[name] = std::move(net);
+    notifyContextMutation(ContextMutationKind::GeneratedObjects);
     refreshUi();
     return ptr;
 }
@@ -278,6 +287,7 @@ void BaseCtx::renameNet(IdString old_name, IdString new_name)
     std::swap(nets.at(net->name), nets.at(new_name));
     nets.erase(net->name);
     net->name = new_name;
+    notifyContextMutation(ContextMutationKind::NetFacts);
 }
 
 void BaseCtx::ripupNet(IdString name)
@@ -302,6 +312,7 @@ CellInfo *BaseCtx::createCell(IdString name, IdString type)
     auto cell = std::make_unique<CellInfo>(getCtx(), name, type);
     CellInfo *ptr = cell.get();
     cells[name] = std::move(cell);
+    notifyContextMutation(ContextMutationKind::GeneratedObjects);
     refreshUi();
     return ptr;
 }

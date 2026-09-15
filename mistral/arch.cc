@@ -127,12 +127,12 @@ Arch::Arch(ArchArgs args)
     if (!hps_pos.empty()) {
         create_hps_mpu_general_purpose(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_MPU_GENERAL_PURPOSE]),
                                        CycloneV::pos2y(hps_pos[CycloneV::I_HPS_MPU_GENERAL_PURPOSE]));
-    if (!hps_pos.empty()) {
-        create_hps_lwh2f(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]),
-                         CycloneV::pos2y(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]));
-        create_hps_f2sdram(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]),
-                           CycloneV::pos2y(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]));
-    }
+        if (!hps_pos.empty()) {
+            create_hps_lwh2f(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]),
+                             CycloneV::pos2y(hps_pos[CycloneV::I_HPS_HPS2FPGA_LIGHT_WEIGHT]));
+            create_hps_f2sdram(CycloneV::pos2x(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]),
+                               CycloneV::pos2y(hps_pos[CycloneV::I_HPS_FPGA2SDRAM]));
+        }
     }
 
     for (auto m10k_pos : cyclonev->m10k_get_pos())
@@ -157,6 +157,93 @@ Arch::Arch(ArchArgs args)
     }
 
     log_info("    imported %d wires and %d pips\n", int(wires.size()), pip_count);
+
+    // VENDOR-LEG MIMICRY (data feeds): env VUP_BLOCK_NODES="TYPE:x,y,z;..." hard-blocks
+    // arbitrary routing nodes for ALL routers (general router included -- unlike
+    // VUP_IOREG_POISON_TD, which only the clock-BFS filters consult). Used to blacklist
+    // our TD data-feed nodes that mismatch a vendor decompile so the router converges
+    // onto the vendor-attested feeds (tools/vendor_legs.py emits the list).
+    if (const char *bn = getenv("VUP_BLOCK_NODES")) {
+        int blocked = 0;
+        std::string s(bn);
+        size_t i = 0;
+        while (i < s.size()) {
+            size_t c = s.find(';', i);
+            if (c == std::string::npos)
+                c = s.size();
+            std::string tok = s.substr(i, c - i);
+            i = c + 1;
+            size_t col = tok.find(':');
+            if (col == std::string::npos)
+                continue;
+            int x = -1, y = -1, z = -1;
+            if (sscanf(tok.c_str() + col + 1, "%d,%d,%d", &x, &y, &z) != 3)
+                continue;
+            auto ty = cyclonev->rnode_type_lookup(tok.substr(0, col));
+            WireId w;
+            w.node = CycloneV::rnode(ty, x, y, z);
+            if (wires.count(w)) {
+                block_wire(w);
+                blocked++;
+            }
+        }
+        log_info("VUP_BLOCK_NODES: hard-blocked %d routing nodes\n", blocked);
+    }
+
+    // VENDOR-LEG MIMICRY (positive pinning): env VUP_RESERVE_ROUTES=
+    //   "TYPE:x,y,z>BLOCK.x.y[.bi]:PORT.pi;..." reserves each dst PNODE's route so it is
+    // reachable ONLY from the given src rnode -- the vendor's exact feed (one-shot, no
+    // blacklist iteration). tools/vendor_legs.py --reserve emits the list from a vendor
+    // decompile.
+    if (const char *rr = getenv("VUP_RESERVE_ROUTES")) {
+        int reserved = 0;
+        std::string s(rr);
+        size_t i = 0;
+        while (i < s.size()) {
+            size_t c = s.find(';', i);
+            if (c == std::string::npos)
+                c = s.size();
+            std::string tok = s.substr(i, c - i);
+            i = c + 1;
+            size_t gt = tok.find('>');
+            if (gt == std::string::npos)
+                continue;
+            std::string st = tok.substr(0, gt), dt = tok.substr(gt + 1);
+            // src rnode: TYPE:x,y,z
+            size_t col = st.find(':');
+            int sx, sy, sz;
+            if (col == std::string::npos || sscanf(st.c_str() + col + 1, "%d,%d,%d", &sx, &sy, &sz) != 3)
+                continue;
+            WireId sw;
+            sw.node = CycloneV::rnode(cyclonev->rnode_type_lookup(st.substr(0, col)), sx, sy, sz);
+            // dst pnode: BLOCK.x.y[.bi]:PORT.pi
+            size_t dcol = dt.find(':');
+            if (dcol == std::string::npos)
+                continue;
+            std::string blk = dt.substr(0, dcol), prt = dt.substr(dcol + 1);
+            int bx = -1, by = -1, bbi = -1;
+            char bname[16] = {0};
+            int nf = sscanf(blk.c_str(), "%15[A-Z0-9].%d.%d.%d", bname, &bx, &by, &bbi);
+            if (nf < 3)
+                continue;
+            char pname[32] = {0};
+            int pi = -1;
+            if (sscanf(prt.c_str(), "%31[A-Z0-9_].%d", pname, &pi) != 2)
+                continue;
+            auto pn = CycloneV::pnode(cyclonev->block_type_lookup(bname), CycloneV::xy2pos(bx, by),
+                                      cyclonev->port_type_lookup(pname), nf == 4 ? bbi : -1, pi);
+            auto rn = cyclonev->pnode_to_rnode(pn);
+            if (!rn)
+                continue;
+            WireId dw;
+            dw.node = rn;
+            if (wires.count(sw) && wires.count(dw)) {
+                reserve_route(sw, dw);
+                reserved++;
+            }
+        }
+        log_info("VUP_RESERVE_ROUTES: pinned %d vendor feeds\n", reserved);
+    }
 
     BaseArch::init_cell_types();
     BaseArch::init_bel_buckets();
@@ -241,9 +328,13 @@ bool Arch::isBelLocationValid(BelId bel, bool explain_invalid) const
 {
     auto &data = bel_data(bel);
     if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB)) {
+        if (args.lab_legality != LabLegalityMode::Legacy)
+            return dispatch_lab_legality(*this, data.lab_data.lab, NPNR_LAB_QUERY_COMB_BEL, data.lab_data.alm);
         return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
                check_mlab_groups(data.lab_data.lab);
     } else if (data.type == id_MISTRAL_FF) {
+        if (args.lab_legality != LabLegalityMode::Legacy)
+            return dispatch_lab_legality(*this, data.lab_data.lab, NPNR_LAB_QUERY_FF_BEL, data.lab_data.alm);
         return is_alm_legal(data.lab_data.lab, data.lab_data.alm) && check_lab_input_count(data.lab_data.lab) &&
                is_lab_ctrlset_legal(data.lab_data.lab) && check_mlab_groups(data.lab_data.lab);
     } else if (data.type == id_MISTRAL_CLKENA) {
@@ -469,6 +560,7 @@ void Arch::block_wire(WireId w)
     if (it == wires.end())
         return;
     it->second.flags |= WireInfo::BLOCKED;
+    placement_revision.note_mutation(PlacementMutation::Routing);
 }
 
 void Arch::reserve_route(WireId src, WireId dst)
@@ -486,6 +578,7 @@ void Arch::reserve_route(WireId src, WireId dst)
     NPNR_ASSERT(idx != -1);
 
     dst_data.flags = WireInfo::RESERVED_ROUTE | unsigned(idx);
+    placement_revision.note_mutation(PlacementMutation::Routing);
 }
 
 bool Arch::wires_connected(WireId src, WireId dst) const

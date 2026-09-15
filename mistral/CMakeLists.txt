@@ -13,6 +13,31 @@ set(SOURCES
     io.cc
     dsp.cc
     lab.cc
+    lab_control_abi.h
+    lab_control_plan.h
+    lab_control_plan.cc
+    lab_control_edits.h
+    lab_control_edits.cc
+    lab_preparation.h
+    lab_preparation.cc
+    lab_model.h
+    lab_model.cc
+    lab_snapshot.h
+    lab_legality.cc
+    lab_dispatch.h
+    lab_profile.h
+    lab_profile.cc
+    lab_replay.h
+    lab_replay.cc
+    lab_v2_abi.h
+    lab_v2.h
+    lab_v2.cc
+    lab_v2_replay.h
+    lab_v2_replay.cc
+    placement_revision.h
+    placement_revision.cc
+    placement_transaction.h
+    placement_transaction.cc
     m10k.cc
     pll.cc
     pack.cc
@@ -23,7 +48,28 @@ set(SOURCES
 add_nextpnr_architecture(${family}
     CORE_SOURCES ${SOURCES}
     MAIN_SOURCE  main.cc
+    TEST_SOURCES tests/lab_legality.cc
 )
+
+if (BUILD_TESTS)
+    target_compile_definitions(nextpnr-${family}-test PRIVATE
+        LAB_CONTROL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+endif()
+
+if (BUILD_RUST)
+    target_link_libraries(nextpnr-${family}-core INTERFACE npnr_mistral_lab_ffi)
+    if (BUILD_TESTS)
+        target_sources(nextpnr-${family}-test PRIVATE tests/lab_ffi.cc)
+        add_executable(nextpnr-mistral-lab-ffi-replay
+            tests/lab_control_oracle.cc lab_model.cc lab_replay.cc)
+        target_compile_definitions(nextpnr-mistral-lab-ffi-replay PRIVATE LAB_CONTROL_FFI_DRIVER)
+        target_include_directories(nextpnr-mistral-lab-ffi-replay PRIVATE
+            . ${CMAKE_SOURCE_DIR}/common/kernel ${CMAKE_SOURCE_DIR}/3rdparty/json11)
+        target_link_libraries(nextpnr-mistral-lab-ffi-replay PRIVATE npnr_mistral_lab_ffi json11)
+        add_executable(nextpnr-mistral-lab-bench tests/lab_bench.cc)
+        target_link_libraries(nextpnr-mistral-lab-bench PRIVATE nextpnr-${family}-core)
+    endif()
+endif()
 
 set(MISTRAL_ROOT "" CACHE STRING "Mistral install path")
 set(MISTRAL_DONT_INSTALL ON)

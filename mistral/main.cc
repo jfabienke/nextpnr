@@ -53,12 +53,22 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "emit an uncompressed bitstream (default is compressed; uncompressed "
                            "configures the device but may leave IO non-functional on some loaders)");
     specific.add_options()("compress-rbf", "deprecated, no-op: compressed output is now the default");
+    specific.add_options()("verify-lab-controls", "verify LAB FF-control checks against the detached C++ evaluator");
+    specific.add_options()("lab-controls", po::value<std::string>()->default_value("legacy"),
+                           "FF-control evaluator: legacy, shadow, verify, or rust (experimental)");
+    specific.add_options()("lab-controls-profile", po::value<std::string>(),
+                           "write a bounded sample of live FF-control queries as JSONL for profiling");
+    specific.add_options()("lab-legality", po::value<std::string>()->default_value("legacy"),
+                           "complete LAB evaluator: legacy, shadow, verify, or rust (experimental)");
 
     return specific;
 }
 
 void MistralCommandHandler::customBitstream(Context *ctx)
 {
+    report_lab_control_stats(*ctx);
+    report_lab_legality_stats(*ctx);
+    write_lab_control_profile(*ctx);
     if (vm.count("rbf")) {
         std::string filename = vm["rbf"].as<std::string>();
         ctx->build_bitstream();
@@ -81,6 +91,38 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         log_error("device must be specified on the command line (e.g. --device 5CSEBA6U23I7)\n");
     }
     chipArgs.device = vm["device"].as<std::string>();
+    chipArgs.verify_lab_controls = vm.count("verify-lab-controls") != 0;
+    if (vm.count("lab-controls-profile"))
+        chipArgs.lab_control_profile_path = vm["lab-controls-profile"].as<std::string>();
+    const auto mode = vm["lab-controls"].as<std::string>();
+    if (mode == "legacy")
+        chipArgs.lab_controls = LabControlMode::Legacy;
+    else if (mode == "shadow")
+        chipArgs.lab_controls = LabControlMode::Shadow;
+    else if (mode == "verify")
+        chipArgs.lab_controls = LabControlMode::Verify;
+    else if (mode == "rust")
+        chipArgs.lab_controls = LabControlMode::Rust;
+    else
+        log_error("Unknown --lab-controls mode '%s'; use legacy, shadow, verify, or rust.\n", mode.c_str());
+    if (chipArgs.verify_lab_controls && chipArgs.lab_controls != LabControlMode::Legacy)
+        log_error("--verify-lab-controls is the C++-only check; select --lab-controls verify for Rust verification.\n");
+    require_lab_control_mode(chipArgs.lab_controls);
+    const auto legality_mode = vm["lab-legality"].as<std::string>();
+    if (legality_mode == "legacy")
+        chipArgs.lab_legality = LabLegalityMode::Legacy;
+    else if (legality_mode == "shadow")
+        chipArgs.lab_legality = LabLegalityMode::Shadow;
+    else if (legality_mode == "verify")
+        chipArgs.lab_legality = LabLegalityMode::Verify;
+    else if (legality_mode == "rust")
+        chipArgs.lab_legality = LabLegalityMode::Rust;
+    else
+        log_error("Unknown --lab-legality mode '%s'; use legacy, shadow, verify, or rust.\n", legality_mode.c_str());
+    require_lab_legality_mode(chipArgs.lab_legality);
+    if (chipArgs.lab_legality != LabLegalityMode::Legacy && chipArgs.lab_controls != LabControlMode::Legacy)
+        log_error("--lab-legality owns its internal control check; do not combine it with a non-legacy "
+                  "--lab-controls mode.\n");
     auto ctx = std::unique_ptr<Context>(new Context(chipArgs));
     if (vm.count("uncompressed-rbf"))
         ctx->settings[id_uncompressed_rbf] = Property::State::S1;

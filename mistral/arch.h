@@ -24,7 +24,11 @@
 #include <sstream>
 
 #include "base_arch.h"
+#include "lab_dispatch.h"
+#include "lab_profile.h"
+#include "lab_v2.h"
 #include "nextpnr_types.h"
+#include "placement_revision.h"
 #include "relptr.h"
 
 #include "cyclonev.h"
@@ -34,6 +38,10 @@ NEXTPNR_NAMESPACE_BEGIN
 struct ArchArgs
 {
     std::string device;
+    bool verify_lab_controls = false;
+    LabControlMode lab_controls = LabControlMode::Legacy;
+    std::string lab_control_profile_path;
+    LabLegalityMode lab_legality = LabLegalityMode::Legacy;
 };
 
 // These structures are used for fast ALM validity checking
@@ -298,6 +306,26 @@ struct Arch : BaseArch<ArchRanges>
 
     Arch(ArchArgs args);
     ArchArgs archArgs() const override { return args; }
+    void notifyContextMutation(ContextMutationKind kind) override
+    {
+        switch (kind) {
+        case ContextMutationKind::Connectivity:
+            placement_revision.note_mutation(PlacementMutation::Connectivity);
+            break;
+        case ContextMutationKind::CellFacts:
+            placement_revision.note_mutation(PlacementMutation::CellFacts);
+            break;
+        case ContextMutationKind::NetFacts:
+            placement_revision.note_mutation(PlacementMutation::NetFacts);
+            break;
+        case ContextMutationKind::Constraints:
+            placement_revision.note_mutation(PlacementMutation::Constraints);
+            break;
+        case ContextMutationKind::GeneratedObjects:
+            placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+            break;
+        }
+    }
 
     std::string getChipName() const override { return args.device; }
     // -------------------------------------------------
@@ -362,9 +390,10 @@ struct Arch : BaseArch<ArchRanges>
         static const bool vup_trace_pll = getenv("VUP_TRACE_PLL") != nullptr;
         if (cell->type == id_altera_pll && vup_trace_pll)
             fprintf(stderr, "  [trace] bind   '%s' -> FPLL(%d,%d) strength=%d\n", cell->name.c_str(this),
-                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
-                     int(strength));
+                    CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
+                    int(strength));
         update_bel(bel);
+        placement_revision.note_mutation(PlacementMutation::BelBinding);
     }
     void unbindBel(BelId bel) override
     {
@@ -373,11 +402,12 @@ struct Arch : BaseArch<ArchRanges>
         static const bool vup_trace_pll = getenv("VUP_TRACE_PLL") != nullptr;
         if (data.bound->type == id_altera_pll && vup_trace_pll)
             fprintf(stderr, "  [trace] unbind '%s' from FPLL(%d,%d)\n", data.bound->name.c_str(this),
-                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)));
+                    CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)));
         data.bound->bel = BelId();
         data.bound->belStrength = STRENGTH_NONE;
         data.bound = nullptr;
         update_bel(bel);
+        placement_revision.note_mutation(PlacementMutation::BelBinding);
     }
     bool checkBelAvail(BelId bel) const override { return bel_data(bel).bound == nullptr; }
     CellInfo *getBoundBelCell(BelId bel) const override { return bel_data(bel).bound; }
@@ -393,12 +423,32 @@ struct Arch : BaseArch<ArchRanges>
     DelayQuad getWireDelay(WireId wire) const override { return DelayQuad(0); }
     const std::vector<BelPin> &getWireBelPins(WireId wire) const override { return wires.at(wire).bel_pins; }
     AllWireRange getWires() const override { return AllWireRange(wires); }
+    void bindWire(WireId wire, NetInfo *net, PlaceStrength strength) override
+    {
+        BaseArch<ArchRanges>::bindWire(wire, net, strength);
+        placement_revision.note_mutation(PlacementMutation::Routing);
+    }
+    void unbindWire(WireId wire) override
+    {
+        BaseArch<ArchRanges>::unbindWire(wire);
+        placement_revision.note_mutation(PlacementMutation::Routing);
+    }
+    void bindPip(PipId pip, NetInfo *net, PlaceStrength strength) override
+    {
+        BaseArch<ArchRanges>::bindPip(pip, net, strength);
+        placement_revision.note_mutation(PlacementMutation::Routing);
+    }
+    void unbindPip(PipId pip) override
+    {
+        BaseArch<ArchRanges>::unbindPip(pip);
+        placement_revision.note_mutation(PlacementMutation::Routing);
+    }
 
     bool wires_connected(WireId src, WireId dst) const;
     // Only allow src, and not any other wire, to drive dst
     void reserve_route(WireId src, WireId dst);
     void create_dsp(int x, int y); // dsp.cc (G7)
-    void block_wire(WireId w); // no pip may use this wire (see WireInfo::BLOCKED)
+    void block_wire(WireId w);     // no pip may use this wire (see WireInfo::BLOCKED)
 
     // -------------------------------------------------
 
@@ -514,19 +564,19 @@ struct Arch : BaseArch<ArchRanges>
     void create_hps_mpu_general_purpose(int x, int y); // globals.cc
     void create_hps_lwh2f(int x, int y);               // globals.cc (G3)
     void create_hps_f2sdram(int x, int y);             // globals.cc (G3)
-    void add_hps_pin(BelId bel, IdString pin, CycloneV::block_type_t bt, int x, int y,
-                     CycloneV::port_type_t pt, int bi, int pi); // globals.cc (G3, auto-direction)
-    void create_fpll(int x, int y);                    // pll.cc
+    void add_hps_pin(BelId bel, IdString pin, CycloneV::block_type_t bt, int x, int y, CycloneV::port_type_t pt, int bi,
+                     int pi);       // globals.cc (G3, auto-direction)
+    void create_fpll(int x, int y); // pll.cc
 
     // G4: PLL outclk -> global clock network (see PLL_OUTCLK_DESIGN.md). The map is composed at
     // init from libmistral's p2p tables (FPLL PLLCOUT[c] -> CMUX* PLLIN[k], dedicated wiring) and
     // the compiled cmux link tables (PLLIN line k -> INPUT_SEL entry e per gclk instance):
     //   key(fpll_pos, counter, cmux_pos, gclk_instance) -> the INPUT_SEL value selecting that
     //   PLL counter at that gclk instance.
-    void create_pllclk(int x, int y, bool vertical);   // pll.cc
-    void build_pllclk_map();                           // pll.cc
+    void create_pllclk(int x, int y, bool vertical);                                      // pll.cc
+    void build_pllclk_map();                                                              // pll.cc
     int pllclk_lookup(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst) const; // -1 if absent
-    bool pllclk_pos_is_vertical(uint32_t cmux_pos) const; // CMUXVG vs CMUXHG position
+    bool pllclk_pos_is_vertical(uint32_t cmux_pos) const;                                 // CMUXVG vs CMUXHG position
     // Deterministic co-assignment for pack: choose an FPLL position plus, per logical output clock,
     // a (physical counter, cmux pos, gclk instance, INPUT_SEL) tuple. Physical-counter freedom is
     // required: only C4..C8 have dedicated wiring to the global cmuxes (p2p-verified).
@@ -543,7 +593,7 @@ struct Arch : BaseArch<ArchRanges>
     bool pllclk_choose(int nclk, uint32_t &fpll_pos, std::vector<PllClkChoice> &out,
                        const std::set<uint32_t> &taken_fpll = {},
                        const std::set<std::pair<uint32_t, int>> &taken_gclk = {}) const;
-    void fixup_pllclk_placement();                                                          // pll.cc
+    void fixup_pllclk_placement(); // pll.cc
     std::map<uint64_t, uint8_t> pllclk_sel_map;
     static uint64_t pllclk_key(uint32_t fpll_pos, int counter, uint32_t cmux_pos, int inst)
     {
@@ -556,8 +606,12 @@ struct Arch : BaseArch<ArchRanges>
     bool is_comb_cell(IdString cell_type) const;        // lab.cc
     bool is_alm_legal(uint32_t lab, uint8_t alm) const; // lab.cc
     bool is_lab_ctrlset_legal(uint32_t lab) const;      // lab.cc
-    bool check_lab_input_count(uint32_t lab) const;     // lab.cc
-    bool check_mlab_groups(uint32_t lab) const;         // lab.cc
+    mutable LabControlStats lab_control_stats;
+    mutable LabControlProfile lab_control_profile;
+    mutable LabLegalityStats lab_legality_stats;
+    mutable PlacementRevisionState placement_revision;
+    bool check_lab_input_count(uint32_t lab) const; // lab.cc
+    bool check_mlab_groups(uint32_t lab) const;     // lab.cc
 
     void assign_comb_info(CellInfo *cell) const; // lab.cc
     void assign_ff_info(CellInfo *cell) const;   // lab.cc

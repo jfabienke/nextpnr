@@ -232,7 +232,25 @@ endif()
 
 if (BUILD_RUST)
     add_subdirectory(3rdparty/corrosion)
-    corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml PROFILE "release" IMPORTED_CRATES RUST_CRATES)
+    corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml PROFILE "release"
+        CRATES example_printnets IMPORTED_CRATES RUST_CRATES)
+    # Import and link the LAB bridge only when its backend is enabled.
+    if ("mistral" IN_LIST ARCH)
+        corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml PROFILE "release" CRATES npnr_mistral_lab_ffi)
+    endif()
+    if (APPLE AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL 22)
+        # Pinned Corrosion injects the CLT SDK even when CMake uses Xcode. Let the
+        # compiler's selected SDK resolve native libraries on current macOS.
+        foreach (crate ${RUST_CRATES} npnr_mistral_lab_ffi)
+            if (TARGET ${crate}-static)
+                get_target_property(rust_link_dirs ${crate}-static INTERFACE_LINK_DIRECTORIES)
+                if (rust_link_dirs)
+                    list(REMOVE_ITEM rust_link_dirs "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib")
+                    set_property(TARGET ${crate}-static PROPERTY INTERFACE_LINK_DIRECTORIES "${rust_link_dirs}")
+                endif()
+            endif()
+        endforeach()
+    endif()
 else()
     add_definitions("-DNO_RUST")
 endif()

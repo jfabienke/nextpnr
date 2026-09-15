@@ -68,6 +68,29 @@ TimingPortClass Arch::getPortTimingClass(const CellInfo *cell, IdString port, in
         } else if (port.in(id_B1DATA)) {
             return TMG_REGISTER_OUTPUT;
         }
+    } else if (is_io_cell(cell->type) && !getenv("VUP_NO_IOTMG")) {
+        // PAD-PACKED IO REGISTERS as timing endpoints. (VUP_NO_IOTMG=1 disables, for
+        // isolating placement/routing effects of these endpoints.) Without this every IO port is
+        // TMG_IGNORE: the D/OE paths into a pad's OUTREG/OEREG (and the OREG output of a
+        // packed input register) are INVISIBLE to the STA, the timing-driven placer and
+        // the router -- their length is placement luck. That blindness is how the slot-1
+        // A-pad launch paths ended up long enough to corrupt the column address at 135
+        // while the Fmax report claimed 254 MHz. Quartus times these as IO-register
+        // setup paths and places for them (periphery-to-core); now we do too.
+        if (port.in(id_OCLK, id_ICLK))
+            return TMG_CLOCK_INPUT;
+        if (cell->params.count(id_IOREG_OUT) && port == id_I) {
+            clockInfoCount = 1;
+            return TMG_REGISTER_INPUT;
+        }
+        if (cell->params.count(id_IOREG_OE) && port == id_OE) {
+            clockInfoCount = 1;
+            return TMG_REGISTER_INPUT;
+        }
+        if (cell->params.count(id_IOREG_IN) && port == id_OREG) {
+            clockInfoCount = 1;
+            return TMG_REGISTER_OUTPUT;
+        }
     }
     return TMG_IGNORE;
 }
@@ -75,6 +98,25 @@ TimingPortClass Arch::getPortTimingClass(const CellInfo *cell, IdString port, in
 TimingClockingInfo Arch::getPortClockingInfo(const CellInfo *cell, IdString port, int index) const
 {
     TimingClockingInfo timing{};
+    if (is_io_cell(cell->type)) {
+        // Pad-packed IO registers (see getPortTimingClass): D/OE are setup paths against
+        // the pad clock on OCLK; a packed input register's OREG launches from ICLK.
+        // Setup is deliberately conservative -- the goal is to make the placer/router
+        // treat these as real, tight endpoints, not to model the DQS16 precisely.
+        timing.edge = RISING_EDGE;
+        if (port.in(id_I, id_OE)) {
+            timing.clock_port = id_OCLK;
+            timing.setup = DelayPair{200, 200};
+            timing.hold = DelayPair{42, 42};
+            timing.clockToQ = DelayQuad{};
+        } else if (port == id_OREG) {
+            timing.clock_port = id_ICLK;
+            timing.setup = DelayPair{};
+            timing.hold = DelayPair{};
+            timing.clockToQ = DelayQuad{731};
+        }
+        return timing;
+    }
     if (cell->type == id_MISTRAL_FF) {
         timing.clock_port = id_CLK;
         timing.edge = RISING_EDGE;

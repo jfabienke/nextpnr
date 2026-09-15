@@ -1,0 +1,16 @@
+[package]
+name = "npnr_mistral_lab_ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "ISC"
+description = "Synchronous C ABI for Mistral LAB control evaluation"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+npnr_mistral_lab = { path = "../npnr_mistral_lab" }
+
+[dev-dependencies]
+serde_json = "1.0"

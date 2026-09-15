@@ -90,6 +90,18 @@ struct PlacerHeapCfg
     };
 };
 
+// State displaced by a provisional clustered HeAP move. Rollback must preserve
+// placement strength as well as occupancy because strength affects later rip-up
+// eligibility and therefore the search trajectory.
+struct HeAPDisplacedBinding
+{
+    CellInfo *cell = nullptr;
+    PlaceStrength strength = STRENGTH_NONE;
+};
+using HeAPDisplacedBindings = dict<BelId, HeAPDisplacedBinding>;
+
+void restore_heap_cluster_bindings(Context *ctx, const HeAPDisplacedBindings &bindings);
+
 extern bool placer_heap(Context *ctx, PlacerHeapCfg cfg);
 NEXTPNR_NAMESPACE_END
 #endif

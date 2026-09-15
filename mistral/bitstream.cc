@@ -170,6 +170,7 @@ struct MistralBitgen
         bool reg_in = ci->params.count(id_IOREG_IN);
         bool reg_out = ci->params.count(id_IOREG_OUT);
         bool reg_oe = ci->params.count(id_IOREG_OE);
+        bool ddr_clk = ci->params.count(ctx->id("MISTRAL_DDR_CLK"));
         if (is_output) {
             cv->bmux_m_set(CycloneV::GPIO, pos, CycloneV::DRIVE_STRENGTH, bi, CycloneV::V3P3_LVTTL_16MA_LVCMOS_2MA);
             // IOCSR_STD is for a PURE output. Causal differential (same design built twice in
@@ -191,15 +192,34 @@ struct MistralBitgen
                 // set INPUT_REG4_SEL, which is the input-register select and belongs to a pure
                 // output. (A first cut dropped BOTH and was wrong -- the diff showed Quartus keeping
                 // the delay field.)
-                if (!dyn_oe_cell(ci))
+                // (Both bypass writes are also omitted for a DDR clock pad: the vendor altddio
+                // ground truth carries NEITHER on the clock lane.)
+                if (!dyn_oe_cell(ci) && !ddr_clk)
                     cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL,
                                    CycloneV::pn2bi(dqs), CycloneV::SEL_LOCKED_DPA);
                 // The unregistered-path delay setting is REPLACED by the register path: every
                 // registered ground-truth pair (qrbase->qrout, ->qrall) REMOVES it. Writing it on a
                 // registered pad would reinstate the combinational delay chain alongside the OUTREG.
-                if (!(reg_out || reg_oe))
+                if (!(reg_out || reg_oe) && !ddr_clk)
                     cv->bmux_r_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::RB_T9_SEL_EREG_CFF_DELAY,
                                    CycloneV::pn2bi(dqs), 0x1f);
+                // DDR CLOCK PAD (altddio_out equivalent): exact vendor recipe from the decompiled
+                // Quartus green-proof build (DQS16.068 lane5 / AD20): OUTREG in DDR mode fed from
+                // the pad CLKOUT port (routed by the clock router via the OCLK bel pin), output
+                // mux on the SDR-delay path, RBOE level clock enabled, and DATAOUT left undriven
+                // with its inversion set -> constant 1 (the altddio datain_l). Pad emits ~clk.
+                if (ddr_clk) {
+                    cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::OUTREG_MODE_SEL,
+                                   CycloneV::pn2bi(dqs), CycloneV::DDR);
+                    cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::OUTREG_OUTPUT_SEL,
+                                   CycloneV::pn2bi(dqs), CycloneV::SEL_SDR_DELAY);
+                    cv->bmux_b_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::RBOE_LVL_FR_CLK_EN,
+                                   CycloneV::pn2bi(dqs), 1);
+                    cv->inv_set(find_rnode(CycloneV::GPIO, pos, CycloneV::DATAOUT, bi, 0), true);
+                    log_info("  DDR-clk out: '%s' OUTREG=DDR/SEL_SDR_DELAY, DATAOUT const-1 (inv), "
+                             "CLKOUT-driven\n",
+                             ctx->nameOf(ci));
+                }
             }
         }
         // IO registers (MISTRAL_GAPS "IO registers -- the COMPLETE bit-level model"): the packed
@@ -217,6 +237,46 @@ struct MistralBitgen
                 // bel pin OREG by the packer) instead of DATAIN[0].
                 cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::RB_FIFO_WCLK_EN, dbi, 1);
                 cv->bmux_b_set(CycloneV::DQS16, dp, CycloneV::RB_FIFO_WCLK_INV, dbi, 1);
+                // PER-BIT INPUT DELAY (deskew) -- read-leveling campaign knob. Programs the per-lane
+                // input-register delay chain RB_T1_SEL_IREG_CFF_DELAY (5-bit, 0..31).
+                //   VUP_IREG_DELAY=<n>            uniform code on every reg_in lane
+                //   VUP_IREG_DELAY_MAP="dq:code,..."  per-DQ override (keyed by SDRAM DQ index)
+                //   VUP_IREG_ROUTE=1             also route input through the delay (INPUT_REG1_SEL)
+                std::string nm = ctx->nameOf(ci);
+                int dqidx = -1;
+                {
+                    auto pp = nm.find("SDRAM1_DQ_MISTRAL_IO_PAD");
+                    if (pp != std::string::npos) {
+                        std::string r = nm.substr(pp + 24);
+                        dqidx = (r.empty() || r[0] != '_') ? 0 : atoi(r.c_str() + 1);
+                    }
+                }
+                int code = -1;
+                if (const char *e = getenv("VUP_IREG_DELAY"))
+                    code = atoi(e) & 0x1f;
+                if (const char *m = getenv("VUP_IREG_DELAY_MAP")) {
+                    std::string s(m);
+                    size_t i = 0;
+                    while (i < s.size()) {
+                        size_t c = s.find(',', i);
+                        if (c == std::string::npos)
+                            c = s.size();
+                        std::string tok = s.substr(i, c - i);
+                        size_t col = tok.find(':');
+                        if (col != std::string::npos && atoi(tok.substr(0, col).c_str()) == dqidx)
+                            code = atoi(tok.substr(col + 1).c_str()) & 0x1f;
+                        i = c + 1;
+                    }
+                }
+                if (code >= 0) {
+                    bool ok = cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::RB_T1_SEL_IREG_CFF_DELAY,
+                                             dbi, (uint64_t)code);
+                    log_info("VUP_IREG_DELAY: IO '%s' DQ%d lane %d <- delay %d : %s\n", nm.c_str(),
+                             dqidx, dbi, code, ok ? "OK" : "FAILED(unmapped)");
+                    if (getenv("VUP_IREG_ROUTE"))
+                        cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::INPUT_REG1_SEL, dbi,
+                                       CycloneV::SEL_1X_DELAY);
+                }
             }
             if (reg_out) {
                 cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_OUTPUT_SEL, dbi, CycloneV::SEL_SDR);
@@ -225,6 +285,18 @@ struct MistralBitgen
                 // an inverter powered up HIGH in the fabric version, and must keep doing so).
                 uint32_t out_init = ci->params.count(id_IOREG_OUT_INIT) ? ci->params.at(id_IOREG_OUT_INIT).as_int64() : 0;
                 cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::OUTREG_POWER_UP_STATE, dbi, out_init);
+                // POISON GATE (DDR clock-output feasibility): is the DQS16 DDR-output mode
+                // RE-mapped in the CRAM model? VUP_DDR_OUT=1 flips this OUTREG to DDR mode +
+                // the 2x-FF path. If bmux_m_set returns OK and the bitstream changes, we can
+                // configure a pad-launched DDR clock (altddio_out equivalent) in the open flow.
+                if (getenv("VUP_DDR_OUT")) {
+                    bool okm = cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_MODE_SEL, dbi,
+                                              CycloneV::DDR);
+                    bool oko = cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_OUTPUT_SEL, dbi,
+                                              CycloneV::SEL_2XFF);
+                    log_info("VUP_DDR_OUT: IO '%s' lane %d -> MODE_SEL=ddr(%s) OUTPUT_SEL=2xff(%s)\n",
+                             ctx->nameOf(ci), dbi, okm ? "OK" : "FAIL", oko ? "OK" : "FAIL");
+                }
             }
             if (reg_oe) {
                 cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OEREG_OUTPUT_SEL, dbi, CycloneV::SEL_1X);

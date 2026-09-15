@@ -39,6 +39,15 @@ NEXTPNR_NAMESPACE_BEGIN
 
 struct Context;
 
+enum class ContextMutationKind
+{
+    Connectivity,
+    CellFacts,
+    NetFacts,
+    Constraints,
+    GeneratedObjects
+};
+
 struct BaseCtx
 {
 #ifndef NPNR_DISABLE_THREADS
@@ -107,6 +116,10 @@ struct BaseCtx
         delete idstring_str_to_idx;
         delete idstring_idx_to_str;
     }
+
+    // Architectures retaining detached work can override this conservative
+    // notification hook. It is intentionally a no-op for existing backends.
+    virtual void notifyContextMutation(ContextMutationKind) {}
 
     // Must be called before performing any mutating changes on the Ctx/Arch.
     void lock(void)

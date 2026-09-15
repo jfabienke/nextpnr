@@ -152,10 +152,14 @@ struct MistralPacker
             trim_nets.push_back(out->name);
         }
 
-        for (IdString rem_net : trim_nets)
+        for (IdString rem_net : trim_nets) {
             ctx->nets.erase(rem_net);
-        for (IdString rem_cell : trim_cells)
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+        }
+        for (IdString rem_cell : trim_cells) {
             ctx->cells.erase(rem_cell);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+        }
     }
 
     void pack_constants()
@@ -248,6 +252,7 @@ struct MistralPacker
             ci->disconnectPort(id_I);
             ci->disconnectPort(id_O);
             ctx->cells.erase(port.first);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
         }
     }
 
@@ -568,16 +573,14 @@ struct MistralPacker
             int nclk = ci->params.count(id_number_of_clocks) ? int(ci->params.at(id_number_of_clocks).as_int64()) : 1;
             std::vector<std::pair<int, CellInfo *>> injectors; // (logical clock index, pllclk cell)
             for (int i = 0; i < nclk; i++) {
-                IdString cellport =
-                        (nclk == 1 && ci->ports.count(id_outclk)) ? id_outclk : ctx->idf("outclk[%d]", i);
+                IdString cellport = (nclk == 1 && ci->ports.count(id_outclk)) ? id_outclk : ctx->idf("outclk[%d]", i);
                 if (!ci->ports.count(cellport))
                     continue;
                 ci->pin_data[cellport].bel_pins.clear();
                 NetInfo *on = ci->getPort(cellport);
                 if (on == nullptr || on->users.empty())
                     continue;
-                CellInfo *pc =
-                        ctx->createCell(ctx->idf("%s$pllclk[%d]", ci->name.c_str(ctx), i), id_MISTRAL_PLLCLK);
+                CellInfo *pc = ctx->createCell(ctx->idf("%s$pllclk[%d]", ci->name.c_str(ctx), i), id_MISTRAL_PLLCLK);
                 pc->addOutput(id_Q);
                 // The outclk net's driver becomes the PLLCLK cell; the PLL port is left
                 // disconnected (the physical connection is the dedicated wiring the map encodes).
@@ -750,8 +753,7 @@ struct MistralPacker
                 log_info("  refclk left UNROUTED for altera_pll '%s' (dedicated-pin path)\n", ctx->nameOf(ci));
             } else if (refnet != nullptr && refnet->driver.cell != nullptr &&
                        !ctx->is_clkbuf_cell(refnet->driver.cell->type)) {
-                CellInfo *cbuf =
-                        ctx->createCell(ctx->idf("%s$refclk_clkbuf", ci->name.c_str(ctx)), id_MISTRAL_CLKBUF);
+                CellInfo *cbuf = ctx->createCell(ctx->idf("%s$refclk_clkbuf", ci->name.c_str(ctx)), id_MISTRAL_CLKBUF);
                 cbuf->addInput(id_A);
                 cbuf->addOutput(id_Q);
                 // input-pin net -> CLKBUF.A
@@ -767,7 +769,6 @@ struct MistralPacker
             log_info("Set up altera_pll '%s' (%d output clock%s).\n", ctx->nameOf(ci), nclk, nclk == 1 ? "" : "s");
         }
     }
-
 
     // Absorb $_TBUF_ into MISTRAL_IO's OE — G6 IO-ring blocker.
     //
@@ -847,12 +848,14 @@ struct MistralPacker
             if (io->ports.count(id_O))
                 io->pin_data[id_O].bel_pins = {id_O};
 
-            log_info("  tristate %s: OE net '%s' (%d user(s)), data net '%s'\n", ctx->nameOf(io),
-                     ctx->nameOf(oe), int(oe->users.entries()), ctx->nameOf(data));
+            log_info("  tristate %s: OE net '%s' (%d user(s)), data net '%s'\n", ctx->nameOf(io), ctx->nameOf(oe),
+                     int(oe->users.entries()), ctx->nameOf(data));
             to_remove.push_back(tb->name);
         }
-        for (IdString n : to_remove)
+        for (IdString n : to_remove) {
             ctx->cells.erase(n);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+        }
         if (!to_remove.empty())
             log_info("Packed %d tristate buffer(s) into MISTRAL_IO OE.\n", int(to_remove.size()));
     }
@@ -969,12 +972,78 @@ struct MistralPacker
         return true;
     }
 
+    // DDR CLOCK OUTPUT (altddio_out equivalent). Env VUP_DDRCLK_PADS="SDRAM1_CLK,..." names
+    // top-level output pads that should pad-launch a clock in DDR mode. Recipe RE'd from a
+    // Quartus altddio_out build (decompiled: DQS16.068 lane 5 / pad AD20): the clock is routed
+    // onto the pad's dedicated CLKOUT port (attested-leg clock routing, same as OUTREG clocks),
+    // the OUTREG is put in DDR mode, and DATAOUT is left UNDRIVEN with its inversion bit set
+    // (the altddio datain_l=1 constant). The pad then emits ~clk. Our RTL drives such pads as
+    // `assign PAD = ~clk`; the MISTRAL_NOT is absorbed here (clock taken from its A input).
+    void pack_ddr_clock_pads()
+    {
+        const char *e = getenv("VUP_DDRCLK_PADS");
+        if (e == nullptr)
+            return;
+        std::string s(e);
+        size_t i = 0;
+        while (i < s.size()) {
+            size_t c = s.find(',', i);
+            if (c == std::string::npos)
+                c = s.size();
+            std::string name = s.substr(i, c - i);
+            i = c + 1;
+            if (name.empty())
+                continue;
+            CellInfo *io = nullptr;
+            for (auto &cell : ctx->cells) {
+                if (!ctx->is_io_cell(cell.second->type))
+                    continue;
+                std::string cn = cell.second->name.str(ctx);
+                if (cn.rfind(name + "_MISTRAL", 0) == 0) {
+                    io = cell.second.get();
+                    break;
+                }
+            }
+            if (io == nullptr) {
+                log_warning("VUP_DDRCLK_PADS: no IO cell found for '%s'\n", name.c_str());
+                continue;
+            }
+            NetInfo *dnet = io->getPort(id_I);
+            NetInfo *clk = nullptr;
+            bool inverted = false;
+            if (dnet != nullptr && dnet->driver.cell != nullptr) {
+                CellInfo *drv = dnet->driver.cell;
+                if (drv->type == id_MISTRAL_NOT) {
+                    clk = drv->getPort(id_A);
+                    inverted = true;
+                } else {
+                    clk = dnet;
+                }
+            }
+            if (clk == nullptr) {
+                log_warning("VUP_DDRCLK_PADS: '%s' data input has no driver -- skipped\n", name.c_str());
+                continue;
+            }
+            if (!inverted)
+                log_warning("VUP_DDRCLK_PADS: '%s' driven UNINVERTED; the DDR pad emits ~clk "
+                            "(datain_h=0/l=1) -- phase will be flipped vs the RTL\n",
+                            name.c_str());
+            if (!attach_ioreg_clock(io, id_OCLK, clk))
+                continue;
+            io->disconnectPort(id_I); // DATAOUT stays undriven; the constant comes from the inv bit
+            io->params[ctx->id("MISTRAL_DDR_CLK")] = 1;
+            log_info("  DDR-clk out: '%s' pad-launches clock '%s' (CLKOUT port, DDR OUTREG)\n", ctx->nameOf(io),
+                     ctx->nameOf(clk));
+        }
+    }
+
     void pack_io_registers()
     {
+        pack_ddr_clock_pads();
         bool force_all = getenv("VUP_IOREG") != nullptr;
         int packed_in = 0, packed_out = 0, packed_oe = 0;
-        std::vector<IdString> dead_ffs;      // input FFs: always deleted (their Q moved to the pad)
-        pool<IdString> absorbed_ffs;         // out/OE FFs: deleted only if the pad was the last user
+        std::vector<IdString> dead_ffs; // input FFs: always deleted (their Q moved to the pad)
+        pool<IdString> absorbed_ffs;    // out/OE FFs: deleted only if the pad was the last user
         for (auto &cell : ctx->cells) {
             CellInfo *io = cell.second.get();
             if (!ctx->is_io_cell(io->type))
@@ -1091,8 +1160,10 @@ struct MistralPacker
                 }
             }
         }
-        for (IdString n : dead_ffs)
+        for (IdString n : dead_ffs) {
             ctx->cells.erase(n);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+        }
         // Sweep out/OE FFs whose Q lost its last user to the packing; keep the duplicated ones.
         for (IdString n : absorbed_ffs) {
             if (!ctx->cells.count(n))
@@ -1105,6 +1176,7 @@ struct MistralPacker
                 if (p.second.net != nullptr)
                     ff->disconnectPort(p.first);
             ctx->cells.erase(n);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
         }
         if (packed_in + packed_out + packed_oe > 0)
             log_info("Packed IO registers: %d input, %d output, %d OE.\n", packed_in, packed_out, packed_oe);
@@ -1142,8 +1214,10 @@ struct MistralPacker
             log_info("  bypassed redundant clock buffer '%s' on PLL output net '%s'\n", ctx->nameOf(cb),
                      ctx->nameOf(in));
         }
-        for (IdString n : dead)
+        for (IdString n : dead) {
             ctx->cells.erase(n);
+            ctx->placement_revision.note_mutation(PlacementMutation::GeneratedObjects);
+        }
     }
 
     void run()
