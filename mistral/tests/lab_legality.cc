@@ -440,6 +440,45 @@ TEST_F(LabControlCaptureTest, SerialPlacementCommitPreflightsAndRejectsStaleWork
     EXPECT_FALSE(prepare_placement_transaction(*ctx, std::move(duplicate)));
 }
 
+TEST_F(LabControlCaptureTest, FrozenPlacementOverlayEvaluatesWithoutLiveMutation)
+{
+    const BelId even = ctx->labs.at(0).alms.at(0).ff_bels.at(0);
+    const BelId odd = ctx->labs.at(0).alms.at(0).ff_bels.at(1);
+    const auto original = ctx->placement_revision.stamp();
+
+    auto legal_transaction =
+            prepare_placement_transaction(*ctx, {{even, nullptr, STRENGTH_NONE, cells[0], STRENGTH_STRONG}});
+    ASSERT_TRUE(legal_transaction);
+    const auto legal_frozen = freeze_placement_candidate(*ctx, legal_transaction);
+    ASSERT_EQ(legal_frozen.status, FrozenPlacementStatus::Ready);
+    ASSERT_EQ(legal_frozen.queries.size(), 1u);
+    const auto legal = evaluate_placement_candidate(legal_frozen);
+    EXPECT_EQ(legal.status, FrozenPlacementStatus::Ready);
+    EXPECT_TRUE(legal.legal);
+    EXPECT_TRUE(placement_candidate_rust_matches(legal_frozen, legal));
+    EXPECT_EQ(ctx->getBoundBelCell(even), nullptr);
+    EXPECT_TRUE(ctx->placement_revision.is_current(original));
+#ifndef NO_RUST
+    expect_v2_rust_parity(legal_frozen.queries[0], legal.results[0]);
+#endif
+
+    auto illegal_transaction =
+            prepare_placement_transaction(*ctx, {{odd, nullptr, STRENGTH_NONE, cells[1], STRENGTH_STRONG}});
+    ASSERT_TRUE(illegal_transaction);
+    const auto illegal_frozen = freeze_placement_candidate(*ctx, illegal_transaction);
+    const auto illegal = evaluate_placement_candidate(illegal_frozen);
+    ASSERT_EQ(illegal.results.size(), 1u);
+    EXPECT_FALSE(illegal.legal);
+    EXPECT_TRUE(placement_candidate_rust_matches(illegal_frozen, illegal));
+    EXPECT_EQ(illegal.results[0].reason, NPNR_LAB_V2_ODD_FF);
+    EXPECT_EQ(ctx->getBoundBelCell(odd), nullptr);
+    EXPECT_TRUE(ctx->placement_revision.is_current(original));
+
+    ctx->bindBel(even, cells[2], STRENGTH_WEAK);
+    ctx->unbindBel(even);
+    EXPECT_EQ(freeze_placement_candidate(*ctx, illegal_transaction).status, FrozenPlacementStatus::Stale);
+}
+
 TEST_F(LabControlCaptureTest, ProfilingReservoirPreservesLiveStateAndIsReproducible)
 {
     cells[0]->ffInfo.ctrlset.clk = {nets[0], false};

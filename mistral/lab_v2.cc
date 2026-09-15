@@ -301,8 +301,9 @@ int resolved_lab_input_limit()
     return limit;
 }
 
-NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
-                              uint64_t request_id, uint64_t epoch)
+namespace {
+NpnrLabFactsV2 capture_lab_v2_impl(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
+                                   const dict<BelId, CellInfo *> *occupancy, uint64_t request_id, uint64_t epoch)
 {
     NpnrLabFactsV2 input{};
     input.abi_version = NPNR_LAB_ABI_V2;
@@ -333,12 +334,20 @@ NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 que
                                            ((value.net && value.net->is_global) ? uint32_t(NPNR_CONTROL_GLOBAL) : 0u)};
     };
     const auto &lab_data = arch.labs.at(lab);
+    auto bound = [&](BelId bel) -> const CellInfo * {
+        if (occupancy != nullptr) {
+            auto found = occupancy->find(bel);
+            if (found != occupancy->end())
+                return found->second;
+        }
+        return arch.getBoundBelCell(bel);
+    };
     for (unsigned alm = 0; alm < 10; ++alm) {
         auto &dest = input.alm[alm];
         const auto &source = lab_data.alms[alm];
         dest.cached_input_count = source.unique_input_count;
         for (unsigned i = 0; i < 2; ++i) {
-            const auto *cell = arch.getBoundBelCell(source.lut_bels[i]);
+            const auto *cell = bound(source.lut_bels[i]);
             if (!cell)
                 continue;
             auto &lut = dest.lut[i];
@@ -357,7 +366,7 @@ NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 que
             lut.we = signal(cell->combInfo.we);
         }
         for (unsigned i = 0; i < 4; ++i) {
-            const auto *cell = arch.getBoundBelCell(source.ff_bels[i]);
+            const auto *cell = bound(source.ff_bels[i]);
             if (!cell)
                 continue;
             auto &ff = dest.ff[i];
@@ -371,6 +380,19 @@ NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 que
         }
     }
     return input;
+}
+} // namespace
+
+NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
+                              uint64_t request_id, uint64_t epoch)
+{
+    return capture_lab_v2_impl(arch, lab, query, query_alm, nullptr, request_id, epoch);
+}
+
+NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
+                                      const dict<BelId, CellInfo *> &occupancy, uint64_t request_id, uint64_t epoch)
+{
+    return capture_lab_v2_impl(arch, lab, query, query_alm, &occupancy, request_id, epoch);
 }
 
 NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input)

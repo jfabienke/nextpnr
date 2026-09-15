@@ -21,6 +21,7 @@
 #include "log.h"
 #include "nextpnr.h"
 
+#include "placement_transaction.h"
 #include "placer1.h"
 #include "placer_heap.h"
 #include "router1.h"
@@ -678,6 +679,39 @@ bool Arch::place()
             log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
         }
         cfg.criticalityExponent = 7;
+        cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
+                                           const HeAPDisplacedBindings &displaced) {
+            dict<BelId, CellInfo *> replacements;
+            for (const auto &target : targets)
+                replacements[target.second] = target.first;
+            std::vector<PlacementBindingEdit> edits;
+            edits.reserve(displaced.size());
+            for (const auto &entry : displaced) {
+                auto replacement = replacements.find(entry.first);
+                CellInfo *cell = replacement == replacements.end() ? nullptr : replacement->second;
+                edits.push_back({entry.first, entry.second.cell, entry.second.strength, cell,
+                                 cell == nullptr ? STRENGTH_NONE : STRENGTH_STRONG});
+            }
+            auto prepared = prepare_placement_transaction(*owner, std::move(edits));
+            if (!prepared)
+                log_error("Failed to preflight a detached HeAP cluster candidate.\n");
+            auto frozen = freeze_placement_candidate(*owner, prepared);
+            if (frozen.status == FrozenPlacementStatus::Unsupported)
+                return HeAPClusterTransactionOutcome::Unsupported;
+            if (frozen.status != FrozenPlacementStatus::Ready)
+                log_error("Failed to freeze a detached HeAP cluster candidate.\n");
+            auto assessment = evaluate_placement_candidate(frozen);
+            if (assessment.status != FrozenPlacementStatus::Ready)
+                log_error("Failed to evaluate a detached HeAP cluster candidate.\n");
+            if (!placement_candidate_rust_matches(frozen, assessment))
+                log_error("Rust disagrees with detached C++ for a HeAP cluster candidate.\n");
+            if (!assessment.legal)
+                return HeAPClusterTransactionOutcome::Rejected;
+            auto outcome = commit_placement_transaction(*owner, std::move(prepared));
+            if (outcome != PlacementCommitOutcome::Committed)
+                log_error("Failed to commit a detached HeAP cluster candidate.\n");
+            return HeAPClusterTransactionOutcome::Committed;
+        };
         if (!placer_heap(getCtx(), cfg))
             return false;
     } else if (placer == "sa") {

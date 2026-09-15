@@ -3,12 +3,14 @@
 #define MISTRAL_LAB_V2_H
 
 #include <atomic>
+#include "archdefs.h"
 #include "lab_v2_abi.h"
 #include "nextpnr_namespaces.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
 struct Arch;
+struct CellInfo;
 
 enum class LabLegalityMode
 {
@@ -27,6 +29,9 @@ struct LabLegalityStats
 int resolved_lab_input_limit();
 NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
                               uint64_t request_id = 0, uint64_t epoch = 0);
+NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
+                                      const dict<BelId, CellInfo *> &occupancy, uint64_t request_id = 0,
+                                      uint64_t epoch = 0);
 NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input);
 bool lab_v2_result_valid(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV2 &result);
 bool lab_v2_results_match(const NpnrLabAssessmentV2 &a, const NpnrLabAssessmentV2 &b);

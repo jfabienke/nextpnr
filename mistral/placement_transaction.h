@@ -3,6 +3,7 @@
 
 #include <vector>
 
+#include "lab_v2.h"
 #include "nextpnr.h"
 #include "placement_revision.h"
 
@@ -46,8 +47,34 @@ class PreparedPlacementTransaction
     bool valid_ = false;
 };
 
+enum class FrozenPlacementStatus
+{
+    Ready,
+    Unsupported,
+    Stale,
+    Malformed
+};
+
+struct FrozenPlacementCandidate
+{
+    PlacementRevisionStamp stamp;
+    FrozenPlacementStatus status = FrozenPlacementStatus::Malformed;
+    std::vector<NpnrLabFactsV2> queries;
+};
+
+struct PlacementCandidateAssessment
+{
+    FrozenPlacementStatus status = FrozenPlacementStatus::Malformed;
+    bool legal = false;
+    std::vector<NpnrLabAssessmentV2> results;
+};
+
 PreparedPlacementTransaction prepare_placement_transaction(const Arch &arch, std::vector<PlacementBindingEdit> edits);
 PlacementCommitOutcome commit_placement_transaction(Arch &arch, PreparedPlacementTransaction &&transaction);
+FrozenPlacementCandidate freeze_placement_candidate(const Arch &arch, const PreparedPlacementTransaction &transaction);
+PlacementCandidateAssessment evaluate_placement_candidate(const FrozenPlacementCandidate &candidate);
+bool placement_candidate_rust_matches(const FrozenPlacementCandidate &candidate,
+                                      const PlacementCandidateAssessment &cpp);
 
 NEXTPNR_NAMESPACE_END
 

@@ -41,8 +41,8 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 3B: Rust V2 evaluator | 3A | Complete | Exact agreement for every subcheck and structured failure | [V2 validation](#2026-09-15-units-3a3b) |
 | 3C: live rollout | 3B | Complete | Scoped live parity across Fabi386 and feature fixtures | [Live rollout validation](#2026-09-15-unit-3c) |
 | 4A: mutation audit and revisioning | Stage 3 | Complete | Every active mutation advances or invalidates its revision | [Mutation audit validation](#2026-09-15-unit-4a) |
-| 4B: serial detached transactions | 4A | In progress | Serial traces match corrected bind/check/revert baseline | — |
-| 4C: owned frozen batches | 4B | Blocked | Lifetime, panic, malformed-input, cancellation, and memory tests pass | — |
+| 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
+| 4C: owned frozen batches | 4B | In progress | Lifetime, panic, malformed-input, cancellation, and memory tests pass | — |
 | 4D: deterministic parallel evaluation | 4C | Blocked | Reproducible decisions, zero stale commits, bounded retries, measured scaling | — |
 | 4E: incremental reuse | 4D | Blocked | Incremental results match full recomputation and final signoff | — |
 
@@ -83,13 +83,19 @@ connectivity and fact changes, constraints, generated objects, and routing. V2
 live dispatch also binds its capture to the current revision and fails closed if
 that revision changes before authority.
 
-Unit 4B is active. The next boundary is a serial frozen placement plus normalized
-candidate overlay for `StrictLegaliser::try_place_cluster`, followed by freshness
-and expected-owner preflight before the existing owner applies a complete move.
-The first commit primitive is in place: a move-only prepared transaction rejects
-empty/duplicate edits, incomplete displacement, occupied external replacements,
-changed revisions, and changed expected owners/strengths before mutation; a
-successful commit unbinds the complete old set before binding replacements.
+Unit 4B is complete. `StrictLegaliser::try_place_cluster` captures the complete
+displacement closure before mutation. Mistral converts it into a move-only,
+revision-stamped transaction, freezes normalized V2 queries with an occupancy
+overlay, requires exact detached C++/Rust agreement, and commits legal candidates
+only after rechecking freshness and every expected owner/strength. Unsupported
+candidates retain the original bind/check/revert path. Fabi386 preserved all
+2,892 candidate decisions and final bytes, then repeated them under transaction
+authority with 1,632 commits and 1,260 mutation-free rejections.
+
+Unit 4C is active. The next boundary is a Rust-owned immutable batch handle whose
+creation copies and validates every V2 fact, whose readers retain no C++ pointers,
+and whose RAII host owner enforces the 64-candidate, two-outstanding-per-worker,
+64 MiB aggregate limits before concurrency is introduced in Unit 4D.
 
 ## Validation log
 
@@ -408,18 +414,46 @@ and its report remains
 `56e3b75e84be78a30659aa5e3860c3899eb7597e375cfa34a90d13d94a8a034a`.
 Artifacts are retained as `build/stage2-validation/fabi386-stage4a-baseline*`.
 
-### 2026-09-15: Unit 4B progress
+### 2026-09-15: Unit 4B
 
-`PreparedPlacementTransaction` now owns an ordered, preflighted BEL edit set and
-the exact session/revision stamp on which it was prepared. A focused two-BEL swap
+`PreparedPlacementTransaction` owns an ordered, preflighted BEL edit set and the
+exact session/revision stamp on which it was prepared. A focused two-BEL swap
 preserves asymmetric weak/strong strengths. An intervening bind-and-restore makes
 the prepared transaction stale and leaves both BELs untouched; duplicate target
-edits are rejected as malformed. This primitive is not connected to HeAP yet and
-does not satisfy Unit 4B's detached-evaluation or trace-parity gate.
+edits are rejected as malformed.
+
+The frozen candidate owns plain V2 facts generated against a complete occupancy
+overlay, so evaluation neither binds nor retains live context pointers. Ordered
+detached C++ results short-circuit exactly like the live BEL loop and must match
+validated Rust results. Shadow integration first compared all 2,892 Fabi386
+candidates with the corrected live path: zero unsupported cases and zero
+mismatches. Transaction authority then committed 1,632 legal candidates and
+rejected 1,260 illegal candidates without provisional live mutation. The
+candidate sequence, placement checksum, routing, timing, utilization, routed
+JSON, and report were unchanged. The feature fixture committed all 20 candidates
+through the transaction path and also remained byte-identical.
 
 | Command | Result |
 | --- | --- |
-| `./build/rust-enabled/nextpnr-mistral-test '--gtest_filter=LabControlCaptureTest.SerialPlacementCommitPreflightsAndRejectsStaleWork:PlacementRevision.*'` | 2/2 pass |
+| `./build/rust-enabled/nextpnr-mistral-test '--gtest_filter=LabControl*:PlacementRevision.*'` | 39/39 pass |
+| `./build/nextpnr-mistral-test '--gtest_filter=LabControl*:PlacementRevision.*'` | 30/30 pass, Rust disabled |
+| Fabi386 comparison-only transaction run | 2,892/2,892 compared; zero unsupported or mismatched candidates |
+| Fabi386 transaction-authority run | 1,632 committed, 1,260 rejected, zero unsupported; completed normally |
+| Feature transaction-authority run | 20 committed, zero rejected/unsupported; completed normally |
+| `cargo test --manifest-path rust/Cargo.toml --offline --workspace` | 24 Rust tests/doctests pass |
+| `cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi --all-targets -- -D warnings` | Pass |
+| `git diff --check` | Pass |
+
+Fabi386 routed JSON hashes to
+`7ed738af6eedd35d36e826ef8364918777d2b2ded50cebe895903b2bf57c9fb0`
+and its report to
+`56e3b75e84be78a30659aa5e3860c3899eb7597e375cfa34a90d13d94a8a034a`,
+byte-identical to the corrected Stage 4A and Stage 3 baselines. The feature
+fixture routed JSON hashes to
+`1dfd2a79ec50827265d02823f9026287ce6e914ca2444549f495469e8787a999`
+and its report to
+`3a9d40d123f387cac9c0d215afeaa40e65beea31a3d112f2655d771005a0f281`.
+Logs and outputs are retained under `build/stage4-validation/`.
 
 ## Decision log
 
@@ -445,6 +479,8 @@ does not satisfy Unit 4B's detached-evaluation or trace-parity gate.
 | 2026-09-15 | 3C | Promote scoped live Rust authority only through an explicit mode | Fabi386 and feature fixture byte parity across all four modes; legacy remains default |
 | 2026-09-15 | 4A | Correct HeAP rollback before establishing the transaction baseline | Strong displaced bindings restore exactly; refreshed Fabi386 artifacts remain byte-identical |
 | 2026-09-15 | 4A | Use a conservative global revision before fine-grained dependencies | Typed-key, ABA, exhaustion, connectivity, fact, and binding tests |
+| 2026-09-15 | 4B | Promote supported HeAP candidates from shadow comparison to serial frozen transaction authority | 2,892 exact shadow comparisons, then byte-identical Fabi386 and feature-fixture authority runs |
+| 2026-09-15 | 4B | Preserve the original live path for facts outside the frozen Mistral LAB model | Explicit `Unsupported` transaction outcome; candidate and RNG order are unchanged |
 
 ## Stage gates and promotion
 
@@ -453,4 +489,4 @@ does not satisfy Unit 4B's detached-evaluation or trace-parity gate.
 | Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode |
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
-| Stage 4: transactions and reuse | In progress (4A complete; 4B active) | Global revision enabled; no transactional or incremental mode |
+| Stage 4: transactions and reuse | In progress (4A–4B complete; 4C active) | Serial Mistral HeAP transaction authority enabled; batching and reuse not promoted |

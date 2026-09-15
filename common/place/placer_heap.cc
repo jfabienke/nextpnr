@@ -36,6 +36,7 @@
 #include <Eigen/IterativeLinearSolvers>
 #include <boost/optional.hpp>
 #include <chrono>
+#include <cinttypes>
 #include <deque>
 #include <fstream>
 #include <mutex>
@@ -398,6 +399,11 @@ class HeAPPlacer
         log_info("  of which solving equations: %.02fs\n", solve_time);
         log_info("  of which spreading cells: %.02fs\n", cl_time);
         log_info("  of which strict legalisation: %.02fs\n", sl_time);
+        if (cfg.place_cluster_transaction)
+            log_info("  frozen cluster transactions: attempted=%" PRIu64 ", committed=%" PRIu64 ", rejected=%" PRIu64
+                     ", unsupported=%" PRIu64 "\n",
+                     frozen_cluster_attempted, frozen_cluster_committed, frozen_cluster_rejected,
+                     frozen_cluster_unsupported);
 
         if (ctx->verbose) {
             for (auto pair : time_per_cell_type) {
@@ -435,6 +441,10 @@ class HeAPPlacer
     int max_x = 0, max_y = 0;
     FastBels fast_bels;
     dict<IdString, std::tuple<int, int>> bel_types;
+    uint64_t frozen_cluster_attempted = 0;
+    uint64_t frozen_cluster_committed = 0;
+    uint64_t frozen_cluster_rejected = 0;
+    uint64_t frozen_cluster_unsupported = 0;
 
     TimingAnalyser tmg;
 
@@ -1402,6 +1412,9 @@ class HeAPPlacer
                 std::vector<std::pair<CellInfo *, BelId>> targets;
                 // List of bels we placed things at; and the cell that was there before if applicable
                 HeAPDisplacedBindings moves_made;
+                HeAPDisplacedBindings expected_moves;
+                bool transaction_committed = false;
+                bool live_legal = true;
 
                 if (!ctx->getClusterPlacement(ci->cluster, sz, targets))
                     continue;
@@ -1430,28 +1443,62 @@ class HeAPPlacer
                 if (ctrl_set_group != -1 && !ctrl_set_match)
                     goto fail;
 
-                // Actually perform the move; keeping track of the moves we make so we can revert them if needed
+                // Capture the complete expected displacement without changing live occupancy.
+                // Architecture callbacks may use this to evaluate and commit a frozen overlay.
                 for (auto &target : targets) {
                     CellInfo *bound = ctx->getBoundBelCell(target.second);
-                    const PlaceStrength bound_strength = bound == nullptr ? STRENGTH_NONE : bound->belStrength;
-                    if (bound != nullptr) {
-                        if (bound->cluster != ClusterId()) {
-                            for (auto cell : p->cluster2cells[bound->cluster]) {
-                                if (cell->bel != BelId()) {
-                                    moves_made[cell->bel] = {cell, cell->belStrength};
-                                    ctx->unbindBel(cell->bel);
-                                }
-                            }
-                        } else {
-                            ctx->unbindBel(target.second);
+                    if (bound != nullptr && bound->cluster != ClusterId()) {
+                        for (auto cell : p->cluster2cells[bound->cluster]) {
+                            if (cell->bel != BelId())
+                                expected_moves[cell->bel] = {cell, cell->belStrength};
                         }
                     }
-                    ctx->bindBel(target.second, target.first, STRENGTH_STRONG);
-                    moves_made[target.second] = {bound, bound_strength};
+                    if (!expected_moves.count(target.second))
+                        expected_moves[target.second] = {bound, bound == nullptr ? STRENGTH_NONE : bound->belStrength};
                 }
-                // Check that the move we have made is legal
-                for (auto &move : moves_made) {
-                    if (!ctx->isBelLocationValid(move.first))
+                if (p->cfg.place_cluster_transaction) {
+                    ++p->frozen_cluster_attempted;
+                    auto outcome = p->cfg.place_cluster_transaction(ctx, targets, expected_moves);
+                    if (outcome == HeAPClusterTransactionOutcome::Committed) {
+                        ++p->frozen_cluster_committed;
+                        moves_made = expected_moves;
+                        transaction_committed = true;
+                    } else if (outcome == HeAPClusterTransactionOutcome::Rejected) {
+                        ++p->frozen_cluster_rejected;
+                        continue;
+                    } else {
+                        ++p->frozen_cluster_unsupported;
+                    }
+                }
+
+                if (!transaction_committed) {
+                    // Actually perform the move; keeping track of the moves we make so we can revert them if needed
+                    for (auto &target : targets) {
+                        CellInfo *bound = ctx->getBoundBelCell(target.second);
+                        const PlaceStrength bound_strength = bound == nullptr ? STRENGTH_NONE : bound->belStrength;
+                        if (bound != nullptr) {
+                            if (bound->cluster != ClusterId()) {
+                                for (auto cell : p->cluster2cells[bound->cluster]) {
+                                    if (cell->bel != BelId()) {
+                                        moves_made[cell->bel] = {cell, cell->belStrength};
+                                        ctx->unbindBel(cell->bel);
+                                    }
+                                }
+                            } else {
+                                ctx->unbindBel(target.second);
+                            }
+                        }
+                        ctx->bindBel(target.second, target.first, STRENGTH_STRONG);
+                        moves_made[target.second] = {bound, bound_strength};
+                    }
+                    // Check that the move we have made is legal
+                    for (auto &move : moves_made) {
+                        if (!ctx->isBelLocationValid(move.first)) {
+                            live_legal = false;
+                            break;
+                        }
+                    }
+                    if (!live_legal)
                         goto fail;
                 }
 
