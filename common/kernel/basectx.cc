@@ -287,7 +287,7 @@ void BaseCtx::renameNet(IdString old_name, IdString new_name)
     std::swap(nets.at(net->name), nets.at(new_name));
     nets.erase(net->name);
     net->name = new_name;
-    notifyContextMutation(ContextMutationKind::NetFacts);
+    notifyNetMutation(net, ContextMutationKind::NetFacts);
 }
 
 void BaseCtx::ripupNet(IdString name)

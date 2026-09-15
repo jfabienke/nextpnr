@@ -269,7 +269,7 @@ dict<IdString, IdString> Arch::get_mlab_key(const CellInfo *cell, bool include_r
 
 void Arch::assign_comb_info(CellInfo *cell) const
 {
-    note_lab_facts_mutation();
+    note_lab_cell_mutation(cell);
     cell->combInfo.is_carry = false;
     cell->combInfo.is_shared = false;
     cell->combInfo.is_extended = false;
@@ -371,7 +371,7 @@ void Arch::assign_comb_info(CellInfo *cell) const
 
 void Arch::assign_ff_info(CellInfo *cell) const
 {
-    note_lab_facts_mutation();
+    note_lab_cell_mutation(cell);
     cell->ffInfo.ctrlset.clk = get_ctrlsig(getCtx(), cell, id_CLK);
     cell->ffInfo.ctrlset.ena = get_ctrlsig(getCtx(), cell, id_ENA, true);
     cell->ffInfo.ctrlset.aclr = get_ctrlsig(getCtx(), cell, id_ACLR);
@@ -639,6 +639,9 @@ void Arch::lab_pre_route()
         for (uint8_t alm = 0; alm < 10; alm++) {
             reassign_alm_inputs(lab, alm);
         }
+        // Preparation reads the LAB's complete current facts (the route-through
+        // rewiring above bumps the LAB's stamps itself, so stamp after it).
+        note_lab_prepared(lab);
     }
 }
 

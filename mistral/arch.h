@@ -310,9 +310,27 @@ struct Arch : BaseArch<ArchRanges>
 
     Arch(ArchArgs args);
     ArchArgs archArgs() const override { return args; }
+    void notifyCellMutation(CellInfo *cell, ContextMutationKind kind) override
+    {
+        note_lab_cell_mutation(cell);
+        note_placement_mutation(kind);
+    }
+    void notifyNetMutation(NetInfo *net, ContextMutationKind kind) override
+    {
+        note_lab_net_mutation(net);
+        note_placement_mutation(kind);
+    }
     void notifyContextMutation(ContextMutationKind kind) override
     {
-        note_lab_facts_mutation();
+        // A newly created cell or net is nobody's dependency until it is bound
+        // or connected, and both of those paths invalidate precisely. Every
+        // other object-less mutation (constraints today) invalidates every LAB.
+        if (kind != ContextMutationKind::GeneratedObjects)
+            note_lab_facts_mutation();
+        note_placement_mutation(kind);
+    }
+    void note_placement_mutation(ContextMutationKind kind)
+    {
         switch (kind) {
         case ContextMutationKind::Connectivity:
             placement_revision.note_mutation(PlacementMutation::Connectivity);
@@ -433,20 +451,24 @@ struct Arch : BaseArch<ArchRanges>
     void bindWire(WireId wire, NetInfo *net, PlaceStrength strength) override
     {
         BaseArch<ArchRanges>::bindWire(wire, net, strength);
+        ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void unbindWire(WireId wire) override
     {
         BaseArch<ArchRanges>::unbindWire(wire);
+        ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void bindPip(PipId pip, NetInfo *net, PlaceStrength strength) override
     {
         BaseArch<ArchRanges>::bindPip(pip, net, strength);
+        ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void unbindPip(PipId pip) override
     {
+        ++lab_routing_epoch;
         BaseArch<ArchRanges>::unbindPip(pip);
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
@@ -639,6 +661,66 @@ struct Arch : BaseArch<ArchRanges>
         if (lab_reuse_active)
             ++lab_reuse_stats.facts_invalidations;
     }
+    // Precise reverse incidence: only LABs that read the mutated object are
+    // invalidated. LAB queries read only bound cells, so an unbound cell's
+    // facts are nobody's dependency until it is bound (which bumps its LAB).
+    void note_lab_cell_mutation(const CellInfo *cell) const
+    {
+        if (cell == nullptr || cell->bel == BelId()) {
+            if (lab_reuse_active)
+                ++lab_reuse_stats.unbound_cell_mutations;
+            return;
+        }
+        const auto &data = bel_data(cell->bel);
+        if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && data.lab_data.lab < lab_versions.size()) {
+            ++lab_versions[data.lab_data.lab];
+            if (lab_reuse_active)
+                ++lab_reuse_stats.precise_cell_invalidations;
+        }
+    }
+    void note_lab_net_mutation(const NetInfo *net) const
+    {
+        if (net == nullptr)
+            return;
+        bool any = false;
+        auto touch = [&](const CellInfo *cell) {
+            if (cell == nullptr || cell->bel == BelId())
+                return;
+            const auto &data = bel_data(cell->bel);
+            if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) &&
+                data.lab_data.lab < lab_versions.size()) {
+                ++lab_versions[data.lab_data.lab];
+                any = true;
+            }
+        };
+        touch(net->driver.cell);
+        for (const auto &user : net->users)
+            touch(user.cell);
+        if (any && lab_reuse_active)
+            ++lab_reuse_stats.precise_net_invalidations;
+    }
+    // Stage 4E state stamps (lab_reuse.cc): recorded by control preparation and
+    // by the end of routing; a later mutation makes them stale automatically.
+    mutable std::vector<LabStamp> lab_prepared;
+    mutable uint64_t lab_routing_epoch = 1;
+    mutable uint64_t lab_routed_epoch = 0; // routing epoch when routing last completed; 0 = never
+    mutable std::vector<LabContentEntry> lab_content_cache;
+    LabStamp lab_stamp(uint32_t lab) const
+    {
+        return lab < lab_versions.size() ? LabStamp{lab_versions[lab], lab_facts_epoch, true} : LabStamp{};
+    }
+    bool lab_stamp_current(uint32_t lab, const LabStamp &stamp) const
+    {
+        return stamp.valid && lab < lab_versions.size() && stamp.lab_version == lab_versions[lab] &&
+               stamp.facts_epoch == lab_facts_epoch;
+    }
+    void note_lab_prepared(uint32_t lab) const
+    {
+        if (lab < lab_prepared.size())
+            lab_prepared[lab] = lab_stamp(lab);
+    }
+    void note_routing_complete() const { lab_routed_epoch = lab_routing_epoch; }
+    void report_lab_states() const;
     // Sizes the per-LAB stamps, applies the mode gate, and clears statistics.
     void lab_reuse_begin();
     void lab_reuse_end();

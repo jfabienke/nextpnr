@@ -45,7 +45,7 @@ evidence; `Rejected` is a measured experiment that will not be retained.
 | 4B: serial detached transactions | 4A | Complete | Serial traces match corrected bind/check/revert baseline | [Serial transaction validation](#2026-09-15-unit-4b) |
 | 4C: owned frozen batches | 4B | Complete | Lifetime, panic, malformed-input, cancellation, and memory tests pass | [Frozen batch validation](#2026-09-15-unit-4c) |
 | 4D: deterministic parallel evaluation | 4C | Complete | Reproducible decisions, zero stale commits, bounded retries, measured scaling | [Deterministic lookahead validation](#2026-09-15-unit-4d-deterministic-lookahead) |
-| 4E: incremental reuse | 4D | Complete (same-session assessment reuse and conservative placement reuse; artifact provenance and cross-build checkpoints remain later work) | Incremental results match full recomputation and final signoff | [Reuse validation](#2026-09-15-unit-4e-incremental-reuse) |
+| 4E: incremental reuse | 4D | Complete (all eight handover items; artifact provenance and cross-build checkpoints are the next design) | Incremental results match full recomputation and final signoff | [Reuse validation](#2026-09-15-unit-4e-incremental-reuse), [list closure](#2026-09-15-unit-4e-list-closure) |
 
 ## Active unit
 
@@ -135,6 +135,14 @@ constraint placer binds and validity-checks them, and everything else is placed
 normally; preparation and routing run in full. Cross-build checkpoints, physical
 artifact provenance, and entity matching that survives re-synthesis name churn
 are not part of this unit.
+
+The 4E handover list was then closed in full: precise reverse incidence from
+cells and nets to LABs through new object-carrying kernel hooks
+(`notifyCellMutation`/`notifyNetMutation`, defaulting to the kind-only hook
+for every other backend), an explicit derived per-LAB state
+(`Dirty`/`Evaluated`/`Prepared`/`Routed`) stamped by control preparation and
+routing completion, and a bounded content-keyed tier (`--lab-reuse content`)
+consulted when a LAB's stamps are stale.
 
 ## Validation log
 
@@ -760,6 +768,62 @@ a wrong placement.
 Artifacts, logs, the edit generator (`make_edits.py`), and the comparison
 script (`compare_reuse.py`) are under `build/stage4e-validation/`.
 
+### 2026-09-15: Unit 4E list closure
+
+**Items 3 and 4, precise invalidation.** `CellInfo` mutators (ports, params,
+attributes, connect/disconnect, rename) now call `notifyCellMutation(this,
+kind)` and `renameNet` calls `notifyNetMutation(net, kind)`; both default to
+the old kind-only hook, so no other backend changes. Mistral invalidates a
+bound cell's LAB only, ignores mutations on unbound cells (no LAB reads them
+until a bind, which bumps its LAB), and for a net bumps the LABs of its bound
+driver and users only. `assign_comb_info`/`assign_ff_info` use the same cell
+path. Constraints and generated objects carry no object and keep the global
+epoch. Routing mutations advance a routing epoch that does not touch legality
+entries.
+
+**Item 1, explicit states.** `lab_reuse_state()` derives `Dirty`, `Evaluated`,
+`Prepared` (control preparation stamped the current LAB stamps), or `Routed`
+(prepared, and no routing mutation since routing last completed). States are
+derived from stamps, never stored, so they cannot disagree with invalidation.
+`Arch::route()` logs the state histogram.
+
+**Item 7, bounded content cache.** `--lab-reuse content` adds a direct-mapped
+4,096-slot tier keyed by the complete normalized whole-LAB V2 facts with
+provenance zeroed. The hash selects a slot; a hit compares all 3,808 bytes.
+Consulted only when a LAB's stamps are stale, it serves an identical LAB after
+an ABA move or a structurally identical LAB elsewhere. Eviction is overwrite.
+
+Fabi386 with precise incidence, shadow and content modes, remained
+byte-identical to the Stage 4C artifacts with the same checksums and zero
+shadow mismatches. The precise counters are all zero during placement (no
+cell or net fact mutates while placing), so the hit rate is unchanged at
+14.5%. The content tier is a measured loss:
+
+| Mode | Sub-result hit rate | Content lookups / hits | HeAP time | Wall |
+| --- | ---: | ---: | ---: | ---: |
+| shadow | 14.5% | — | 9.95 s | 43.7 s |
+| content | 28.9% | 9,460,498 / 1,838,878 (19.4%) | 20.09 s | 89.7 s |
+
+Every stale query pays one whole-LAB V2 capture (about 1 µs) to form the key,
+which costs more than the three live checks it may save, and with 4,096
+direct-mapped slots 7.6 M stores evicted 7.6 M entries. The mode is retained
+as the bounded content cache the list asked for, with its cost recorded, and
+is not promoted.
+
+With object creation no longer invalidating, the state histogram after routing
+is `dirty=0, evaluated=0, prepared=0, routed=4191` at routing epoch 150,702:
+every LAB's preparation stamp survived route-through insertion and routing,
+and all of them are routed against the completed routing epoch. Before that
+change 4,020 LABs showed dirty because each generated route-through cell had
+bumped the global epoch.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 52/52 pass (rewritten stamp test: bound-cell precision, unbound mutations ignored, net incidence through bound users only, constraint fallback to the global epoch; new state-machine and content-tier cases) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 42/42 pass |
+| Fabi386 `--lab-reuse shadow` / `content` | Both byte-identical to Stage 4C; counters as tabulated |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
 ### 2026-09-15: Apple Silicon performance-core scheduling experiment
 
 The benchmark host is a Mac Studio with an Apple M1 Ultra, 16 performance cores,
@@ -840,6 +904,11 @@ repeat `7d156f3654fea92f8ed86ac39719a22c9775ef9539168b2b4f342b1121c4c095`.
 | 2026-09-15 | 4E | Reuse placement as hard `BEL` constraints validated by the constraint placer, not as soft preferences | Unchanged rebuild reproduces the previous placement exactly; edited designs keep 99.3–99.6% of cells and cut placement from ~20 s to under 1 s |
 | 2026-09-15 | 4E | Match cells by name plus full semantic signature, folding route-through buffers out of the previous output | 100% reuse on an unchanged rebuild with 549 generated buffers present in the previous output |
 | 2026-09-15 | 4E | Keep both reuse modes off by default | Assessment reuse is not measurable end to end; placement reuse changes routing RNG state and needs a provenance decision before promotion |
+| 2026-09-15 | 4E | Extend the kernel hooks with object-carrying forms rather than reverse-mapping from kinds | Defaults preserve every other backend; Mistral gets exact cell and net incidence with no lookup tables |
+| 2026-09-15 | 4E | Derive LAB states from stamps instead of storing a state field | A stored state could disagree with the invalidation rules; derivation cannot |
+| 2026-09-15 | 4E | Key the content tier on complete V2 whole-LAB facts and compare in full on a hit | The hash only selects a slot; correctness never depends on it |
+| 2026-09-15 | 4E | Reject the content tier for promotion; keep it as an explicit mode | Sub-result hits rose from 14.5% to 28.9% but HeAP time doubled (9.95 s to 20.09 s) because each stale query pays a whole-LAB capture |
+| 2026-09-15 | 4E | Object creation does not invalidate LAB assessments | A created cell or net is nobody's dependency until bound or connected, both tracked precisely; the global bump had dirtied 4,020 prepared LABs during route-through insertion |
 
 ## Stage gates and promotion
 

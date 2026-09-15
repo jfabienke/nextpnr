@@ -168,12 +168,16 @@ placement exactly with placement time under 1 s instead of ~21 s; controlled
 edits keep 99.3–99.6% of cells. Routing is re-run in full and is not
 byte-identical because the RNG state at route start differs.
 
-Not done, by design: entity matching across re-synthesis name churn, reuse of
-routes or preparation artifacts, and checkpoint persistence.
+The handover's 4E list is closed in full: precise cell and net incidence via
+object-carrying kernel hooks, derived per-LAB states (`lab_reuse_state()`),
+and a bounded content tier (`--lab-reuse content`). Not done, by design: entity
+matching across re-synthesis name churn, reuse of routes or preparation
+artifacts, and checkpoint persistence.
 
 Key files:
 
-- `mistral/lab_reuse.h/.cc`, `mistral/arch.h` (stamps and hooks), `mistral/lab.cc` (fact rewrites bump the epoch)
+- `mistral/lab_reuse.h/.cc`, `mistral/arch.h` (stamps, hooks, precise incidence), `mistral/lab.cc` (fact rewrites and the prepared stamp)
+- `common/kernel/basectx.h`, `nextpnr_types.cc`, `basectx.cc` (object-carrying mutation hooks)
 - `mistral/placement_reuse.h/.cc`, `mistral/arch.cc`, `mistral/main.cc`
 - `mistral/tests/lab_legality.cc` (`LabReuse*`, `PlacementReuse*`)
 - `build/stage4e-validation/make_edits.py`, `compare_reuse.py`

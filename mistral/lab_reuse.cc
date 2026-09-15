@@ -2,8 +2,10 @@
 #include "lab_reuse.h"
 
 #include <cinttypes>
+#include <cstring>
 
 #include "arch.h"
+#include "lab_v2.h"
 #include "log.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -17,8 +19,40 @@ const char *lab_reuse_mode_name(LabReuseMode mode)
         return "shadow";
     case LabReuseMode::On:
         return "on";
+    case LabReuseMode::Content:
+        return "content";
     }
     return "?";
+}
+
+const char *lab_reuse_state_name(LabReuseState state)
+{
+    switch (state) {
+    case LabReuseState::Dirty:
+        return "dirty";
+    case LabReuseState::Evaluated:
+        return "evaluated";
+    case LabReuseState::Prepared:
+        return "prepared";
+    case LabReuseState::Routed:
+        return "routed";
+    }
+    return "?";
+}
+
+LabReuseState lab_reuse_state(const Arch &arch, uint32_t lab)
+{
+    if (lab < arch.lab_prepared.size() && arch.lab_stamp_current(lab, arch.lab_prepared[lab])) {
+        if (arch.lab_routed_epoch != 0 && arch.lab_routed_epoch == arch.lab_routing_epoch)
+            return LabReuseState::Routed;
+        return LabReuseState::Prepared;
+    }
+    if (lab < arch.lab_assessments.size()) {
+        const auto &entry = arch.lab_assessments[lab];
+        if (entry.known != 0 && arch.lab_stamp_current(lab, LabStamp{entry.lab_version, entry.facts_epoch, true}))
+            return LabReuseState::Evaluated;
+    }
+    return LabReuseState::Dirty;
 }
 
 namespace {
@@ -28,6 +62,30 @@ enum : unsigned
     CHECK_CTRLSET = 1,
     CHECK_MLAB = 2
 };
+
+constexpr size_t CONTENT_SLOTS = 4096; // direct-mapped; about 15 MiB of retained facts at most
+
+uint64_t fnv1a(const uint8_t *data, size_t size)
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= data[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+// Complete normalized whole-LAB facts with provenance zeroed: the key of the
+// content tier. Everything the three live checks read is in these bytes.
+std::vector<uint8_t> content_key(const Arch &arch, uint32_t lab)
+{
+    NpnrLabFactsV2 facts = capture_lab_v2(arch, lab, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX, 0, 0);
+    facts.request_id = 0;
+    facts.snapshot_epoch = 0;
+    std::vector<uint8_t> bytes(sizeof(facts));
+    std::memcpy(bytes.data(), &facts, sizeof(facts));
+    return bytes;
+}
 
 bool live_check(const Arch &arch, uint32_t lab, unsigned which)
 {
@@ -54,6 +112,8 @@ bool lab_level_legal(const Arch &arch, uint32_t lab, bool need_ctrlset)
     auto &entry = arch.lab_assessments[lab];
     const uint64_t version = arch.lab_versions[lab];
     const uint64_t epoch = arch.lab_facts_epoch;
+    LabContentEntry *content = nullptr;
+    std::vector<uint8_t> key;
     if (entry.lab_version != version || entry.facts_epoch != epoch) {
         if (entry.known != 0) {
             if (entry.lab_version != version)
@@ -62,6 +122,31 @@ bool lab_level_legal(const Arch &arch, uint32_t lab, bool need_ctrlset)
                 ++stats.stale_facts;
         }
         entry = LabAssessmentEntry{version, epoch, 0, 0};
+        if (mode == LabReuseMode::Content) {
+            // Stale stamps: consult the content tier. An identical LAB seen
+            // before (this one after an ABA move, or a structurally identical
+            // one elsewhere) yields its sub-results without re-evaluation.
+            if (arch.lab_content_cache.empty())
+                arch.lab_content_cache.resize(CONTENT_SLOTS);
+            key = content_key(arch, lab);
+            const uint64_t hash = fnv1a(key.data(), key.size());
+            content = &arch.lab_content_cache[hash % CONTENT_SLOTS];
+            ++stats.content_lookups;
+            if (content->occupied && content->hash == hash && content->facts == key) {
+                ++stats.content_hits;
+                entry.known = content->known;
+                entry.legal = content->legal;
+            } else {
+                if (content->occupied)
+                    ++stats.content_evictions;
+                content->occupied = true;
+                content->hash = hash;
+                content->facts = key;
+                content->known = 0;
+                content->legal = 0;
+                ++stats.content_stores;
+            }
+        }
     }
 
     auto sub_result = [&](unsigned which) -> bool {
@@ -86,6 +171,11 @@ bool lab_level_legal(const Arch &arch, uint32_t lab, bool need_ctrlset)
         entry.known |= bit;
         if (live)
             entry.legal |= bit;
+        if (content != nullptr) {
+            content->known |= bit;
+            if (live)
+                content->legal |= bit;
+        }
         return live;
     };
     return sub_result(CHECK_INPUTS) && (!need_ctrlset || sub_result(CHECK_CTRLSET)) && sub_result(CHECK_MLAB);
@@ -102,6 +192,14 @@ void report_lab_reuse_stats(const Arch &arch)
     log_info("  stale entries: lab-version=%" PRIu64 ", facts-epoch=%" PRIu64 "; invalidations: lab=%" PRIu64
              ", facts=%" PRIu64 "; shadow mismatches=%" PRIu64 "\n",
              s.stale_lab, s.stale_facts, s.lab_invalidations, s.facts_invalidations, s.mismatches);
+    log_info("  precise incidence: cell=%" PRIu64 ", net=%" PRIu64 ", unbound-cell mutations ignored=%" PRIu64 "\n",
+             s.precise_cell_invalidations, s.precise_net_invalidations, s.unbound_cell_mutations);
+    if (arch.lab_reuse_effective == LabReuseMode::Content)
+        log_info("  content tier: lookups=%" PRIu64 ", hits=%" PRIu64 " (%.1f%%), stores=%" PRIu64
+                 ", evictions=%" PRIu64 ", slots=%zu\n",
+                 s.content_lookups, s.content_hits,
+                 s.content_lookups ? 100.0 * double(s.content_hits) / double(s.content_lookups) : 0.0, s.content_stores,
+                 s.content_evictions, size_t(CONTENT_SLOTS));
 }
 
 NEXTPNR_NAMESPACE_END

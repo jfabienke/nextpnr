@@ -36,40 +36,40 @@ void CellInfo::addInput(IdString name)
 {
     ports[name].name = name;
     ports[name].type = PORT_IN;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 void CellInfo::addOutput(IdString name)
 {
     ports[name].name = name;
     ports[name].type = PORT_OUT;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 void CellInfo::addInout(IdString name)
 {
     ports[name].name = name;
     ports[name].type = PORT_INOUT;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 
 void CellInfo::setParam(IdString name, Property value)
 {
     params[name] = value;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 void CellInfo::unsetParam(IdString name)
 {
     if (params.erase(name))
-        ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+        ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 void CellInfo::setAttr(IdString name, Property value)
 {
     attrs[name] = value;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 void CellInfo::unsetAttr(IdString name)
 {
     if (attrs.erase(name))
-        ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+        ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 
 bool CellInfo::testRegion(BelId bel) const
@@ -96,7 +96,7 @@ void CellInfo::connectPort(IdString port_name, NetInfo *net)
     } else {
         NPNR_ASSERT_FALSE("invalid port type for connectPort");
     }
-    ctx->notifyContextMutation(ContextMutationKind::Connectivity);
+    ctx->notifyCellMutation(this, ContextMutationKind::Connectivity);
 }
 
 void CellInfo::disconnectPort(IdString port_name)
@@ -110,7 +110,7 @@ void CellInfo::disconnectPort(IdString port_name)
         if (port.net->driver.cell == this && port.net->driver.port == port_name)
             port.net->driver.cell = nullptr;
         port.net = nullptr;
-        ctx->notifyContextMutation(ContextMutationKind::Connectivity);
+        ctx->notifyCellMutation(this, ContextMutationKind::Connectivity);
     }
 }
 
@@ -158,7 +158,7 @@ void CellInfo::movePortTo(IdString port, CellInfo *other, IdString other_port)
     } else {
         NPNR_ASSERT(false);
     }
-    ctx->notifyContextMutation(ContextMutationKind::Connectivity);
+    ctx->notifyCellMutation(this, ContextMutationKind::Connectivity);
 }
 
 void CellInfo::renamePort(IdString old_name, IdString new_name)
@@ -175,7 +175,7 @@ void CellInfo::renamePort(IdString old_name, IdString new_name)
     ports.erase(old_name);
     pi.name = new_name;
     ports[new_name] = pi;
-    ctx->notifyContextMutation(ContextMutationKind::CellFacts);
+    ctx->notifyCellMutation(this, ContextMutationKind::CellFacts);
 }
 
 void CellInfo::movePortBusTo(IdString old_name, int old_offset, bool old_brackets, CellInfo *new_cell,

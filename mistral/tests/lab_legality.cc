@@ -732,23 +732,58 @@ TEST_F(LabControlCaptureTest, LabReuseStampsFollowBindingsAndFacts)
     ctx->bindBel(other_lab, cells[1], STRENGTH_WEAK);
     EXPECT_EQ(ctx->lab_versions[0], v0 + 2);
     EXPECT_EQ(ctx->lab_versions[1], v1 + 1);
-    ctx->unbindBel(other_lab);
 
-    // Every audited fact path moves the global epoch: kernel notifications and Mistral's rewrites.
+    // Facts of an unbound cell are nobody's dependency: nothing moves.
     cells[2]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
-    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 1);
     cells[2]->unsetAttr(ctx->id("lab_reuse_probe"));
-    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 2);
     cells[3]->addInput(id_CLK);
     cells[3]->connectPort(id_CLK, nets[0]);
-    const uint64_t after_connect = ctx->lab_facts_epoch;
-    EXPECT_GT(after_connect, epoch + 2);
     ctx->assign_ff_info(cells[3]);
-    EXPECT_EQ(ctx->lab_facts_epoch, after_connect + 1);
     cells[3]->disconnectPort(id_CLK);
-    EXPECT_GT(ctx->lab_facts_epoch, after_connect + 1);
-    EXPECT_EQ(ctx->lab_reuse_stats.lab_invalidations, 4u);
-    EXPECT_GE(ctx->lab_reuse_stats.facts_invalidations, 5u);
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch);
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 2);
+    EXPECT_EQ(ctx->lab_versions[1], v1 + 1);
+    EXPECT_EQ(ctx->lab_reuse_stats.unbound_cell_mutations, 6u);
+
+    // Facts of a bound cell invalidate exactly its LAB: kernel attrs, connectivity, and Mistral's rewrite.
+    cells[1]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    EXPECT_EQ(ctx->lab_versions[1], v1 + 2);
+    cells[1]->unsetAttr(ctx->id("lab_reuse_probe"));
+    EXPECT_EQ(ctx->lab_versions[1], v1 + 3);
+    cells[1]->addInput(id_CLK);
+    cells[1]->connectPort(id_CLK, nets[0]);
+    const uint64_t after_connect = ctx->lab_versions[1];
+    EXPECT_GT(after_connect, v1 + 3);
+    ctx->assign_ff_info(cells[1]);
+    EXPECT_EQ(ctx->lab_versions[1], after_connect + 1);
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 2);
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch);
+    EXPECT_GE(ctx->lab_reuse_stats.precise_cell_invalidations, 5u);
+
+    // A net's facts invalidate the LABs of its bound driver and users only.
+    const uint64_t v1_before_net = ctx->lab_versions[1];
+    ctx->renameNet(nets[0]->name, ctx->id("lab_reuse_renamed_net"));
+    EXPECT_EQ(ctx->lab_versions[1], v1_before_net + 1); // cells[1] is a bound user
+    EXPECT_EQ(ctx->lab_versions[0], v0 + 2);            // cells[3] is a user but unbound
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch);
+    EXPECT_EQ(ctx->lab_reuse_stats.precise_net_invalidations, 1u);
+    ctx->renameNet(ctx->id("lab_reuse_renamed_net"), ctx->id("lab_test_net_0"));
+
+    // Mutations with no object still fall back to the global epoch, except object creation.
+    ctx->addClock(ctx->id("lab_test_net_0"), 100.0f);
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 1);
+    EXPECT_EQ(ctx->lab_reuse_stats.facts_invalidations, 1u);
+    nets[0]->clkconstr.reset();
+    ctx->createNet(ctx->id("lab_reuse_generated_net"));
+    ctx->createCell(ctx->id("lab_reuse_generated_cell"), id_MISTRAL_FF);
+    EXPECT_EQ(ctx->lab_facts_epoch, epoch + 1);
+    EXPECT_EQ(ctx->lab_reuse_stats.facts_invalidations, 1u);
+    ctx->cells.erase(ctx->id("lab_reuse_generated_cell"));
+    ctx->nets.erase(ctx->id("lab_reuse_generated_net"));
+    ctx->net_aliases.erase(ctx->id("lab_reuse_generated_net"));
+
+    cells[1]->disconnectPort(id_CLK);
+    ctx->unbindBel(other_lab);
 }
 
 TEST_F(LabControlCaptureTest, LabReuseServesCurrentEntriesAndInvalidatesPrecisely)
@@ -785,13 +820,23 @@ TEST_F(LabControlCaptureTest, LabReuseServesCurrentEntriesAndInvalidatesPrecisel
     EXPECT_TRUE(ctx->isBelLocationValid(other_lab));
     EXPECT_EQ(s.hits, 9u);
 
-    // A fact change invalidates every LAB even though no BEL moved.
-    cells[5]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    // A bound cell's fact change invalidates its LAB only, even though no BEL moved.
+    cells[0]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a));
+    EXPECT_EQ(s.stale_lab, 2u);
+    EXPECT_TRUE(ctx->isBelLocationValid(other_lab));
+    EXPECT_EQ(s.hits, 12u); // LAB 1 untouched: served
+    cells[0]->unsetAttr(ctx->id("lab_reuse_probe"));
+    EXPECT_TRUE(ctx->isBelLocationValid(even_a));
+    EXPECT_EQ(s.stale_lab, 3u);
+
+    // A constraint change carries no object and invalidates every LAB.
+    ctx->addClock(ctx->id("lab_test_net_9"), 50.0f);
     EXPECT_TRUE(ctx->isBelLocationValid(even_a));
     EXPECT_EQ(s.stale_facts, 1u);
     EXPECT_TRUE(ctx->isBelLocationValid(other_lab));
     EXPECT_EQ(s.stale_facts, 2u);
-    cells[5]->unsetAttr(ctx->id("lab_reuse_probe"));
+    nets[9]->clkconstr.reset();
 
     // A cached illegal result stays illegal until the LAB changes: odd FF slot makes the ALM
     // illegal, which is not cached, but a control-set conflict is a LAB-level cached result.
@@ -850,6 +895,96 @@ TEST_F(LabControlCaptureTest, LabReuseShadowAgreesWithLiveAcrossRandomTraffic)
     EXPECT_GT(legal_count, 0u);
     EXPECT_GT(illegal_count, 0u);
     for (unsigned i = 0; i < 12; ++i)
+        cells[i]->disconnectPort(id_CLK);
+}
+
+TEST_F(LabControlCaptureTest, LabReuseStatesFollowEvaluationPreparationAndRouting)
+{
+    const auto &alms = ctx->labs.at(0).alms;
+    const BelId even = alms.at(0).ff_bels.at(0);
+    LabReuseScope scope(*ctx, LabReuseMode::On);
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Dirty);
+
+    ctx->bindBel(even, cells[0], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(even));
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Evaluated);
+    EXPECT_EQ(lab_reuse_state(*ctx, 1), LabReuseState::Dirty);
+
+    ctx->note_lab_prepared(0);
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Prepared);
+    ctx->note_routing_complete();
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Routed);
+    EXPECT_EQ(lab_reuse_state(*ctx, 1), LabReuseState::Dirty); // never prepared or evaluated
+
+    // A routing mutation anywhere makes routed dependencies stale but keeps preparation.
+    const WireId wire = *ctx->getWires().begin();
+    ctx->bindWire(wire, nets[0], STRENGTH_WEAK);
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Prepared);
+    ctx->unbindWire(wire);
+    ctx->note_routing_complete();
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Routed);
+
+    // A relevant edit drops the LAB all the way to dirty; re-evaluation restores only Evaluated.
+    cells[0]->setAttr(ctx->id("lab_reuse_probe"), Property(1));
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Dirty);
+    EXPECT_TRUE(ctx->isBelLocationValid(even));
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Evaluated);
+    cells[0]->unsetAttr(ctx->id("lab_reuse_probe"));
+    ctx->unbindBel(even);
+    EXPECT_EQ(lab_reuse_state(*ctx, 0), LabReuseState::Dirty);
+    EXPECT_STREQ(lab_reuse_state_name(LabReuseState::Routed), "routed");
+}
+
+TEST_F(LabControlCaptureTest, LabReuseContentTierServesIdenticalFactsAcrossVersionsAndLabs)
+{
+    const auto &alms0 = ctx->labs.at(0).alms;
+    const auto &alms1 = ctx->labs.at(1).alms;
+    for (unsigned i = 0; i < 4; ++i) {
+        cells[i]->addInput(id_CLK);
+        cells[i]->connectPort(id_CLK, nets[0]);
+        ctx->assign_ff_info(cells[i]);
+    }
+    LabReuseScope scope(*ctx, LabReuseMode::Content);
+    auto &s = ctx->lab_reuse_stats;
+    const BelId a = alms0.at(0).ff_bels.at(0);
+    const BelId b = alms0.at(1).ff_bels.at(0);
+
+    ctx->bindBel(a, cells[0], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(a)); // stale stamps, empty tier: lookup, store, live
+    EXPECT_EQ(s.content_lookups, 1u);
+    EXPECT_EQ(s.content_hits, 0u);
+    EXPECT_EQ(s.content_stores, 1u);
+    EXPECT_EQ(s.misses, 3u);
+
+    // ABA: bind and unbind another cell, then query. Stamps are stale, content is identical.
+    ctx->bindBel(b, cells[1], STRENGTH_WEAK);
+    ctx->unbindBel(b);
+    EXPECT_TRUE(ctx->isBelLocationValid(a));
+    EXPECT_EQ(s.content_lookups, 2u);
+    EXPECT_EQ(s.content_hits, 1u);
+    EXPECT_EQ(s.misses, 3u); // all three sub-results came from the content entry
+    EXPECT_EQ(s.hits, 3u);
+
+    // A structurally identical LAB elsewhere hits too, with different nets and cells.
+    const BelId c = alms1.at(0).ff_bels.at(0);
+    ctx->bindBel(c, cells[2], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(c));
+    EXPECT_EQ(s.content_hits, 2u);
+    EXPECT_EQ(s.misses, 3u);
+
+    // Different content: a second occupant with the same control set is a new key.
+    ctx->bindBel(b, cells[1], STRENGTH_WEAK);
+    EXPECT_TRUE(ctx->isBelLocationValid(b));
+    EXPECT_EQ(s.content_hits, 2u);
+    EXPECT_EQ(s.content_stores, 2u);
+    EXPECT_EQ(s.misses, 6u);
+    EXPECT_EQ(s.mismatches, 0u);
+    EXPECT_EQ(ctx->lab_content_cache.size(), 4096u);
+
+    ctx->unbindBel(a);
+    ctx->unbindBel(b);
+    ctx->unbindBel(c);
+    for (unsigned i = 0; i < 4; ++i)
         cells[i]->disconnectPort(id_CLK);
 }
 

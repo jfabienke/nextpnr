@@ -17,6 +17,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 
 #include "log.h"
@@ -658,6 +659,9 @@ void Arch::lab_reuse_begin()
 {
     lab_versions.assign(labs.size(), 0);
     lab_assessments.assign(labs.size(), LabAssessmentEntry{});
+    lab_prepared.assign(labs.size(), LabStamp{});
+    lab_routed_epoch = 0;
+    lab_content_cache.clear();
     lab_reuse_stats = LabReuseStats{};
     lab_reuse_effective = args.lab_reuse;
     // Reuse is validated against the plain legacy query only. Modes with their
@@ -680,6 +684,20 @@ void Arch::lab_reuse_end()
     if (lab_reuse_effective == LabReuseMode::Shadow && lab_reuse_stats.mismatches != 0)
         log_error("LAB assessment reuse shadow found %" PRIu64 " mismatches.\n", lab_reuse_stats.mismatches);
     lab_assessments.clear();
+    lab_content_cache.clear();
+    lab_content_cache.shrink_to_fit();
+}
+
+void Arch::report_lab_states() const
+{
+    if (lab_versions.empty())
+        return;
+    std::array<uint64_t, 4> counts{};
+    for (uint32_t lab = 0; lab < labs.size(); ++lab)
+        ++counts[size_t(lab_reuse_state(*this, lab))];
+    log_info("LAB states: dirty=%" PRIu64 ", evaluated=%" PRIu64 ", prepared=%" PRIu64 ", routed=%" PRIu64
+             " (routing epoch %" PRIu64 ")\n",
+             counts[0], counts[1], counts[2], counts[3], lab_routing_epoch);
 }
 
 bool Arch::place()
@@ -792,6 +810,8 @@ bool Arch::route()
     } else {
         log_error("Mistral architecture does not support router '%s'\n", router.c_str());
     }
+    note_routing_complete();
+    report_lab_states();
     getCtx()->attrs[id_step] = std::string("route");
     archInfoToAttributes();
     return result;

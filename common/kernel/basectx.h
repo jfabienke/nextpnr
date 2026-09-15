@@ -120,6 +120,10 @@ struct BaseCtx
     // Architectures retaining detached work can override this conservative
     // notification hook. It is intentionally a no-op for existing backends.
     virtual void notifyContextMutation(ContextMutationKind) {}
+    // Object-carrying forms used by CellInfo/NetInfo mutators so that a backend
+    // can invalidate precisely. Defaults forward to the kind-only hook.
+    virtual void notifyCellMutation(CellInfo *, ContextMutationKind kind) { notifyContextMutation(kind); }
+    virtual void notifyNetMutation(NetInfo *, ContextMutationKind kind) { notifyContextMutation(kind); }
 
     // Must be called before performing any mutating changes on the Ctx/Arch.
     void lock(void)
