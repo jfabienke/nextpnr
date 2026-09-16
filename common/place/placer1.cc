@@ -132,12 +132,14 @@ class SAPlacer
 
         net_bounds.resize(ctx->nets.size());
         net_arc_tcost.resize(ctx->nets.size());
+        net_arc_crit.resize(ctx->nets.size());
         old_udata.reserve(ctx->nets.size());
         net_by_udata.reserve(ctx->nets.size());
         decltype(NetInfo::udata) n = 0;
         for (auto &net : ctx->nets) {
             old_udata.emplace_back(net.second->udata);
             net_arc_tcost.at(n).resize(net.second->users.capacity());
+            net_arc_crit.at(n).resize(net.second->users.capacity());
             net.second->udata = n++;
             net_by_udata.push_back(net.second.get());
         }
@@ -986,8 +988,11 @@ class SAPlacer
         return bb;
     }
 
-    // Get the timing cost for an arc of a net
-    inline double get_timing_cost(const BelOverlayList &overlay, NetInfo *net, const PortRef &user)
+    // Get the timing cost for an arc of a net. Criticality is read from the
+    // per-arc table refreshed by setup_costs() after each timing run: the value
+    // is the same float the analyser holds, without a hashed CellPortKey lookup
+    // on every changed arc of every swap.
+    inline double get_timing_cost(const BelOverlayList &overlay, NetInfo *net, store_index<PortRef> user_idx)
     {
         int cc;
         if (net->driver.cell == nullptr)
@@ -995,7 +1000,8 @@ class SAPlacer
         if (ctx->getPortTimingClass(net->driver.cell, net->driver.port, cc) == TMG_IGNORE)
             return 0;
 
-        float crit = tmg.get_criticality(CellPortKey(user));
+        const PortRef &user = net->users.at(user_idx);
+        float crit = net_arc_crit[net->udata][user_idx.idx()];
         double delay = ctx->getDelayNS(predict_arc_delay(overlay, net, user));
         return delay * std::pow(crit, crit_exp);
     }
@@ -1009,8 +1015,10 @@ class SAPlacer
                 continue;
             net_bounds[ni->udata] = get_net_bounds(no_overlay, ni);
             if (cfg.timing_driven && int(ni->users.entries()) < cfg.timingFanoutThresh)
-                for (auto usr : ni->users.enumerate())
-                    net_arc_tcost[ni->udata][usr.index.idx()] = get_timing_cost(no_overlay, ni, usr.value);
+                for (auto usr : ni->users.enumerate()) {
+                    net_arc_crit[ni->udata][usr.index.idx()] = tmg.get_criticality(CellPortKey(usr.value));
+                    net_arc_tcost[ni->udata][usr.index.idx()] = get_timing_cost(no_overlay, ni, usr.index);
+                }
         }
     }
 
@@ -1525,8 +1533,7 @@ class SAPlacer
         if (cfg.timing_driven) {
             for (const auto &tc : md.changed_arcs) {
                 double old_cost = net_arc_tcost.at(tc.first).at(tc.second.idx());
-                double new_cost = get_timing_cost(overlay, net_by_udata.at(tc.first),
-                                                  net_by_udata.at(tc.first)->users.at(tc.second));
+                double new_cost = get_timing_cost(overlay, net_by_udata.at(tc.first), tc.second);
                 md.new_arc_costs.emplace_back(std::make_pair(tc, new_cost));
                 md.timing_delta += (new_cost - old_cost);
                 md.already_changed_arcs[tc.first][tc.second.idx()] = false;
@@ -1622,6 +1629,7 @@ class SAPlacer
     std::vector<BoundingBox> net_bounds;
     // Map net arcs to their timing cost (criticality * delay ns)
     std::vector<std::vector<double>> net_arc_tcost;
+    std::vector<std::vector<float>> net_arc_crit; // criticality per arc, refreshed in setup_costs()
 
     // Fast lookup for cell to clusters
     dict<ClusterId, std::vector<CellInfo *>> cluster2cell;

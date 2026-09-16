@@ -182,6 +182,42 @@ class HeAPPlacer
         for (auto &cell : ctx->cells)
             if (!cell.second->isPseudo() && cell.second->cluster != ClusterId())
                 cluster2cells[cell.second->cluster].push_back(cell.second.get());
+
+        // Index nets so criticality can be read from a per-arc table instead of a
+        // hashed CellPortKey lookup on every arc of every solve. Net udata is not
+        // otherwise used by HeAP; restored in the destructor like placer1 does.
+        net_old_udata.reserve(ctx->nets.size());
+        net_arc_crit.resize(ctx->nets.size());
+        decltype(NetInfo::udata) n = 0;
+        for (auto &net : ctx->nets) {
+            net_old_udata.push_back(net.second->udata);
+            net_arc_crit.at(n).resize(net.second->users.capacity());
+            net.second->udata = n++;
+        }
+        refresh_arc_criticality();
+    }
+
+    ~HeAPPlacer()
+    {
+        decltype(NetInfo::udata) n = 0;
+        for (auto &net : ctx->nets)
+            net.second->udata = net_old_udata.at(n++);
+    }
+
+    // Snapshot of the analyser's criticality per (net, user) after a timing run.
+    // The stored float is the analyser's own value, so weights are bit-identical.
+    std::vector<decltype(NetInfo::udata)> net_old_udata;
+    std::vector<std::vector<float>> net_arc_crit;
+    void refresh_arc_criticality()
+    {
+        if (!cfg.timing_driven)
+            return;
+        for (auto &net : ctx->nets) {
+            NetInfo *ni = net.second.get();
+            auto &row = net_arc_crit.at(ni->udata);
+            for (auto usr : ni->users.enumerate())
+                row.at(usr.index.idx()) = tmg.get_criticality(CellPortKey(usr.value));
+        }
     }
 
     bool place()
@@ -314,8 +350,10 @@ class HeAPPlacer
             }
 
             // Update timing weights
-            if (cfg.timing_driven)
+            if (cfg.timing_driven) {
                 tmg.run();
+                refresh_arc_criticality();
+            }
 
             if (legal_hpwl < best_hpwl) {
                 best_hpwl = legal_hpwl;
@@ -976,7 +1014,7 @@ class HeAPPlacer
                                                                        std::abs(o_pos - this_pos)));
 
                     if (user_idx) {
-                        weight *= (1.0 + cfg.timingWeight * std::pow(tmg.get_criticality(CellPortKey(port)),
+                        weight *= (1.0 + cfg.timingWeight * std::pow(net_arc_crit[ni->udata][user_idx.idx()],
                                                                      cfg.criticalityExponent));
                     }
 

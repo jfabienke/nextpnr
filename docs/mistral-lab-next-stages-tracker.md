@@ -1213,6 +1213,55 @@ the floor; it is not implemented.
 Artifacts under `build/stage5-validation/` (`batch*`, `compare_batch.sh`,
 `run-batch.sh`).
 
+### 2026-09-16: Candidate 4b measured and retired; criticality lookups replaced
+
+The opening measurement attributed 10.7% of the run to `TimingAnalyser::*` by
+symbol name. Re-attributing the same 1 ms samples by sampled frame under each
+phase gives the real split:
+
+| Timing-related cost | Share of run | Where |
+| --- | ---: | --- |
+| Arrival/required propagation (`walk_forward`, `walk_backward`) | 2.9% | once per SA/HeAP/router iteration |
+| Slack and criticality computation | 0.7% | same |
+| Route-delay acquisition | 0.4% | same |
+| Topological order and port domains | about 0.6% | once per phase (`setup()`), not per iteration |
+| Criticality lookups (`ports.at(CellPortKey)`) | 3.5% | SA 2.45%, HeAP 1.09%: the placers' cost functions, per changed arc per swap |
+
+The propagation an incremental kernel would replace is under 3% of the run,
+and the structural rebuild that looked like a reuse target happens three
+times per run. Candidate 4b (incremental timing) is therefore retired on the
+design's own rule: it must not be chosen from an unexplained remainder, and
+the remainder is now explained. What the placers actually pay for is asking
+the analyser the same question millions of times through a hash map.
+
+Fix: `placer1` keeps a per-arc criticality table (`net_arc_crit`, indexed
+like `net_arc_tcost` by net and user index) refreshed in `setup_costs()`
+after each timing run, and the swap cost path reads it instead of hashing a
+`CellPortKey`. The stored float is the analyser's own value, so costs are
+bit-identical. HeAP's solver got the same table (`net_arc_crit`, keyed by a
+net index HeAP now assigns and restores like `placer1`), refreshed after each
+of its timing runs and read in `build_solve_direction`.
+
+Fabi386, all runs byte-identical to the Stage 4C artifacts:
+
+| Change | HeAP solve time | SA refinement |
+| --- | ---: | ---: |
+| before (serial, same session) | 4.83 s, 4.73 s | 10.38 s, 10.00 s |
+| placer1 table only | 5.13 s, 5.68 s | 9.94 s, 9.97 s |
+| both tables | 3.91 s, 4.06 s, 4.85 s | 9.37 s, 10.63 s, 9.26 s |
+
+The HeAP table saves roughly 15% of the solve phase (about 0.8 s) with one
+noisy repeat; the annealer's saving is inside run-to-run noise, so the 2.45%
+of `at` samples under SA was not all criticality lookups. Both are kept:
+they are strictly fewer hash lookups for identical output.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 55/55 pass |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 45/45 pass |
+| Fabi386 serial, seam-on, and HeAP-table runs | Byte-identical; timings as tabulated |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1269,6 +1318,7 @@ Artifacts under `build/stage5-validation/` (`batch*`, `compare_batch.sh`,
 | 2026-09-16 | 1c-B | Verify every accepted swap by re-assessing and recomputing on the owner | Caught a stale worker-scratch defect during bring-up; zero mismatches over 2.2 M candidates afterwards |
 | 2026-09-16 | 1c-B | Keep `--sa-batch` off by default and record the phase as owner-bound | Best 1.32x at two workers, worse beyond four; detached work is under 1 µs per candidate against a comparable pool round trip |
 | 2026-09-16 | 1c-B | Share one worker pool between the lookahead coordinator and the annealer | `common/place/placement_pool.*`; the inline path now reports job failures like the threaded path |
+| 2026-09-16 | 4b | Retire incremental timing; replace the placers' hashed criticality lookups with per-arc tables | Propagation is 2.9% of the run and structure is built once per phase; the lookups are 3.5% |
 
 ## Stage gates and promotion
 

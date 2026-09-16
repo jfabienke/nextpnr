@@ -311,9 +311,12 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 
 The candidate list and its priority order are recorded in the tracker's
 "Stage 5 opening measurement" entry: 1c (annealer through the seam), 4b
-(incremental timing, deferred because timing is 10.7% of the run), 2a/2b
-(checkpoints), the rest of 3b, 3c (route reuse), 3a (typed build states, in
-C++).
+(incremental timing), 2a/2b (checkpoints), the rest of 3b, 3c (route reuse),
+3a (typed build states, in C++). 1c is complete (1c-A and 1c-B). 4b is
+retired: re-attributing the profile shows propagation at 2.9% of the run and
+the timing structure built once per phase; the placers' hashed criticality
+lookups were the real cost and are now per-arc tables. Next is 2a/2b, the
+versioned checkpoint, which starts with a design document.
 
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost
