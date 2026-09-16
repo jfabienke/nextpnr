@@ -259,12 +259,12 @@ RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous,
             ++report.unavailable;
             continue;
         }
-        // Bind strong: router2 marks the wires unavailable to other nets from
-        // its first iteration and records the arcs as pre-routed, which it
-        // never revisits anyway; its final pass rebinds every wire up to
-        // STRENGTH_STRONG at STRENGTH_WEAK, so the output carries the same
-        // strengths as an uninterrupted run. Reverse of the recorded order,
-        // so the wires map iterates as the previous run's did.
+        // Bind strong: router2 registers the wires as occupied and records
+        // the arcs as pre-routed (it may still rip them up when overused);
+        // its final pass rebinds every wire up to STRENGTH_STRONG at
+        // STRENGTH_WEAK, so the output carries the same strengths as an
+        // uninterrupted run. Reverse of the recorded order, so the wires map
+        // iterates as the previous run's did.
         for (auto rit = resolved.rbegin(); rit != resolved.rend(); ++rit) {
             if (rit->second == PipId())
                 ctx.bindWire(rit->first, net, STRENGTH_STRONG);
@@ -274,6 +274,7 @@ RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous,
         }
         ++report.reused;
         report.reused_names.push_back(d.net);
+        report.applied.push_back({d.net, std::move(resolved)});
     }
     return report;
 }
@@ -333,14 +334,46 @@ size_t unroute_below_locked(Context &ctx)
     return nets_unrouted;
 }
 
+void measure_route_survival(Context &ctx, RouteReuseReport &report, ReusePlan *plan)
+{
+    report.survived = 0;
+    report.rerouted = 0;
+    std::unordered_map<std::string, size_t> plan_index;
+    if (plan != nullptr)
+        for (size_t i = 0; i < plan->nets.size(); ++i)
+            plan_index[plan->nets[i].net] = i;
+    for (const auto &a : report.applied) {
+        auto it = ctx.nets.find(ctx.id(a.net)); // an applied net's name is interned already
+        bool same = it != ctx.nets.end();
+        if (same) {
+            const NetInfo *net = it->second.get();
+            same = net->wires.size() == a.wires.size();
+            for (size_t i = 0; same && i < a.wires.size(); ++i) {
+                auto w = net->wires.find(a.wires[i].first);
+                same = w != net->wires.end() && w->second.pip == a.wires[i].second;
+            }
+        }
+        if (same)
+            ++report.survived;
+        else
+            ++report.rerouted;
+        if (plan != nullptr) {
+            auto p = plan_index.find(a.net);
+            if (p != plan_index.end())
+                plan->nets[p->second].survived = same ? 1 : 0;
+        }
+    }
+}
+
 void report_route_reuse(const RouteReuseReport &r)
 {
     log_info("Route reuse: %" PRIu64 " previous routes, %" PRIu64 " current nets: %" PRIu64 " reused (%" PRIu64
              " wires), %" PRIu64 " already routed by the global router, %" PRIu64 " with no previous route, %" PRIu64
              " endpoint mismatches, %" PRIu64 " unresolved, %" PRIu64 " unavailable, %" PRIu64
-             " dropped by the fallback\n",
+             " dropped by the fallback; after the router %" PRIu64 " applied routes survived unchanged and %" PRIu64
+             " were re-routed\n",
              r.previous_nets, r.current_nets, r.reused, r.wires_bound, r.already_routed, r.no_previous,
-             r.endpoint_mismatch, r.unresolved, r.unavailable, r.dropped);
+             r.endpoint_mismatch, r.unresolved, r.unavailable, r.dropped, r.survived, r.rerouted);
 }
 
 NEXTPNR_NAMESPACE_END

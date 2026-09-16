@@ -998,6 +998,12 @@ bool Arch::run_router_phase()
             getCtx()->rngstate = rng_before;
             getCtx()->router_gave_up = false;
             run_router();
+        } else if (!args.reuse_dry_run) {
+            // What the router left of the applied routes; the plan is
+            // rewritten so each net's decision carries the answer.
+            measure_route_survival(*getCtx(), reuse, reuse_plan_.get());
+            if (!args.reuse_plan_path.empty())
+                write_reuse_plan(*reuse_plan_, args.reuse_plan_path);
         }
         report_route_reuse(reuse);
     }

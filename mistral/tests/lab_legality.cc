@@ -2615,6 +2615,21 @@ TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllo
     EXPECT_EQ(ctx->getBoundWireNet(source), net);
     EXPECT_EQ(ctx->getBoundWireNet(sink), net);
     EXPECT_EQ(net->wires.at(sink).strength, STRENGTH_STRONG);
+    // A2: survival is what the router left of the applied route, wire for wire.
+    measure_route_survival(*ctx, report, nullptr);
+    EXPECT_EQ(report.survived, 1u);
+    EXPECT_EQ(report.rerouted, 0u);
+    ctx->unbindPip(path.front());
+    measure_route_survival(*ctx, report, nullptr);
+    EXPECT_EQ(report.survived, 0u);
+    EXPECT_EQ(report.rerouted, 1u);
+    ctx->bindPip(path.front(), net, STRENGTH_STRONG);
+    {
+        ReusePlan stamped;
+        stamped.nets.push_back({"rr_net", ReuseDecision::Reuse, path.size() + 1, "test"});
+        measure_route_survival(*ctx, report, &stamped);
+        EXPECT_EQ(stamped.nets.front().survived, 1);
+    }
     // E: a net that already has wires is left alone.
     report = apply_route_reuse(*ctx, previous);
     EXPECT_EQ(report.already_routed, 1u);

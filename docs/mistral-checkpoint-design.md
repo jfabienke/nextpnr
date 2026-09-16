@@ -442,7 +442,9 @@ arc is not exempt from rip-up: once one of its wires is overused,
 `route_net` rips it up like any other arc, and the closing measurement
 found about 18% of the applied routes on the controlled edits re-routed
 by the end. The reuse report therefore counts applied routes, and
-survival is a separate number. What the strength changed is empirical:
+`measure_route_survival` (3c-3) reports survival next to it after the
+router, from the wire and pip ids resolved at apply time, stamping each
+net's decision in the plan. What the strength changed is empirical:
 bound weak (the first attempt) the provenance experiment crawled to the
 iteration cap with one overused wire that only the final bind resolved;
 bound strong the same experiment fails as a real router failure and the

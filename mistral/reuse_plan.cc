@@ -63,11 +63,18 @@ void write_reuse_plan(const ReusePlan &plan, const std::string &path)
     for (const auto &c : plan.cells)
         cells.push_back(Json::object{
                 {"cell", c.cell}, {"decision", reuse_decision_name(c.decision)}, {"bel", c.bel}, {"reason", c.reason}});
-    for (const auto &n : plan.nets)
-        nets.push_back(Json::object{{"net", n.net},
-                                    {"decision", reuse_decision_name(n.decision)},
-                                    {"wires", int(n.wires)},
-                                    {"reason", n.reason}});
+    int survived = 0, rerouted = 0;
+    for (const auto &n : plan.nets) {
+        Json::object o{{"net", n.net},
+                       {"decision", reuse_decision_name(n.decision)},
+                       {"wires", int(n.wires)},
+                       {"reason", n.reason}};
+        if (n.survived >= 0) {
+            o["survived"] = n.survived == 1;
+            (n.survived == 1 ? survived : rerouted)++;
+        }
+        nets.push_back(o);
+    }
     Json::object cell_counts, net_counts;
     for (ReuseDecision d : {ReuseDecision::Reuse, ReuseDecision::Changed, ReuseDecision::Added,
                             ReuseDecision::UserConstrained, ReuseDecision::MissingBel, ReuseDecision::Released})
@@ -83,6 +90,7 @@ void write_reuse_plan(const ReusePlan &plan, const std::string &path)
                                      {"removed_cells", int(plan.removed_cells)},
                                      {"cells", cell_counts},
                                      {"nets", net_counts},
+                                     {"route_survival", Json::object{{"survived", survived}, {"rerouted", rerouted}}},
                                      {"placement_attempts", int(plan.placement_attempts)},
                                      {"released_cells", int(plan.released_cells)},
                                      {"placement_full_fallback", plan.placement_full_fallback}}},

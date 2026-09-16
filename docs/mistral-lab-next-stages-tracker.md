@@ -1723,6 +1723,31 @@ measurable items, and both are bounded by I/O and one pass over the
 nets. Nothing in the clean flow moved, by design; its shape (annealer
 40%, router2 35%, HeAP 19%) is the same as at the opening.
 
+### 2026-09-16: Stage 5 unit 3c-3: route survival is measured and reported
+
+The closing measurement found that router2 re-routes about 18% of the
+routes the reuse path applies, and that the only way to see it was an
+external script. The tool now measures it: after the router,
+`measure_route_survival` (`mistral/route_reuse.cc`) compares every applied
+route, wire for wire and pip for pip, with the net's final binding. The
+`Route reuse:` line reports survived and re-routed counts next to applied;
+when `--reuse-plan-out` is given, the plan is rewritten after routing so
+each reused net carries `survived` and the summary a `route_survival`
+object. The comparison uses the wire and pip ids resolved when the route
+was applied, so it interns nothing. Nothing on the clean path changed.
+
+| Run (`--seed 1 --threads 1`) | Applied | Survived | Re-routed |
+| --- | ---: | ---: | ---: |
+| Unchanged design, placed resume + routed checkpoint | 12,865 | 12,865 (100%) | 0 |
+| 40 LUT INIT edits, `--reuse-placement` + `--reuse-routes` | 12,671 | 10,386 (82.0%) | 2,285 |
+| + 40 input swaps, same | 12,503 | 10,169 (81.3%) | 2,334 |
+
+The counts equal the closing measurement's external comparison. Tests:
+`./build/rust-enabled/nextpnr-mistral-test` 58/58 (the route reuse test
+now covers a surviving route, one changed by unbinding a pip, and the plan
+stamp), `./build/nextpnr-mistral-test` 48/48, `git diff --check` and
+`clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1801,6 +1826,7 @@ nets. Nothing in the clean flow moved, by design; its shape (annealer
 | 2026-09-16 | 3c | Keep `--reuse-routes` opt-in; the edited-design router time is equal to clean, not double | 94 to 95% of nets applied; the 19.6 and 20.2 s first recorded were contended, sequential reruns give 8.31 against 9.12 s and 10.22 against 9.24 s; ten times faster on an unchanged design |
 | 2026-09-16 | 3c-2 | Rip up every net before binding any in router2's bind pass | All 4,066 bind failures on the INIT edit were wires still bound to a later reused net's stale route; two passes give archfail 0, four fewer iterations, 21 to 27% less router time on the edits, byte-identical clean flow |
 | 2026-09-16 | closing | Next unit is router-side: report route survival, then seed router2's history from the previous run | 18% of applied routes are re-routed on both edits; router2 is 68% of the edit run after placement reuse removed 54 points |
+| 2026-09-16 | 3c-3 | Report survival next to applied, and rewrite the plan after routing rather than keep a second record | Same numbers as the external script: 100% on the unchanged design, 82.0% and 81.3% on the edits |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -1813,4 +1839,4 @@ nets. Nothing in the clean flow moved, by design; its shape (annealer
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
+| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order) and 3c-3 (route survival) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |

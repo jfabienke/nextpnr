@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nextpnr.h"
 #include "nextpnr_namespaces.h"
 #include "reuse_plan.h"
 
@@ -23,12 +24,14 @@ struct Context;
 // every current sink is a leaf of the route, the route has no other leaf,
 // every wire is named and free, and every pip is available under the current
 // reservations and blocked wires. Preserved routes are bound at
-// STRENGTH_STRONG: router2 records them as pre-routed arcs it never
-// revisits and keeps their wires from other nets, so the dirty nets route
-// around them; its final pass rebinds them weak like its own work. Nets the
-// global router already routed are left to it. If the router then fails,
-// every preserved route is dropped and the router runs again from the same
-// RNG state.
+// STRENGTH_STRONG: router2 registers their wires and records their arcs as
+// pre-routed, so its first iteration starts from them; it still rips a
+// pre-routed arc up once its wire is overused, so an applied route is not a
+// surviving one. After the router, measure_route_survival() compares every
+// applied route with the net's final binding and the report carries both
+// counts. Nets the global router already routed are left to it. If the
+// router then fails, every preserved route is dropped and the router runs
+// again from the same RNG state.
 
 struct PreviousRouteEntry
 {
@@ -51,8 +54,16 @@ struct RouteReuseReport
     uint64_t unavailable = 0;       // a wire already bound, or a pip the current flags forbid
     uint64_t reused = 0;
     uint64_t wires_bound = 0;
-    uint64_t dropped = 0; // reused routes unbound by the fallback
+    uint64_t dropped = 0;  // reused routes unbound by the fallback
+    uint64_t survived = 0; // applied routes the router left exactly as bound (measured after routing)
+    uint64_t rerouted = 0; // applied routes the router changed
     std::vector<std::string> reused_names;
+    struct Applied
+    {
+        std::string net;
+        std::vector<std::pair<WireId, PipId>> wires; // as bound, source wire carries PipId()
+    };
+    std::vector<Applied> applied;
 };
 
 PreviousRoutes load_previous_routes(const std::string &path);
@@ -82,6 +93,10 @@ void drop_reused_routes(Context &ctx, RouteReuseReport &report);
 // its router in. Returns the number of nets unrouted.
 size_t unroute_below_locked(Context &ctx);
 
+// After the router: counts the applied routes whose net is bound exactly as
+// applied (same wires, same pips) and those the router changed. Stamps each
+// net's decision in the plan when one is given.
+void measure_route_survival(Context &ctx, RouteReuseReport &report, ReusePlan *plan);
 void report_route_reuse(const RouteReuseReport &report);
 
 NEXTPNR_NAMESPACE_END

@@ -48,6 +48,7 @@ struct NetReuseDecision
     ReuseDecision decision;
     size_t wires = 0; // entries in the previous route
     std::string reason;
+    int survived = -1; // after the router: 1 bound exactly as applied, 0 re-routed, -1 not measured
 };
 
 struct ReusePlan
