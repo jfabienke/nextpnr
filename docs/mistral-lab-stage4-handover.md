@@ -11,12 +11,16 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `386461fb` (Stage 5, 3a and 3b)
+- Commit: `e608bf49` (Stage 5, 3c-2 and the closing measurement)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
   four phases), 3c complete (route reuse), 3b and 3a complete (reuse plan,
   region expansion, typed build states); the candidate list is exhausted.
+  The closing measurement is recorded; from it, 3c-2 fixed router2's bind
+  order (byte-identical clean flow, 21 to 27% less router time on edits with
+  reuse) and the recommended next unit is router-side: report route
+  survival, then seed router2's history from the previous run.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -312,6 +316,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `1b912e54` | Checkpoint fixtures beyond Fabi386: twelve designs identical on every resume; orphan nets and wire flags |
 | `9e5222a6` | Stage 5 unit 3c: route reuse, correct with a from-scratch fallback; not a router-time win on edits |
 | `386461fb` | Stage 5 units 3a and 3b: reuse plan with reasons, placement region expansion, typed build states |
+| `e608bf49` | Stage 5 closing measurement and unit 3c-2: router2 rips up every net before binding; 3c timing corrected (equal to clean, not double) |
 
 ## Stage 5: applying the seams to the rest of the flow
 
