@@ -2,11 +2,15 @@
 #include "checkpoint.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cinttypes>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "json11.hpp"
@@ -95,17 +99,39 @@ template <typename T> Json dict_order(const Context *ctx, const dict<IdString, T
 // Rebuild `d` so that iterating it visits `order` in sequence. nextpnr's dict
 // iterates entries newest first, so the entries are reinserted in reverse.
 // Values are moved, never copied: pointers into them stay valid.
+// With `allow_extra`, entries the list does not name are kept and iterate
+// after the recorded ones (settings: an option the writing run did not have,
+// such as --uncompressed-rbf, must not block a resume).
 template <typename T>
-void restore_dict_order(Context *ctx, dict<IdString, T> &d, const Json &order, const std::string &where)
+void restore_dict_order(Context *ctx, dict<IdString, T> &d, const Json &order, const std::string &where,
+                        bool allow_extra = false)
 {
-    if (!order.is_array() || order.array_items().size() != d.size())
+    if (!order.is_array() ||
+        (allow_extra ? order.array_items().size() > d.size() : order.array_items().size() != d.size()))
         log_error("checkpoint: order list for %s has %zu entries, the design has %zu.\n", where.c_str(),
                   order.is_array() ? order.array_items().size() : size_t(0), size_t(d.size()));
     std::unordered_map<int, T> moved;
     moved.reserve(d.size());
+    std::vector<std::pair<IdString, T>> extra; // in current iteration order
+    if (allow_extra) {
+        std::unordered_set<int> named;
+        for (const auto &item : order.array_items()) {
+            int index = lookup_index(ctx, item.string_value());
+            if (index >= 0)
+                named.insert(index);
+        }
+        for (auto &entry : d)
+            if (!named.count(entry.first.index))
+                extra.emplace_back(entry.first, std::move(entry.second));
+    }
     for (auto &entry : d)
         moved.emplace(entry.first.index, std::move(entry.second));
     d.clear();
+    // Extras first: the dict iterates newest first, so they land after the recorded entries.
+    for (auto it = extra.rbegin(); it != extra.rend(); ++it) {
+        moved.erase(it->first.index);
+        d[it->first] = std::move(it->second);
+    }
     const auto &items = order.array_items();
     for (auto it = items.rbegin(); it != items.rend(); ++it) {
         int index = lookup_index(ctx, it->string_value());
@@ -235,6 +261,121 @@ std::string require_string(const Json &j, const char *what)
         log_error("checkpoint: manifest field %s is missing or not a string.\n", what);
     return j.string_value();
 }
+
+// Compact SHA-256 (FIPS 180-4) for the manifest lineage; no dependency.
+struct Sha256
+{
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uint8_t block[64];
+    size_t block_len = 0;
+    uint64_t total = 0;
+
+    static uint32_t rotr(uint32_t x, unsigned n) { return (x >> n) | (x << (32 - n)); }
+    void transform()
+    {
+        static const uint32_t k[64] = {
+                0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+                0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+                0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+                0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+                0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+                0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+                0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+                0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+        uint32_t w[64];
+        for (int i = 0; i < 16; ++i)
+            w[i] = (uint32_t(block[4 * i]) << 24) | (uint32_t(block[4 * i + 1]) << 16) |
+                   (uint32_t(block[4 * i + 2]) << 8) | uint32_t(block[4 * i + 3]);
+        for (int i = 16; i < 64; ++i) {
+            uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; ++i) {
+            uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            uint32_t ch = (e & f) ^ (~e & g);
+            uint32_t t1 = hh + s1 + ch + k[i] + w[i];
+            uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t t2 = s0 + maj;
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
+    }
+    void update(const uint8_t *data, size_t len)
+    {
+        total += len;
+        while (len > 0) {
+            size_t take = std::min(len, size_t(64) - block_len);
+            std::memcpy(block + block_len, data, take);
+            block_len += take;
+            data += take;
+            len -= take;
+            if (block_len == 64) {
+                transform();
+                block_len = 0;
+            }
+        }
+    }
+    std::string hex()
+    {
+        const uint64_t bits = total * 8;
+        uint8_t pad = 0x80;
+        update(&pad, 1);
+        uint8_t zero = 0;
+        while (block_len != 56)
+            update(&zero, 1);
+        uint8_t len_bytes[8];
+        for (int i = 0; i < 8; ++i)
+            len_bytes[i] = uint8_t(bits >> (56 - 8 * i));
+        update(len_bytes, 8);
+        char out[65];
+        for (int i = 0; i < 8; ++i)
+            snprintf(out + 8 * i, 9, "%08x", h[i]);
+        return std::string(out, 64);
+    }
+};
+
+WireId wire_by_name(Context *ctx, const std::string &name, const char *where)
+{
+    WireId wire;
+    try {
+        wire = ctx->getWireByName(IdStringList::parse(ctx, name));
+    } catch (const std::exception &) {
+        wire = WireId();
+    }
+    if (wire == WireId())
+        log_error("checkpoint: %s names unknown wire '%s'.\n", where, name.c_str());
+    return wire;
+}
+
+PipId pip_by_name(Context *ctx, const std::string &name, const char *where)
+{
+    PipId pip;
+    try {
+        pip = ctx->getPipByName(IdStringList::parse(ctx, name));
+    } catch (const std::exception &) {
+        pip = PipId();
+    }
+    if (pip == PipId())
+        log_error("checkpoint: %s names unknown pip '%s'.\n", where, name.c_str());
+    return pip;
+}
 } // namespace
 
 // Parsed checkpoint kept between preload (before the netlist import) and
@@ -244,6 +385,8 @@ struct MistralCheckpoint
     Json root;
     std::string phase;
     size_t idstrings = 0;
+    Json input;                               // the parent manifest's "input" object, propagated
+    dict<IdString, Property> settings_before; // command-line settings before the file's were imported
 };
 
 int checkpoint_phase_rank(const std::string &phase)
@@ -261,11 +404,23 @@ int checkpoint_phase_rank(const std::string &phase)
     return -1;
 }
 
-bool checkpoint_phase_restorable(const std::string &phase)
+bool checkpoint_phase_restorable(const std::string &phase) { return checkpoint_phase_rank(phase) >= 1; }
+
+std::string checkpoint_sha256_file(const std::string &path)
 {
-    const int rank = checkpoint_phase_rank(phase);
-    return rank == 1 || rank == 2;
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return std::string();
+    Sha256 hash;
+    std::vector<char> buffer(1 << 20);
+    while (in) {
+        in.read(buffer.data(), std::streamsize(buffer.size()));
+        hash.update(reinterpret_cast<const uint8_t *>(buffer.data()), size_t(in.gcount()));
+    }
+    return hash.hex();
 }
+
+std::string Arch::checkpointPhaseAfterRoute() const { return args.route_prepare_only ? "route-prepared" : "routed"; }
 
 bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
 {
@@ -405,7 +560,48 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
     }
     for (auto &kv : pllclk_sel_map)
         pllclk.push_back(Json::object{{"key", std::to_string(kv.first)}, {"sel", int(kv.second)}});
-    Json physical = Json::object{{"bindings", bindings}, {"pllclk_sel", pllclk}};
+    Json::object physical_obj{{"bindings", bindings}, {"pllclk_sel", pllclk}};
+    size_t reserved_count = 0, routed_nets = 0;
+    if (rank >= 3) {
+        // Routing preparation (2b): LAB control allocation and ALM modes per
+        // LAB, the control-wire reservations, and every bound route (globals
+        // at route-prepared; everything at routed), in wires-map order.
+        Json::array labs_json;
+        labs_json.reserve(labs.size());
+        for (const LABInfo &lab_data : labs) {
+            Json::array alms;
+            for (const ALMInfo &alm : lab_data.alms)
+                alms.push_back(Json::array{alm.clk_ena_idx[0], alm.clk_ena_idx[1], alm.aclr_idx[0], alm.aclr_idx[1],
+                                           alm.l6_mode, alm.carry_mode});
+            labs_json.push_back(Json::array{alms, Json::array{lab_data.aclr_used[0], lab_data.aclr_used[1]}});
+        }
+        Json::array reserved;
+        for (auto &wire : wires) {
+            if ((wire.second.flags & WireInfo::RESERVED_ROUTE) == 0)
+                continue;
+            reserved.push_back(Json::array{getWireName(wire.first).str(ctx), std::to_string(wire.second.flags)});
+        }
+        reserved_count = reserved.size();
+        Json::array routes;
+        for (auto &net : nets) {
+            const NetInfo *ni = net.second.get();
+            if (ni->wires.empty())
+                continue;
+            Json::array entries;
+            entries.reserve(ni->wires.size());
+            for (auto &wire : ni->wires)
+                entries.push_back(
+                        Json::array{getWireName(wire.first).str(ctx),
+                                    wire.second.pip == PipId() ? std::string() : getPipName(wire.second.pip).str(ctx),
+                                    int(wire.second.strength)});
+            routes.push_back(Json::array{ni->name.str(ctx), entries});
+            ++routed_nets;
+        }
+        physical_obj["labs"] = labs_json;
+        physical_obj["reserved_wires"] = reserved;
+        physical_obj["routes"] = routes;
+    }
+    Json physical = physical_obj;
 
     // Non-interning lookup: the table above must stay complete.
     uint64_t seed = 0;
@@ -417,6 +613,20 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
         if (seed_it != settings.end())
             seed = uint64_t(seed_it->second.as_int64());
     }
+    // Lineage: the Yosys netlist this design came from (propagated through
+    // every checkpoint) and the checkpoint this run resumed from, if any.
+    Json input, parent;
+    if (design_source_is_checkpoint) {
+        if (!restored_input_json_.empty()) {
+            std::string err;
+            input = Json::parse(restored_input_json_, err);
+        }
+        parent = Json::object{{"path", design_source_path},
+                              {"phase", checkpoint_phase_},
+                              {"sha256", checkpoint_sha256_file(design_source_path)}};
+    } else if (!design_source_path.empty()) {
+        input = Json::object{{"path", design_source_path}, {"sha256", checkpoint_sha256_file(design_source_path)}};
+    }
     Json manifest = Json::object{
             {"schema", SCHEMA},
             {"backend", "mistral"},
@@ -427,6 +637,8 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
             {"seed", std::to_string(seed)},
             {"rng_state", std::to_string(ctx->rngstate)},
             {"idstrings", int(idstrings.size())},
+            {"input", input},
+            {"parent", parent},
     };
     Json checkpoint = Json::object{{"manifest", manifest}, {"idstrings", idstrings}, {"order", order},
                                    {"netlist", netlist},   {"packing", packing},     {"physical", physical}};
@@ -434,10 +646,11 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
     checkpoint.dump(text);
     out << text;
     log_info("Checkpoint: wrote phase '%s' (%zu idstrings, %zu cells, %zu nets, %zu top ports, %zu cluster cells, "
-             "%zu non-default pin entries, %zu io_attr ports, %zu bindings, %zu pllclk selections, rng_state %" PRIu64
-             ").\n",
+             "%zu non-default pin entries, %zu io_attr ports, %zu bindings, %zu pllclk selections, %zu LABs, %zu "
+             "reserved wires, %zu routed nets, rng_state %" PRIu64 ").\n",
              phase.c_str(), idstrings.size(), size_t(cells.size()), size_t(nets.size()), top_ports.size(),
-             cluster_cells.size(), pin_entries, io_attrs.size(), bindings.size(), pllclk.size(), ctx->rngstate);
+             cluster_cells.size(), pin_entries, io_attrs.size(), bindings.size(), pllclk.size(),
+             rank >= 3 ? labs.size() : size_t(0), reserved_count, routed_nets, ctx->rngstate);
     return true;
 }
 
@@ -462,7 +675,8 @@ bool Arch::checkpointPreload(const std::string &checkpoint_json)
         log_error("checkpoint: written for device %s, this run targets %s.\n", device.c_str(), args.device.c_str());
     const std::string phase = require_string(manifest["phase"], "phase");
     if (!checkpoint_phase_restorable(phase))
-        log_error("checkpoint: phase '%s' cannot be resumed by this build (packed and placed are supported).\n",
+        log_error("checkpoint: phase '%s' cannot be resumed by this build (packed, placed, route-prepared, and routed "
+                  "are supported).\n",
                   phase.c_str());
     const std::string version = require_string(manifest["nextpnr"], "nextpnr");
     if (version != GIT_DESCRIBE_STR)
@@ -497,9 +711,11 @@ bool Arch::checkpointPreload(const std::string &checkpoint_json)
     }
 
     auto pending = std::make_shared<MistralCheckpoint>();
-    pending->root = std::move(root);
     pending->phase = phase;
     pending->idstrings = items.size();
+    pending->input = root["manifest"]["input"];
+    pending->settings_before = settings;
+    pending->root = std::move(root);
     pending_checkpoint = std::move(pending);
     log_info("Checkpoint: phase '%s' for %s, %zu idstrings replayed (%zu were already interned).\n", phase.c_str(),
              device.c_str(), items.size(), have);
@@ -526,8 +742,29 @@ bool Arch::checkpointRestore()
         log_error("checkpoint: no order section.\n");
     restore_dict_order(ctx, cells, order["cells"], "cells");
     restore_dict_order(ctx, nets, order["nets"], "nets");
-    restore_dict_order(ctx, settings, order["settings"], "settings");
+    restore_dict_order(ctx, settings, order["settings"], "settings", /*allow_extra=*/true);
     restore_dict_order(ctx, attrs, order["attrs"], "attributes");
+
+    // The frontend imported the file's settings over the command line's. A
+    // differing seed is a contradiction (the manifest's RNG state is what
+    // runs); any other difference is reported so nobody believes an option
+    // the checkpoint overrode.
+    for (auto &before : pending_checkpoint->settings_before) {
+        auto now = settings.find(before.first);
+        if (now == settings.end())
+            continue;
+        const bool same = now->second.is_string == before.second.is_string &&
+                          now->second.to_string() == before.second.to_string();
+        if (same)
+            continue;
+        if (before.first.str(ctx) == "seed")
+            log_error("checkpoint: --seed on the command line (%s) differs from the checkpoint's (%s); resume with the "
+                      "checkpoint's seed or omit the option.\n",
+                      before.second.to_string().c_str(), now->second.to_string().c_str());
+        log_warning("checkpoint: setting %s is %s in the checkpoint and %s on the command line; the checkpoint "
+                    "wins.\n",
+                    before.first.c_str(ctx), now->second.to_string().c_str(), before.second.to_string().c_str());
+    }
     std::vector<CellInfo *> cells_by_position;
     cells_by_position.reserve(cells.size());
     for (auto &cell : cells)
@@ -621,20 +858,59 @@ bool Arch::checkpointRestore()
             ci->constr_children.push_back(known_cell(ctx, child.string_value(), "packing.cluster_cells.children"));
         ++cluster_cells;
     }
+    io_attr.clear();
+    {
+        // Both levels are dicts: reinsert in reverse so iteration matches the writer.
+        const auto &io_entries = packing["io_attr"].array_items();
+        for (auto it = io_entries.rbegin(); it != io_entries.rend(); ++it) {
+            auto &attrs_for_port = io_attr[known_id(ctx, (*it)["port"].string_value(), "io_attr port")];
+            const auto &attr_entries = (*it)["attrs"].array_items();
+            for (auto ait = attr_entries.rbegin(); ait != attr_entries.rend(); ++ait)
+                attrs_for_port[known_id(ctx, (*ait)["name"].string_value(), "io_attr name")] =
+                        property_from_json((*ait)["value"], "packing.io_attr");
+        }
+    }
+
+    // Recorded pin entries are applied twice around assignArchInfo(). The
+    // states must be in place before it: assign_ff_info reads PIN_INV to set
+    // the control-set inversions the bitstream programs. The bel-pin lists
+    // must win after it: routing preparation leaves constant and unused LUT
+    // inputs with an empty list, compute_lut_mask keys on that emptiness,
+    // and the default pass (the same one pack() ends with) refills every
+    // empty list it finds.
+    struct RecordedPin
+    {
+        CellInfo *cell;
+        IdString port;
+        CellPinState state;
+        std::vector<IdString> bel_pins;
+    };
+    std::vector<RecordedPin> recorded_pins;
     for (const auto &entry : packing["pins"].array_items()) {
         CellInfo *ci = known_cell(ctx, entry["cell"].string_value(), "packing.pins");
-        ci->pin_data.clear();
         for (const auto &pin : entry["ports"].array_items()) {
-            auto &pd = ci->pin_data[known_id(ctx, pin["port"].string_value(), "pin port")];
+            RecordedPin rec;
+            rec.cell = ci;
+            rec.port = known_id(ctx, pin["port"].string_value(), "pin port");
             const int state = pin["state"].int_value();
             if (state < PIN_SIG || state > PIN_INV)
                 log_error("checkpoint: packing.pins carries pin state %d for %s.\n", state, ci->name.c_str(ctx));
-            pd.state = CellPinState(state);
+            rec.state = CellPinState(state);
             for (const auto &bp : pin["bel_pins"].array_items())
-                pd.bel_pins.push_back(known_id(ctx, bp.string_value(), "bel pin"));
+                rec.bel_pins.push_back(known_id(ctx, bp.string_value(), "bel pin"));
+            recorded_pins.push_back(std::move(rec));
             ++pin_entries;
         }
     }
+    for (const RecordedPin &rec : recorded_pins) {
+        auto &pd = rec.cell->pin_data[rec.port];
+        pd.state = rec.state;
+        pd.bel_pins = rec.bel_pins;
+    }
+    assignArchInfo();
+    for (const RecordedPin &rec : recorded_pins)
+        rec.cell->pin_data[rec.port].bel_pins = rec.bel_pins;
+
     io_attr.clear();
     {
         // Both levels are dicts: reinsert in reverse so iteration matches the writer.
@@ -649,8 +925,26 @@ bool Arch::checkpointRestore()
     }
 
     // The same call pack() ends with: comb/FF facts and default pin maps from
-    // the restored netlist, pin states, and clusters.
+    // the restored netlist, pin states, and clusters. The recorded pin
+    // entries are applied afterwards so that they win over the defaults:
+    // routing preparation leaves constant and unused LUT inputs with an
+    // empty bel-pin list, the LUT mask keys on that emptiness, and a default
+    // pass run after them would refill it.
     assignArchInfo();
+    for (const auto &entry : packing["pins"].array_items()) {
+        CellInfo *ci = known_cell(ctx, entry["cell"].string_value(), "packing.pins");
+        for (const auto &pin : entry["ports"].array_items()) {
+            auto &pd = ci->pin_data[known_id(ctx, pin["port"].string_value(), "pin port")];
+            pd.bel_pins.clear();
+            const int state = pin["state"].int_value();
+            if (state < PIN_SIG || state > PIN_INV)
+                log_error("checkpoint: packing.pins carries pin state %d for %s.\n", state, ci->name.c_str(ctx));
+            pd.state = CellPinState(state);
+            for (const auto &bp : pin["bel_pins"].array_items())
+                pd.bel_pins.push_back(known_id(ctx, bp.string_value(), "bel pin"));
+            ++pin_entries;
+        }
+    }
 
     // Physical state: bindings at every phase, PLL clock selections, then the
     // legality sweep. Nothing may certify a placement it did not check.
@@ -680,21 +974,100 @@ bool Arch::checkpointRestore()
     pllclk_sel_map.clear();
     for (const auto &entry : root["physical"]["pllclk_sel"].array_items())
         pllclk_sel_map[parse_u64(entry["key"].string_value(), "pllclk_sel key")] = uint8_t(entry["sel"].int_value());
-    for (auto &cell : cells) {
-        const CellInfo *ci = cell.second.get();
-        if (ci->bel != BelId() && !ctx->isBelLocationValid(ci->bel))
-            log_error("checkpoint: restored placement is illegal at %s (cell %s).\n", ctx->nameOfBel(ci->bel),
-                      ci->name.c_str(ctx));
+    // The placement rules certify a packed or placed restore. After routing
+    // preparation they no longer apply: lab_pre_route binds MISTRAL_BUF
+    // route-throughs onto LUT BELs outside both isValidBelForCellType and the
+    // ALM sharing rules, so for those phases the writer's own preparation is
+    // the certification and only the structural checks above run.
+    if (rank <= 2) {
+        for (auto &cell : cells) {
+            const CellInfo *ci = cell.second.get();
+            if (ci->bel == BelId())
+                continue;
+            if (!ctx->isValidBelForCellType(ci->type, ci->bel))
+                log_error("checkpoint: cell %s of type %s cannot sit at %s.\n", ci->name.c_str(ctx),
+                          ci->type.c_str(ctx), ctx->nameOfBel(ci->bel));
+            if (!ctx->isBelLocationValid(ci->bel))
+                log_error("checkpoint: restored placement is illegal at %s (cell %s).\n", ctx->nameOfBel(ci->bel),
+                          ci->name.c_str(ctx));
+        }
     }
-    (void)rank;
+
+    size_t reserved_count = 0, routed_nets = 0;
+    if (rank >= 3) {
+        const auto &labs_json = root["physical"]["labs"].array_items();
+        if (labs_json.size() != labs.size())
+            log_error("checkpoint: physical.labs has %zu entries, the device has %zu LABs.\n", labs_json.size(),
+                      labs.size());
+        for (size_t lab = 0; lab < labs.size(); ++lab) {
+            LABInfo &lab_data = labs[lab];
+            const auto &alms = labs_json[lab][0].array_items();
+            if (alms.size() != lab_data.alms.size())
+                log_error("checkpoint: physical.labs[%zu] has %zu ALMs.\n", lab, alms.size());
+            for (size_t alm = 0; alm < alms.size(); ++alm) {
+                const auto &v = alms[alm].array_items();
+                if (v.size() != 6)
+                    log_error("checkpoint: physical.labs[%zu] ALM %zu is malformed.\n", lab, alm);
+                ALMInfo &alm_data = lab_data.alms[alm];
+                alm_data.clk_ena_idx = {v[0].int_value(), v[1].int_value()};
+                alm_data.aclr_idx = {v[2].int_value(), v[3].int_value()};
+                alm_data.l6_mode = v[4].bool_value();
+                alm_data.carry_mode = v[5].bool_value();
+            }
+            const auto &used = labs_json[lab][1].array_items();
+            if (used.size() != 2)
+                log_error("checkpoint: physical.labs[%zu] aclr_used is malformed.\n", lab);
+            lab_data.aclr_used = {used[0].bool_value(), used[1].bool_value()};
+        }
+        for (const auto &entry : root["physical"]["reserved_wires"].array_items()) {
+            WireId wire = wire_by_name(ctx, entry[0].string_value(), "physical.reserved_wires");
+            wires.at(wire).flags = parse_u64(entry[1].string_value(), "reserved wire flags");
+            ++reserved_count;
+        }
+        for (const auto &route : root["physical"]["routes"].array_items()) {
+            NetInfo *ni = known_net(ctx, route[0].string_value(), "physical.routes");
+            if (!ni->wires.empty())
+                log_error("checkpoint: net %s is already routed before its route is restored.\n", ni->name.c_str(ctx));
+            const auto &entries = route[1].array_items();
+            // The wires map iterates newest first; bind in reverse to reproduce it.
+            for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+                const auto &v = it->array_items();
+                if (v.size() != 3)
+                    log_error("checkpoint: route of %s is malformed.\n", ni->name.c_str(ctx));
+                WireId wire = wire_by_name(ctx, v[0].string_value(), "physical.routes");
+                const PlaceStrength strength = PlaceStrength(v[2].int_value());
+                if (ctx->getBoundWireNet(wire) != nullptr)
+                    log_error("checkpoint: wire %s of net %s is already bound to %s.\n", v[0].string_value().c_str(),
+                              ni->name.c_str(ctx), ctx->getBoundWireNet(wire)->name.c_str(ctx));
+                if (v[1].string_value().empty()) {
+                    ctx->bindWire(wire, ni, strength);
+                } else {
+                    PipId pip = pip_by_name(ctx, v[1].string_value(), "physical.routes");
+                    if (ctx->getPipDstWire(pip) != wire)
+                        log_error("checkpoint: pip %s does not drive wire %s (net %s).\n", v[1].string_value().c_str(),
+                                  v[0].string_value().c_str(), ni->name.c_str(ctx));
+                    ctx->bindPip(pip, ni, strength);
+                }
+            }
+            ++routed_nets;
+        }
+        if (rank >= 4)
+            note_routing_complete();
+    }
+
+    if (idstring_idx_to_str->size() != pending_checkpoint->idstrings)
+        log_error("checkpoint: the restore interned %zu IdStrings; the checkpoint does not match this build.\n",
+                  idstring_idx_to_str->size() - pending_checkpoint->idstrings);
 
     ctx->rngstate = parse_u64(root["manifest"]["rng_state"].string_value(), "rng_state");
     checkpoint_phase_ = phase;
+    restored_input_json_ = pending_checkpoint->input.is_null() ? std::string() : pending_checkpoint->input.dump();
     pending_checkpoint.reset();
     log_info("Checkpoint: restored phase '%s' (%zu cells, %zu nets, %zu top ports, %zu cluster cells, %zu non-default "
-             "pin entries, %zu io_attr ports, %zu bound cells, rng_state %" PRIu64 ").\n",
+             "pin entries, %zu io_attr ports, %zu bound cells, %zu reserved wires, %zu routed nets, rng_state %" PRIu64
+             ").\n",
              phase.c_str(), size_t(cells.size()), size_t(nets.size()), size_t(ports.size()), cluster_cells, pin_entries,
-             size_t(io_attr.size()), bound, ctx->rngstate);
+             size_t(io_attr.size()), bound, reserved_count, routed_nets, ctx->rngstate);
     return true;
 }
 

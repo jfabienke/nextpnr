@@ -69,7 +69,9 @@ Fixtures live in `mistral/tests/fixtures/`. Benchmark and validation outputs go 
 (`build/stage*-validation/`, `build/lab-profile-fabi386/`) and are never committed. When comparing
 routed JSON across runs, strip the `creator` line and any settings lines that legitimately differ
 (`threads`); a run that interns an extra `IdString` before the netlist is read shifts every net id
-by one, so compare reports and log checksums as well.
+by one, so compare reports and log checksums as well. Compare reports only between runs with the
+same `--rbf` presence: bitstream generation re-runs a signoff timing analysis before the report is
+written, so a `--rbf` run's report differs from a run without it.
 
 The end-to-end regression design is **Fabi386** (i386 core, ~48k ALUTs, DE10-Nano
 `5CSEBA6U23I7`). Its JSON/QSF inputs live outside git in `build/fabi386-inputs/`
@@ -101,7 +103,8 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   ABI) -> `placement_revision` (session/revision stamps, Stage 4A) -> `placement_transaction`
   (serial frozen transactions hooked into HeAP via `PlacerHeapCfg::place_cluster_transaction`,
   Stage 4B) -> `lab_frozen_batch` (RAII owner of Rust-owned immutable batches, Stage 4C).
-  `checkpoint.cc` (Stage 5, 2a) persists and restores the packed and placed phases.
+  `checkpoint.cc` (Stage 5, 2a/2b) persists and restores the packed, placed, route-prepared, and
+  routed phases.
 - `rust/npnr_mistral_lab` is the pure evaluator (`model.rs`, `rules.rs`, `v2.rs`, wire formats);
   `rust/npnr_mistral_lab_ffi` is the C ABI consumed by `mistral/lab_v2_abi.h` /
   `lab_control_abi.h`. Rust owns only validated values and scratch; C++ owns the live design,
@@ -134,10 +137,12 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   with an identical name and signature (`mistral/placement_reuse.*`), and HeAP's constraint
   placer validates them. Reuse runs re-route from a different RNG state, so compare quality,
   not bytes.
-- Stage 5 (2a) checkpoints: `--checkpoint file.json` writes the output JSON plus a
-  `nextpnr_checkpoint` object for the last completed phase (packed or placed today); `--resume
-  file.json` replaces `--json`, restores it, and runs the remaining phases. `mistral/checkpoint.cc`
-  implements the `BaseCtx` hooks. A resumed run is byte-identical to the uninterrupted run because
+- Stage 5 (2a/2b) checkpoints: `--checkpoint file.json` writes the output JSON plus a
+  `nextpnr_checkpoint` object for the last completed phase (packed, placed, route-prepared with
+  `--route-prepare-only`, or routed); `--resume file.json` replaces `--json`, restores it, and runs
+  the remaining phases (a routed resume goes straight to signoff and `--rbf`). `Arch::route()` is
+  split into `prepare_route()` and the router for this. `mistral/checkpoint.cc` implements the
+  `BaseCtx` hooks. A resumed run is byte-identical to the uninterrupted run because
   the checkpoint replays the IdString table and every `dict`/users iteration order; a plain reload
   of nextpnr's own JSON reproduces neither (design doc section 2.6). Nothing between a checkpoint
   write and the netlist import may intern a string, which is why `write_module` looks up
@@ -166,9 +171,9 @@ measured and decided:
   tried and reverted; check it before re-deriving one.
 
 State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; Stage 5 has 1c (swap seam, batched
-refinement), 4b (retired), and 2a (packed and placed checkpoints) done; 2b (route-prepared and
-routed checkpoints, which needs the `Arch::route()` split) is next. Every new capability is off by
-default and unpromoted. Hard rules that still apply: the
+refinement), 4b (retired), and 2a/2b (checkpoints for all four phases) done; the remaining
+candidates are 3b completion, 3c (route reuse), and 3a (typed build states). Every new capability
+is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.
 

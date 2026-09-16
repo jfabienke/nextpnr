@@ -653,6 +653,8 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
 
         if (!parse_json(f, filename, ctx.get(), resume))
             log_error("Loading design failed.\n");
+        ctx->design_source_path = filename;
+        ctx->design_source_is_checkpoint = resume;
 
         if (vm.count("sdc")) {
             std::string sdc_filename = vm["sdc"].as<std::string>();
@@ -688,7 +690,7 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
         bool do_place = !resumed_placed && vm.count("pack-only") == 0 && vm.count("no-place") == 0;
         bool do_route = !resumed_routed && vm.count("pack-only") == 0 && vm.count("no-route") == 0;
         if (do_route)
-            completed_phase = "routed";
+            completed_phase = ctx->checkpointPhaseAfterRoute();
         else if (do_place || resumed_placed)
             completed_phase = "placed";
         else if (do_pack || resumed_packed)

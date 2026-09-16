@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: ISC */
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -8,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include "checkpoint.h"
 #include "gtest/gtest.h"
 #include "lab_control_edits.h"
 #include "lab_control_plan.h"
@@ -2188,6 +2191,8 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     child_a->pin_data[id_DATAIN].bel_pins = {id_DATAIN};
     child_a->pin_data[id_CLK].state = PIN_SIG;
     child_a->pin_data[id_CLK].bel_pins = {id_CLK};
+    child_b->pin_data[id_DATAIN].state = PIN_1; // a constant input with its bel pin cleared, as lab_pre_route leaves
+    child_b->pin_data[id_DATAIN].bel_pins.clear();
     ctx->io_attr[pad][io_standard] = Property("3.3-V LVTTL");
     ctx->io_attr[pad][drive] = Property(12, 8);
     ctx->pllclk_sel_map[123456789012345ull] = 3;
@@ -2305,6 +2310,9 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     EXPECT_EQ(child_a->pin_data.at(id_DATAIN).state, PIN_INV);
     EXPECT_EQ(child_a->pin_data.at(id_DATAIN).bel_pins, std::vector<IdString>{id_DATAIN});
     EXPECT_EQ(child_a->pin_data.at(id_CLK).state, PIN_SIG);
+    ASSERT_EQ(child_b->pin_data.count(id_DATAIN), 1u);
+    EXPECT_EQ(child_b->pin_data.at(id_DATAIN).state, PIN_1);
+    EXPECT_TRUE(child_b->pin_data.at(id_DATAIN).bel_pins.empty()); // recorded emptiness wins over the default
     ASSERT_EQ(ctx->io_attr.count(pad), 1u);
     EXPECT_TRUE(ctx->io_attr.at(pad).at(io_standard).is_string);
     EXPECT_EQ(ctx->io_attr.at(pad).at(io_standard).as_string(), "3.3-V LVTTL");
@@ -2341,9 +2349,110 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     std::string wrong_device = packed.str();
     wrong_device.replace(wrong_device.find("5CSEBA6U23I7"), 12, "5CGXFC5C6F27");
     EXPECT_THROW(ctx->checkpointPreload(wrong_device), log_execution_error_exception);
-    std::string routed = packed.str();
-    routed.replace(routed.find("\"phase\": \"packed\""), 17, "\"phase\": \"routed\"");
-    EXPECT_THROW(ctx->checkpointPreload(routed), log_execution_error_exception);
+    std::string unknown = packed.str();
+    unknown.replace(unknown.find("\"phase\": \"packed\""), 17, "\"phase\": \"signed\"");
+    EXPECT_THROW(ctx->checkpointPreload(unknown), log_execution_error_exception);
+
+    // Lineage hashes come from a hand-written SHA-256: check it against the
+    // FIPS 180-4 known answers for "abc" and the empty message.
+    {
+        const std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/ckpt_sha.txt";
+        {
+            std::ofstream out(path, std::ios::binary);
+            out << "abc";
+        }
+        EXPECT_EQ(checkpoint_sha256_file(path), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        }
+        EXPECT_EQ(checkpoint_sha256_file(path), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        std::remove(path.c_str());
+        EXPECT_EQ(checkpoint_sha256_file(path), "");
+    }
+
+    // Route-prepared state (2b): LAB control allocation and ALM modes, a
+    // control-wire reservation, and a bound route, restored in wires-map order.
+    auto &lab0 = ctx->labs.at(0);
+    const auto alm0_before = lab0.alms[0], alm1_before = lab0.alms[1];
+    const auto aclr_before = lab0.aclr_used;
+    lab0.alms[0].clk_ena_idx = {1, 0};
+    lab0.alms[0].aclr_idx = {0, 1};
+    lab0.alms[0].l6_mode = true;
+    lab0.alms[1].carry_mode = true;
+    lab0.aclr_used = {true, false};
+    const WireId reserved = lab0.clk_wires[0];
+    const uint64_t flags_before = ctx->wires.at(reserved).flags;
+    ctx->wires.at(reserved).flags = WireInfo::RESERVED_ROUTE | 2;
+    // A route-through buffer at a LUT BEL, as lab_pre_route leaves: the
+    // restore must give it comb facts (MLAB group -1), or the bitstream
+    // takes the LUTRAM path for its LAB.
+    CellInfo *buffer = ctx->createCell(ctx->id("ckpt_routethru"), id_MISTRAL_BUF);
+    buffer->addInput(id_A);
+    buffer->addOutput(id_Q);
+    buffer->connectPort(id_A, clk);
+    buffer->pin_data[id_A].bel_pins = {id_C};
+    buffer->combInfo.mlab_group = 0; // what a zero-filled union reads as
+    ctx->bindBel(lab0.alms[1].lut_bels[0], buffer, STRENGTH_STRONG);
+    const WireId src = lab0.alms[0].comb_out[0];
+    PipId pip;
+    for (PipId candidate : ctx->getPipsDownhill(src)) {
+        pip = candidate;
+        break;
+    }
+    ASSERT_NE(pip, PipId());
+    const WireId dst = ctx->getPipDstWire(pip);
+    ctx->bindWire(src, clk, STRENGTH_LOCKED);
+    ctx->bindPip(pip, clk, STRENGTH_STRONG);
+    auto route_order = [&]() {
+        std::vector<WireId> order;
+        for (auto &wire : clk->wires)
+            order.push_back(wire.first);
+        return order;
+    };
+    const auto route_before = route_order();
+    ASSERT_EQ(route_before.size(), 2u);
+    ctx->bindBel(root_bel, root, STRENGTH_LOCKED);
+    std::ostringstream routed;
+    ASSERT_TRUE(ctx->writeCheckpoint(routed, "routed"));
+    EXPECT_NE(routed.str().find("\"reserved_wires\""), std::string::npos);
+    ctx->unbindPip(pip);
+    ctx->unbindWire(src);
+    lab0.alms[0] = alm0_before;
+    lab0.alms[1] = alm1_before;
+    lab0.aclr_used = aclr_before;
+    ctx->wires.at(reserved).flags = flags_before;
+    ctx->unbindBel(root_bel);
+    ctx->unbindBel(lab0.alms[1].lut_bels[0]);
+    ctx->ports.clear();
+    ASSERT_TRUE(ctx->checkpointPreload(routed.str()));
+    ASSERT_TRUE(ctx->checkpointRestore());
+    EXPECT_EQ(ctx->checkpointPhase(), "routed");
+    EXPECT_EQ(root->bel, root_bel);
+    EXPECT_EQ(lab0.alms[0].clk_ena_idx, (std::array<int, 2>{1, 0}));
+    EXPECT_EQ(lab0.alms[0].aclr_idx, (std::array<int, 2>{0, 1}));
+    EXPECT_TRUE(lab0.alms[0].l6_mode);
+    EXPECT_TRUE(lab0.alms[1].carry_mode);
+    EXPECT_EQ(lab0.aclr_used, (std::array<bool, 2>{true, false}));
+    EXPECT_EQ(ctx->wires.at(reserved).flags, WireInfo::RESERVED_ROUTE | 2);
+    EXPECT_EQ(route_order(), route_before);
+    EXPECT_EQ(ctx->getBoundWireNet(src), clk);
+    EXPECT_EQ(ctx->getBoundPipNet(pip), clk);
+    EXPECT_EQ(clk->wires.at(dst).pip, pip);
+    EXPECT_EQ(clk->wires.at(dst).strength, STRENGTH_STRONG);
+    EXPECT_EQ(clk->wires.at(src).strength, STRENGTH_LOCKED);
+    EXPECT_EQ(buffer->bel, lab0.alms[1].lut_bels[0]);
+    EXPECT_EQ(buffer->combInfo.mlab_group, -1);
+    EXPECT_EQ(buffer->combInfo.lut_input_count, 1);
+    ctx->unbindBel(lab0.alms[1].lut_bels[0]);
+    buffer->disconnectPort(id_A);
+    ctx->cells.erase(buffer->name);
+    ctx->unbindPip(pip);
+    ctx->unbindWire(src);
+    lab0.alms[0] = alm0_before;
+    lab0.alms[1] = alm1_before;
+    lab0.aclr_used = aclr_before;
+    ctx->wires.at(reserved).flags = flags_before;
+    ctx->unbindBel(root_bel);
 
     for (CellInfo *ci : {root, child_a, child_b}) {
         ci->disconnectPort(id_CLK);

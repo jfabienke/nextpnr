@@ -55,6 +55,7 @@ struct ArchArgs
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
     SwapSeamMode sa_seam = SwapSeamMode::Off;   // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                           // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
+    bool route_prepare_only = false;            // Stage 5 (2b): stop route() after preparation, before the router
 };
 
 // These structures are used for fast ALM validity checking
@@ -371,8 +372,10 @@ struct Arch : BaseArch<ArchRanges>
     bool checkpointPreload(const std::string &checkpoint_json) override;
     bool checkpointRestore() override;
     std::string checkpointPhase() const override;
+    std::string checkpointPhaseAfterRoute() const override;
     std::shared_ptr<struct MistralCheckpoint> pending_checkpoint;
     std::string checkpoint_phase_;
+    std::string restored_input_json_; // the resumed checkpoint's manifest "input", propagated as lineage
 
     void notifyContextMutation(ContextMutationKind kind) override
     {
@@ -624,6 +627,8 @@ struct Arch : BaseArch<ArchRanges>
     bool pack() override;
     bool place() override;
     bool route() override;
+    // Stage 5 (2b): the half of route() before the router (LAB preparation, globals).
+    void prepare_route();
 
     // -------------------------------------------------
     // Functions for device setup

@@ -1344,6 +1344,85 @@ Fabi386 named in the design (feature fixture, M10K, PLL, IO register) are
 still to run; the PLL one matters because `pllclk_sel` on Fabi386 is 144
 default entries.
 
+### 2026-09-16: Stage 5 units 2b-1 and 2b-2: route-prepared and routed checkpoints
+
+`Arch::route()` is split into `prepare_route()` (`lab_pre_route`, then
+`route_globals`) and the router call; `--route-prepare-only` stops after the
+first half so a `route-prepared` checkpoint can be written, and a resume
+from one runs the router only. A `routed` resume runs nothing and goes to
+`--write`, `--report`, and `--rbf`. The checkpoint gains `physical.labs`
+(every ALM's control allocation and LUT6/carry modes, every LAB's
+`aclr_used`), `physical.reserved_wires` (the flags word of every wire with
+`RESERVED_ROUTE`), and `physical.routes` (every bound route in `wires` map
+order, bound back in reverse), plus manifest lineage: `input` (path and
+SHA-256 of the Yosys JSON, propagated through every checkpoint) and
+`parent` (path, phase, SHA-256 of the checkpoint resumed from), with a
+self-contained SHA-256 checked against the FIPS known answers by the unit
+test. Settings the command line adds that the checkpoint never had (such as
+`--uncompressed-rbf`) are kept; a differing `--seed` is an error and any
+other differing setting a warning, because the file's value is what runs.
+
+The gate for these two units is the bitstream, and it found three things
+the JSON, report, and log checksum cannot see (design document section
+2.6, findings eight and nine, and the restore order in section 5):
+
+1. Routing preparation leaves constant and unused LUT inputs with an empty
+   bel-pin list and `compute_lut_mask` keys on that emptiness; the
+   restore's default pin pass refilled 4,569 of them. Recorded pin entries
+   now win over the defaults.
+2. Applying those entries only after the default pass broke the packed and
+   placed bitstreams instead: `assign_ff_info` reads the `PIN_INV` states.
+   The states are applied before `assignArchInfo()`, the bel-pin lists
+   again after it.
+3. With every recorded field equal, the bitstreams still differed by
+   24,905 bytes of an uncompressed 7 MB image. A per-write log of the
+   bitstream generator (temporary instrumentation, not committed) in both
+   flows showed whole LABs taking the LUTRAM path in the resumed run. The
+   route-through buffers had never been through `assign_comb_info` in the
+   restored context, because `assignArchInfo()` skipped `MISTRAL_BUF`,
+   and a zero-filled union reads as MLAB group 0. `assignArchInfo()` now
+   covers buffers, which also repairs a plain `--json` reload of a routed
+   output.
+
+Two placement-time certifications are not applied after routing
+preparation: the packer's route-through buffers sit at LUT BELs outside
+both `isValidBelForCellType` and the ALM sharing rules, so for
+route-prepared and routed restores the writer's own preparation is the
+certification and only the structural checks (BEL exists, claimed once)
+run. Bitstream generation also re-runs a signoff timing analysis before
+the report is written, so a `--rbf` run's report differs from a run
+without it; every comparison below has `--rbf` on both sides.
+
+Fabi386 (`build/stage5-validation/checkpoint/run.sh`, same binary for every
+run, `--seed 1 --threads 1`, `--rbf` on every compared run):
+
+| Run | Checkpoint written | Checksums | Against the clean run (`--write` JSON, `--report`, `--rbf`) |
+| --- | --- | --- | --- |
+| clean (pack, place, route, bitstream) | none | `0xbb18ede9` / `0xbc1365c6` | reference |
+| `--pack-only --checkpoint` then `--resume` | packed, 73 MB | `0xbb18ede9` / `0xbc1365c6` | all three `cmp` identical |
+| `--no-route --checkpoint` then `--resume` | placed, 82 MB | `0xbc1365c6` | all three `cmp` identical |
+| `--route-prepare-only --checkpoint` then `--resume` | route-prepared, 90 MB: 56,428 idstrings, 12,169 cells, 13,396 nets, 42,252 non-default pin entries, 12,169 bindings, 4,191 LABs, 2,392 reserved wires, 1 routed net (the global clock) | `0xbc1365c6` (router only) | all three `cmp` identical |
+| `--checkpoint` after a full run, then `--resume` | routed, 110 MB: 56,448 idstrings, 12,866 routed nets | none (nothing runs) | all three `cmp` identical |
+
+The route-through cells (549 `MISTRAL_BUF`), the rewired FF inputs, and the
+reservations are all named in the route-prepared checkpoint, which is the
+provenance candidate 3c (route reuse) needs.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` (checkpoint test extended: routed round trip, empty bel-pin list, route-through buffer, SHA-256 known answers) | 56/56 pass |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 46/46 pass (one run under five concurrent Fabi386 jobs reported a failure that three quiet reruns did not reproduce; the name was not captured) |
+| `git diff --check`, `clang-format` on the new and edited lines | Pass |
+
+Costs and open items: the route-prepared checkpoint is about 90 MB and the
+routed one about 110 MB (routes are named wires and pips). The four
+fixtures beyond Fabi386 named in the design (feature fixture, M10K, PLL, IO
+register) are still to run; the PLL one matters because `pllclk_sel` on
+Fabi386 is 144 default entries, and the M10K one because those pin maps
+are never default. Rejecting conflicting options outright, as the design
+proposed, is not implementable without knowing which settings the user
+typed; the warning-plus-seed-error policy is recorded in the design.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1407,6 +1486,12 @@ default entries.
 | 2026-09-16 | 2a | Resolve BEL names through the BEL list and make the writer's `"module"` lookup non-interning | `IdStringList::parse` and `write_module` each interned one string, shifting every route-through net's number |
 | 2026-09-16 | 2a | Omit default pin maps from the checkpoint | 63,103 entries to 7,813; `assignArchInfo()` regenerates the rest |
 | 2026-09-16 | 2a | Keep `--checkpoint`/`--resume` opt-in; a checkpoint from another device, an unknown phase, or a table that is not a prefix of the process's own is refused | Unit test and preload checks; identity is only promised for the same build and options |
+| 2026-09-16 | 2b | Split `Arch::route()` into `prepare_route()` and the router; `--route-prepare-only` writes the route-prepared phase | Resume-from-prepared runs the router only and reproduces the clean run's routing, report, and bitstream |
+| 2026-09-16 | 2b | The bitstream is the gate for 2b; the JSON, report, and checksum see neither pin maps nor comb facts | Three restore defects (empty bel-pin lists, inversion states, route-through comb facts) were invisible to every other comparison |
+| 2026-09-16 | 2b | Apply recorded pin entries before `assignArchInfo()` and their bel-pin lists again after it | `assign_ff_info` reads the states; the default pass refills empty lists |
+| 2026-09-16 | 2b | `assignArchInfo()` covers `MISTRAL_BUF` | Route-through buffers need comb facts in any restored or reloaded context; the clean flow only ever set them at creation |
+| 2026-09-16 | 2b | Placement-time certifications run only for packed and placed restores | Route-through buffers are placed outside those rules by design; the writer's preparation is the certification after it |
+| 2026-09-16 | 2b | Warn on settings the checkpoint overrides, error only on `seed`, keep extra command-line settings | The flow cannot tell a typed option from a filled-in default; refusing every difference would refuse any checkpoint written with a non-default option |
 
 ## Stage gates and promotion
 
@@ -1416,4 +1501,4 @@ default entries.
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | In progress: 1c complete, 4b retired, 2a complete (packed and placed checkpoints, byte-identical on resume); 2b (route-prepared and routed) next | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume` available, all off by default; nothing promoted |
+| Stage 5: seams and checkpoints | In progress: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all four phases, byte-identical on resume including the bitstream); remaining candidates 3b completion, 3c, 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only` available, all off by default; nothing promoted |

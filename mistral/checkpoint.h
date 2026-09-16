@@ -19,8 +19,11 @@ NEXTPNR_NAMESPACE_BEGIN
 // Phase ranks. -1 is an unknown phase; 0 is "no checkpoint".
 int checkpoint_phase_rank(const std::string &phase);
 
-// Phases this backend can restore today (2a: packed and placed).
+// Phases this backend can restore (2a: packed, placed; 2b: route-prepared, routed).
 bool checkpoint_phase_restorable(const std::string &phase);
+
+// SHA-256 of a file's bytes as lowercase hex; empty if the file cannot be read.
+std::string checkpoint_sha256_file(const std::string &path);
 
 NEXTPNR_NAMESPACE_END
 

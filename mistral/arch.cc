@@ -633,7 +633,12 @@ void Arch::assignArchInfo()
 {
     for (auto &cell : cells) {
         CellInfo *ci = cell.second.get();
-        if (is_comb_cell(ci->type) || ci->type == id_MISTRAL_MLAB)
+        // Route-through buffers (MISTRAL_BUF, created by lab_pre_route) sit
+        // at LUT BELs and carry comb facts too; a context restored after
+        // routing preparation holds them, and a buffer left with a
+        // zero-filled union reads as MLAB group 0, which turns its whole LAB
+        // into LUTRAM in the bitstream.
+        if (is_comb_cell(ci->type) || ci->type == id_MISTRAL_MLAB || ci->type == id_MISTRAL_BUF)
             assign_comb_info(ci);
         else if (ci->type == id_MISTRAL_FF)
             assign_ff_info(ci);
@@ -811,11 +816,26 @@ bool Arch::place()
     return true;
 }
 
-bool Arch::route()
+// Stage 5 (2b): everything the router depends on that is not the router. A
+// route-prepared checkpoint is written after this and resumed before the
+// router, so nothing the router needs may be left to state this half and the
+// checkpoint both omit.
+void Arch::prepare_route()
 {
     lab_pre_route();
-
     route_globals();
+}
+
+bool Arch::route()
+{
+    if (checkpoint_phase_ == "route-prepared")
+        log_info("Routing preparation restored from the checkpoint; running the router.\n");
+    else
+        prepare_route();
+    if (args.route_prepare_only) {
+        log_info("Routing preparation complete; the router is skipped (--route-prepare-only).\n");
+        return true;
+    }
 
     std::string router = str_or_default(settings, id_router, defaultRouter);
     bool result;

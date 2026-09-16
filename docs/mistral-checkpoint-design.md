@@ -1,8 +1,8 @@
 # Mistral Checkpoint Design (Stage 5, units 2a/2b)
 
-Status: designed 2026-09-16; units 2a-1 and 2a-2 (packed and placed
-checkpoints) implemented the same day in `mistral/checkpoint.cc`, with the
-generic hooks in `common/kernel/basectx.h`, `json/jsonwrite.cc`,
+Status: designed 2026-09-16; all four phases implemented the same day in
+`mistral/checkpoint.cc` (2a: packed, placed; 2b: route-prepared, routed),
+with the generic hooks in `common/kernel/basectx.h`, `json/jsonwrite.cc`,
 `frontend/json_frontend.cc` and `common/kernel/command.cc`. Refines Stage 2
 of [`parallel-incremental-design.md`](parallel-incremental-design.md) for
 the Mistral backend with a field audit of the current code. Section 2.6 and
@@ -146,6 +146,32 @@ bindings too. They are persisted explicitly at every phase, by BEL name,
 and resolved through the BEL list rather than `getBelByNameStr`, whose
 name parser interns every component.
 
+An eighth was found by the bitstream gate of 2b: routing preparation
+leaves constant and unused LUT inputs with an *empty* bel-pin list, and
+`compute_lut_mask` keys on that emptiness. The restore recorded those
+entries (they are non-default) but applied them before `assignArchInfo()`,
+whose default pass refilled every empty list, so 4,569 pins and every
+affected LUT mask differed while the JSON, report, and checksum, none of
+which see pin maps, were identical. Applying the recorded entries only
+after the default pass is wrong too: `assign_ff_info` reads the `PIN_INV`
+states to set the control-set inversions the bitstream programs, so the
+states must be in place before it. Recorded entries are therefore applied
+before `assignArchInfo()` and their bel-pin lists re-applied after it. The
+order of restore steps is itself state, and only the bitstream sees these
+two mistakes.
+
+A ninth was found the same way, once the pin maps matched and the
+bitstreams still differed: a per-write log of the bitstream generator in
+both flows showed the resumed run taking the LUTRAM path for whole LABs.
+That path keys on `combInfo.mlab_group`, and the route-through buffers
+(`MISTRAL_BUF`) that `lab_pre_route` creates had never been through
+`assign_comb_info` in the restored context: the clean flow calls it on
+each buffer when it creates it, but `assignArchInfo()` only covered the
+`is_comb_cell` types and MLABs, so a restored buffer kept a zero-filled
+union in which the MLAB group reads as 0. `assignArchInfo()` now covers
+buffers too, which also repairs the plain `--json` reload of a routed
+nextpnr output, where the same buffers exist.
+
 A seventh was found by the log checksum, the last comparison that still
 differed after the outputs were byte-identical: an undriven net keeps the
 port name of a driver the packer removed (`disconnectPort` clears the cell
@@ -185,10 +211,19 @@ One file, the ordinary nextpnr output JSON, plus a top-level object:
   },
   "physical": {
     "bindings": [ { "cell": "...", "bel": "<bel name>", "strength": 3 } ],
-    "pllclk_sel": [ { "key": "<uint64 decimal>", "sel": 3 } ]
+    "pllclk_sel": [ { "key": "<uint64 decimal>", "sel": 3 } ],
+    "labs": [ [ [ [<clk_ena_idx 0>, <1>, <aclr_idx 0>, <1>, <l6_mode>, <carry_mode>], ... 10 ALMs ], [<aclr_used 0>, <1>] ], ... ],
+    "reserved_wires": [ ["<wire name>", "<flags decimal>"], ... ],
+    "routes": [ ["<net>", [ ["<wire name>", "<pip name or empty>", <strength>], ... ] ], ... ]
   }
 }
 ```
+
+The manifest also carries lineage: `input` (`path`, `sha256` of the Yosys
+JSON this design came from, propagated through every checkpoint) and
+`parent` (`path`, `phase`, `sha256` of the checkpoint this run resumed
+from). The hash is a self-contained SHA-256 in `checkpoint.cc`, checked
+against the FIPS known answers by the unit test.
 
 Rules:
 
@@ -214,8 +249,14 @@ Rules:
   `Property::to_string()` bit encoding, so a string that happens to look
   like a bit vector cannot be misread.
 - `physical.bindings` and `physical.pllclk_sel` are present at every phase.
-  Later phases add `physical.labs`, `reserved_routes` and the routed
-  section (2b).
+  From `route-prepared` on, `physical.labs` (every LAB, every ALM: the
+  control allocation and the LUT6/carry modes `reassign_alm_inputs` sets),
+  `physical.reserved_wires` (the complete `flags` word of every wire with
+  `RESERVED_ROUTE`) and `physical.routes` (every net with bound wires, in
+  its `wires` map order: the globals at route-prepared, everything at
+  routed) are present too. Wires and pips are named; Mistral builds those
+  names from tables interned at startup, so naming and parsing intern
+  nothing, and the restore verifies that the table did not grow.
 - The file is written to a temporary name and renamed after the payload is
   complete, so a crash leaves no half checkpoint.
 
@@ -258,26 +299,46 @@ without the option. Nothing in the flow changes when the option is absent.
    (cells, nets, settings, attrs, per-cell ports with missing ports
    recreated, per-cell attrs and params, per-net users and attrs); restore
    the top-level port table; restore packing (`cluster` and `constr_*` per
-   cell, `constr_children` in recorded order, the non-default `pin_data`
-   entries, `io_attr`); then `assignArchInfo()`, the same call `pack()`
-   ends with, which rebuilds `combInfo`, `ffInfo` and the default pin maps.
+   cell, `constr_children` in recorded order, `io_attr`); then
+   `assignArchInfo()`, the same call `pack()` ends with, which rebuilds
+   `combInfo`, `ffInfo` and the default pin maps. The recorded non-default
+   `pin_data` entries are applied before that call (their `PIN_INV` states
+   feed `assign_ff_info`) and their bel-pin lists again after it, so that a
+   recorded empty list stays empty. Settings the command line added that
+   the checkpoint never had (such as `uncompressed_rbf`) are kept and
+   iterate after the recorded ones; every other order list must match the
+   design exactly.
 4. Bind every recorded binding through `bindBel` (which rebuilds
    `unique_input_count`), restore `pllclk_sel_map`, and run the live
    legality check over every bound BEL: a checkpoint that certifies an
    illegal placement is refused, not repaired.
-5. Restore `ctx->rngstate`. The flow then runs `ctx->check()` as it does
+5. If `phase >= route-prepared`: restore the LAB control allocation and
+   ALM modes, the reserved-wire flags, and every route (bound in reverse
+   of the recorded order, so the `wires` map iterates as the writer's
+   did). A routed restore also marks routing complete for the LAB state
+   report.
+6. Restore `ctx->rngstate`. The flow then runs `ctx->check()` as it does
    after packing, and skips the completed phases: a `packed` resume runs
-   place and route; a `placed` resume runs route (which begins with
-   `lab_pre_route`). Route-prepared and routed resumes are unit 2b, which
-   requires splitting `Arch::route()` into `prepare_route()` and the
-   router call.
+   place and route; a `placed` resume runs route; a `route-prepared`
+   resume runs the router only (`Arch::route()` is split into
+   `prepare_route()`, which `lab_pre_route` and `route_globals` make up,
+   and the router call, and skips the first half when the restored phase
+   says it already ran); a `routed` resume runs nothing and goes straight
+   to `--write`, `--report`, and the bitstream. `--route-prepare-only`
+   stops a normal run after `prepare_route()` so that a route-prepared
+   checkpoint can be written; `BaseCtx::checkpointPhaseAfterRoute()`
+   tells the flow which phase a completed `route()` call represents.
 
 The file's `settings` are imported by the frontend as for any
-nextpnr-written JSON and therefore win over conflicting command-line
-options, including `threads`; validating and reporting such conflicts is
-part of 2b-2 with the manifest lineage. A failed restore is an error that
-names the offending section and object; it never leaves a partially
-restored design in use.
+nextpnr-written JSON and therefore win over command-line options. The
+proposal said conflicting options would be rejected; the implementation
+cannot tell an option the user typed from a default the flow filled in,
+and rejecting every difference would refuse any resume of a checkpoint
+written with a non-default option. So: a differing `seed` is an error (the
+manifest's RNG state is what runs, and a different seed would be silently
+ignored), and every other difference is a warning that names the key and
+both values. A failed restore is an error that names the offending section
+and object; it never leaves a partially restored design in use.
 
 ## 6. Increments
 

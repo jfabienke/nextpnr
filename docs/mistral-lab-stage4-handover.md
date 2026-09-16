@@ -14,8 +14,8 @@ Handover point:
 - Commit: `da7aa9c9` (Stage 5, 2a)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
-- Stage 5: 1c complete, 4b retired, 2a complete (packed and placed
-  checkpoints); next is 2b (route-prepared and routed checkpoints).
+- Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
+  four phases); remaining candidates are 3b completion, 3c, and 3a.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -316,14 +316,17 @@ The candidate list and its priority order are recorded in the tracker's
 3a (typed build states, in C++). 1c is complete (1c-A and 1c-B). 4b is
 retired: re-attributing the profile shows propagation at 2.9% of the run and
 the timing structure built once per phase; the placers' hashed criticality
-lookups were the real cost and are now per-arc tables. 2a is complete:
-`--checkpoint` and `--resume` for the packed and placed phases, byte-identical
-on resume (tracker entry "Stage 5 units 2a-1 and 2a-2"); the design is
+lookups were the real cost and are now per-arc tables. 2a and 2b are
+complete: `--checkpoint` and `--resume` for all four phases (packed, placed,
+route-prepared via `--route-prepare-only`, routed), each byte-identical on
+resume in output JSON, report, and bitstream (tracker entries "Stage 5 units
+2a-1 and 2a-2" and "Stage 5 units 2b-1 and 2b-2"); the design is
 [`mistral-checkpoint-design.md`](mistral-checkpoint-design.md), whose section
 2.6 lists what a reload of nextpnr's own JSON loses and why the checkpoint
-carries the IdString table and every iteration order. Next is 2b: split
-`Arch::route()` into preparation and the router, persist the LAB control
-state and reservations, then routed resume and manifest lineage.
+carries the IdString table and every iteration order. `Arch::route()` is
+split into `prepare_route()` and the router. Remaining candidates: the rest
+of 3b, 3c (route reuse, for which the checkpoint now names every generated
+cell, rewired input, and reservation), and 3a (typed build states).
 
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost

@@ -144,6 +144,14 @@ struct BaseCtx
     virtual bool checkpointRestore() { return false; }
     // Phase of the checkpoint this context was restored from; empty otherwise.
     virtual std::string checkpointPhase() const { return std::string(); }
+    // Phase a completed route() call represents; a backend that can stop
+    // before its router reports "route-prepared".
+    virtual std::string checkpointPhaseAfterRoute() const { return "routed"; }
+    // Set by the command flow: the file the design was loaded from and
+    // whether it was a checkpoint (--resume) or a netlist (--json). Plain
+    // strings, never interned; checkpoints record them as lineage.
+    std::string design_source_path;
+    bool design_source_is_checkpoint = false;
 
     // Must be called before performing any mutating changes on the Ctx/Arch.
     void lock(void)

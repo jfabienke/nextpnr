@@ -67,6 +67,8 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "annealer swap evaluation: off (live bind/check/revert), shadow (detached assessment "
                            "compared against live), or on (detached decides; identical results, no provisional "
                            "binding) (experimental)");
+    specific.add_options()("route-prepare-only",
+                           "run LAB and global routing preparation, then stop before the router (for --checkpoint)");
     specific.add_options()("sa-batch", po::value<int>(),
                            "batched annealer refinement: speculate this many swaps per batch, evaluate them "
                            "detached on --threads workers, consume in order (results depend on the seed and "
@@ -158,6 +160,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.sa_seam = SwapSeamMode::On;
     else
         log_error("Unknown --sa-seam mode '%s'; use off, shadow, or on.\n", seam_mode.c_str());
+    chipArgs.route_prepare_only = vm.count("route-prepare-only") != 0;
     if (vm.count("sa-batch")) {
         chipArgs.sa_batch = vm["sa-batch"].as<int>();
         if (chipArgs.sa_batch < 0)
