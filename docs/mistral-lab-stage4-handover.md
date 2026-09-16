@@ -316,7 +316,9 @@ The candidate list and its priority order are recorded in the tracker's
 retired: re-attributing the profile shows propagation at 2.9% of the run and
 the timing structure built once per phase; the placers' hashed criticality
 lookups were the real cost and are now per-arc tables. Next is 2a/2b, the
-versioned checkpoint, which starts with a design document.
+versioned checkpoint; its design is
+[`mistral-checkpoint-design.md`](mistral-checkpoint-design.md) (field audit,
+format, restore order, increments, and the name-based comparison gate).
 
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost

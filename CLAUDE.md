@@ -149,6 +149,9 @@ measured and decided:
   recorded exit evidence.
 - `docs/mistral-lab-next-stages-design.md` — architectural rationale (with
   `mistral-lab-legality-design/plan/profile.md` and `parallel-incremental-design.md`).
+- `docs/mistral-checkpoint-design.md` — Stage 5 units 2a/2b: checkpoint field audit, format, restore
+  order, and the name-based comparison gate (routed JSON numbers nets by IdString index, so a
+  restored process cannot be compared byte for byte).
 - `MISTRAL_GAPS.md` — silicon-verified findings for the DE10-Nano flow (PLL, IO registers, HPS
   bridges, DSP, M10K, router deadlock mechanisms). Several "obvious fixes" recorded there were
   tried and reverted; check it before re-deriving one.
