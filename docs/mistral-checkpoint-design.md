@@ -434,22 +434,40 @@ already bound are left to it. The check for pip availability is not
 optional: router2 trusts pre-routed pips even where its own availability
 test fails, on the assumption that whoever pre-routed them knew better.
 
-Preserved routes are bound at `STRENGTH_STRONG`. Router2 records complete
-pre-routed arcs and never revisits them, whatever their strength; what the
-strength decides is how other nets see the wires. Bound weak (the first
-attempt), the wires stayed available to other nets, so a dirty net that
-wanted one piled onto it, the pre-routed owner never moved, and the
-provenance experiment crawled to the iteration cap with one overused wire
-that only the final bind resolved. Bound strong, router2 marks the wires
-unavailable from its first iteration and dirty nets route around them, and
-a net that cannot is a real router failure rather than a stalemate. Its
-final pass rebinds every wire up to `STRENGTH_STRONG` at `STRENGTH_WEAK`,
-so the output carries the strengths an uninterrupted run writes and an
-unchanged design stays byte-identical. Region expansion is therefore not
-rip-up of preserved routes; it is the dirty nets' freedom to route around
-them, and beyond that the fallback below. Releasing only the preserved
-routes a failing net collides with, instead of all of them, is the refinement
-this leaves open.
+Preserved routes are bound at `STRENGTH_STRONG`. Router2's setup registers
+every bound wire in its congestion model and marks each complete
+pre-routed arc as routed (`record_prerouted_net`), so its first iteration
+starts from the preserved routes rather than from nothing. A pre-routed
+arc is not exempt from rip-up: once one of its wires is overused,
+`route_net` rips it up like any other arc, and the closing measurement
+found about 18% of the applied routes on the controlled edits re-routed
+by the end. The reuse report therefore counts applied routes, and
+survival is a separate number. What the strength changed is empirical:
+bound weak (the first attempt) the provenance experiment crawled to the
+iteration cap with one overused wire that only the final bind resolved;
+bound strong the same experiment fails as a real router failure and the
+fallback takes over. Router2's final pass rebinds every wire up to
+`STRENGTH_STRONG` at `STRENGTH_WEAK`, so the output carries the strengths
+an uninterrupted run writes and an unchanged design stays byte-identical.
+Region expansion is therefore not rip-up of preserved routes; it is the
+dirty nets' freedom to route around them, and beyond that the fallback
+below.
+
+Bind order (3c-2). Router2's final pass, `bind_and_check_all`, used to rip
+up and rebind one net at a time. With preserved routes that is wrong in a
+way the clean flow never shows: a preserved arc that router2 re-routed in
+its model keeps its strong context binding until its own turn in that
+pass, so any earlier net whose new route crosses those wires fails the
+bind (`checkWireAvail` false, wire bound to another net), is queued
+again, and costs a whole iteration. On the INIT edit all 4,066 failures
+were of this kind, between reused nets only. The pass now rips up every
+net's weak and strong wires first and binds afterwards; the clean flow
+has nothing bound before the first bind pass and is byte-identical
+(Fabi386 and every checkpoint fixture), and the edits lose their extra
+iterations. The refinement the first version of this section left open,
+releasing only the preserved routes a failing net collides with, is
+subsumed: nothing collides at bind time any more, and what remains is the
+re-routing that negotiated congestion itself decides on.
 
 Fallback. Router2 does not fail at its iteration cap: it gives up, and this
 fork then runs router1 to legalise whatever is left, which with preserved

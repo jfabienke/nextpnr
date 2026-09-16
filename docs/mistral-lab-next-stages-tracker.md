@@ -1532,16 +1532,15 @@ Reading. The mechanism is correct: preserved routes are never invalid
 (unit test covers a foreign source, a stale leaf, a blocked pip, a wire
 another net holds, an already-routed net, and the drop), an unchanged
 design reproduces the clean run, and both fallbacks reproduce the clean
-run rather than a third trajectory. The performance hypothesis from the
-Stage 5 opening entry, that route reuse reduces the nets searched, does
-not hold on these edits: with 93 to 95% of nets preserved, router2 still
-took twice as long, because the dirty nets route around fixed routes with
-less freedom and router2 accumulated about 4,000 bind-time rejections
-(`archfail`, a cumulative counter) over its extra iterations; quality is
-inside the seed spread either way. On the unchanged design the router is
-ten times faster. Route reuse stays opt-in and unpromoted; a release of
-only the preserved routes a failing net collides with, instead of all of
-them, is the refinement that could turn the edited case around.
+run rather than a third trajectory. The edited-design router times in the
+table above were measured with five validation jobs sharing the machine
+and are wrong by about two times; the closing measurement below reran
+them alone (router2 8.31 s against 9.12 s clean on the INIT edit, 10.22 s
+against 9.24 s on the swaps) and attributed the extra iterations and the
+`archfail` count to a bind-order collision in router2 that unit 3c-2
+removes. Quality is inside the seed spread either way. On the unchanged
+design the router is ten times faster. Route reuse stays opt-in and
+unpromoted.
 
 | Command | Result |
 | --- | --- |
@@ -1602,8 +1601,127 @@ route decisions that matter are the ones a real reuse run writes.
 
 With this the Stage 5 candidate list from the opening measurement is
 exhausted: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a. What remains open is
-recorded per unit: the annealer is owner-bound, route reuse doubles router
-time on edits, placement region expansion has not met a real failure.
+recorded per unit: the annealer is owner-bound, route reuse costs the
+same router time as a clean run on edits (the "doubles" first recorded
+here was a contended measurement; see the closing measurement), placement
+region expansion has not met a real failure.
+
+### 2026-09-16: Stage 5 closing measurement: where the time goes now, and one attributed defect
+
+Method as in the opening entry: `sample <pid> 600 1 -mayDie -f`, attribution by
+inclusive call-graph counts with `build/stage5-profile/attribute.py` (rewritten
+this session: phases are charged on the main thread only, because router2 runs
+its worker on a second thread while the main thread waits in `join`, and worker
+frames would otherwise double count; the annealer takes its count away from
+HeAP, and the router1 legality pass from router2). Calibrated on the opening
+sample first: HeAP 25.1%, annealer 38.1%, router2 28.8% plus router1 check 1.8%,
+against the opening entry's 24.7 / 38.1 / 30.6.
+
+Fabi386 clean (`--seed 1 --threads 1`, legacy, checksums 0xbb18ede9 / 0xbc1365c6,
+25,083 main-thread samples) and the 40-edit design with `--reuse-placement` and
+`--reuse-routes` from the checkpoint validation's clean run (13,038 samples):
+
+| Phase | Clean, opening | Clean, closing | Edit with both reuse paths |
+| --- | ---: | ---: | ---: |
+| chipdb load | 3.0% | 1.2% | 5.9% |
+| load, pack | 1.0% | 0.9% | 1.9% |
+| HeAP | 25.1% | 19.1% | 2.5% |
+| annealer refinement | 38.1% | 40.5% | 3.9% |
+| placement reuse | | | 2.9% |
+| route reuse checks | | | 8.9% |
+| router2 | 28.8% | 35.1% | 67.9% |
+| router1 legality check (0 arcs) | 1.8% | 2.1% | 4.0% |
+| write, report, other | 2.2% | 1.1% | 2.0% |
+
+Inside router2, across the driver and its worker (the shares are of router
+work, wait excluded): `route_net` 83% clean / 76% edit, of which cost
+functions (`score_wire_for_arc`, `get_togo_cost`) 28% / 26%, pip availability
+(`checkPipAvailForNet`, `is_pip_blocked`, bound-pip lookup) 18% / 24%, priority
+queue 21% / 17%, `dict` lookups 10% / 9%; timing analysis 4.5% / 6.7%;
+`is_wire_undriveable` scans 3.5% / 3.9%.
+
+Reading. The clean flow's shape is unchanged, as intended: no default changed
+in Stage 5. The reuse flow on an edit halves the run (13,038 against 25,083
+samples) by removing placement (60% to 6%), and what remains is router2 at
+68%, with the reuse checks (9%) and the chipdb load (6%) behind it.
+
+**Correction to the 3c entry.** The 3c edited-design timings (19.6 and 20.2 s
+against 10.3 s clean) were taken with five validation jobs running at once.
+Rerun sequentially with nothing else on the machine, same binary and inputs:
+
+| Edit | Clean router2 | Reuse router2 | Iterations clean / reuse |
+| --- | ---: | ---: | --- |
+| 40 LUT INIT edits | 9.12 s | 8.31 s | 20 / 29 |
+| 40 input swaps | 9.24 s | 10.22 s | 49 / 40 |
+
+Route reuse does not double router time on an edit; it costs the same, with
+93 to 95% of the routes applied. The 3c decision row is corrected below.
+
+**Attributed: the extra iterations are a bind-order collision in router2.**
+The reuse run's iteration 25 reached zero overuse and then logged
+`archfail=4052`; the clean run's first zero-overuse bind failed nothing. A
+`--verbose` rerun classifies all 4,066 failures as wire failures
+(`checkWireAvail` false, wire bound to another net), none as pip failures,
+across 1,255 failing and 825 blocking nets, every one of them a net the plan
+had marked `reuse`. Mechanism, from `router2.cc`: `setup_wires` registers
+every pre-bound wire, and `check_arc_routing` marks the reused arcs routed,
+but a routed arc is still ripped up in the router's model when it is overused
+(`ripup_arc` in `route_net`), and its context binding stays until
+`bind_and_check_all`. That pass rips up and rebinds one net at a time, so an
+earlier net whose new route crosses the stale binding of a later, re-routed
+net fails the bind for nothing, is queued again, and costs a whole
+iteration. The clean flow never sees it because nothing is bound in the
+context before the first bind pass. Note for the 3c reading: "router2 treats
+preserved routes as fixed" is not what happens; it may re-route them, and the
+94.6% is what was applied, not what survived.
+
+Prototype (10 lines: unbind every net's weak and strong wires first, then
+bind), same inputs, sequential and alone:
+
+| Run | Before | After |
+| --- | --- | --- |
+| Edit (INIT), reuse | 8.31 s, 29 iterations, archfail 4,052 then 4,066 | 6.53 s, 25 iterations, archfail 0 |
+| Edit (swaps), reuse | 10.22 s, 40 iterations, archfail 4,073 | 7.47 s, 36 iterations, archfail 0 |
+| Edit (INIT), clean | 9.12 s, 20 iterations | 8.59 s, 20 iterations; both log checksums identical (0xc9e140ca / 0xa66e5260) |
+| Fabi386 clean gate | 0xbb18ede9 / 0xbc1365c6 | 0xbb18ede9 / 0xbc1365c6, identical |
+| Reused routes identical at the end (INIT edit) | 10,488 of the 12,671 applied (82.8%) | 10,386 (82.0%); swaps 10,169 of 12,503 (81.3%) |
+
+Run-to-run noise on identical clean runs is about 6% (9.12 against
+8.59 s), so the after-column gains of 21% and 27% on the two edits are
+real, and the clean flow is unchanged byte for byte. The prototype is
+kept as unit 3c-2 (validation table below). Route survival is the number
+to watch from here: about 18% of the applied routes are re-routed by
+router2 on both edits, so "preserved" in the 3c table means applied, not
+final; the Stage 5 reading that router2 treats preserved routes as fixed
+was wrong (`ripup_arc` takes pre-routed arcs like any other once they are
+overused), and CLAUDE.md is corrected in this commit.
+
+Unit 3c-2 validation, one binary for every run:
+
+| Check | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` alone | 58/58 pass (one failure of `BatchCoordinatorParallelFreezeMatchesOwnerFreeze` while ten fixture flows shared the machine; 5/5 repeats pass alone, same unattributed load sensitivity as before) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 48/48 pass |
+| Fabi386 clean, `--seed 1 --threads 1` | checksums 0xbb18ede9 / 0xbc1365c6, archfail 0 at iteration 20, as before |
+| Edited design (INIT), clean | checksums 0xc9e140ca / 0xa66e5260, identical to the pre-change run |
+| Checkpoint fixtures, all eleven designs, `validate_design.sh` (`slot2.qsf`, `slot2_ioreg.qsf` for sdrio) | Every packed, placed, route-prepared, and routed resume `cmp`-identical to its clean run on JSON, report, and bitstream; every clean run's two log checksums equal the pre-change fixture pass; archfail 0 everywhere |
+| `git diff --check`, `clang-format` | Pass |
+
+**Recommendation for the next unit, from the measured remainder.**
+After 3c-2 the edited-design flow with both reuse paths spends its time
+in router2 (about 68% before the fix, still the majority after it), and
+inside router2 in `route_net` for the roughly 18% of applied routes that
+are re-routed plus the 5 to 7% that were never applied. The next unit
+that the measurement supports is therefore router-side, not placement-side:
+make a preserved route that router2 rips up count as "changed" in the
+reuse report (survival is currently invisible outside this script), and
+then reduce the re-routing itself, most plausibly by seeding router2's
+history cost from the previous run so the preserved routes are not the
+first thing the negotiated-congestion loop sacrifices. The chipdb load
+(6% of the edit run) and the reuse checks (9%) are the only other
+measurable items, and both are bounded by I/O and one pass over the
+nets. Nothing in the clean flow moved, by design; its shape (annealer
+40%, router2 35%, HeAP 19%) is the same as at the opening.
 
 ## Decision log
 
@@ -1680,7 +1798,9 @@ time on edits, placement region expansion has not met a real failure.
 | 2026-09-16 | 3c | Preserve a previous route only under the full endpoint, leaf, resolution, and availability checks | router2 trusts pre-routed pips past its own availability test; the checks are the certification |
 | 2026-09-16 | 3c | Bind preserved routes strong, not weak | Weak wires stayed open to other nets while the pre-routed owner never moved; the provenance run crawled to the cap with one overused wire |
 | 2026-09-16 | 3c | Treat router2 giving up as failure when routes were reused, and route from scratch below locked strength | Router1's legalisation pass otherwise yields a different routing; the fallback now reproduces the clean run byte for byte |
-| 2026-09-16 | 3c | Keep `--reuse-routes` opt-in; record that it doubles router time on the edited designs | 94 to 95% of nets preserved, router2 19.6 and 20.2 s against 10.3 s clean; ten times faster only on an unchanged design |
+| 2026-09-16 | 3c | Keep `--reuse-routes` opt-in; the edited-design router time is equal to clean, not double | 94 to 95% of nets applied; the 19.6 and 20.2 s first recorded were contended, sequential reruns give 8.31 against 9.12 s and 10.22 against 9.24 s; ten times faster on an unchanged design |
+| 2026-09-16 | 3c-2 | Rip up every net before binding any in router2's bind pass | All 4,066 bind failures on the INIT edit were wires still bound to a later reused net's stale route; two passes give archfail 0, four fewer iterations, 21 to 27% less router time on the edits, byte-identical clean flow |
+| 2026-09-16 | closing | Next unit is router-side: report route survival, then seed router2's history from the previous run | 18% of applied routes are re-routed on both edits; router2 is 68% of the edit run after placement reuse removed 54 points |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -1693,4 +1813,4 @@ time on edits, placement region expansion has not met a real failure.
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted |
+| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |

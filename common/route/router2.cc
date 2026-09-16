@@ -1407,7 +1407,17 @@ struct Router2
             if (ctx->debug) {
                 log("Ripped up %zu wires on net %s\n", net_wires.size(), ctx->nameOf(net));
             }
+        }
 
+        // Bind only once every net's previous binding is gone. Binding net by net directly after
+        // its own ripup lets an earlier net collide with the stale binding of a later net whose
+        // arcs were re-routed in the model (pre-routed arcs keep their context binding until this
+        // pass), which fails the bind for nothing and costs a full extra iteration.
+        for (auto net : nets_by_udata) {
+#ifdef ARCH_ECP5
+            if (net->is_global)
+                continue;
+#endif
             // Bind the arcs using the routes we have discovered
             for (auto usr : net->users.enumerate()) {
                 for (size_t phys_pin = 0; phys_pin < nets.at(net->udata).arcs.at(usr.index.idx()).size(); phys_pin++) {

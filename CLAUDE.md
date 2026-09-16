@@ -155,8 +155,10 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   `"module"` without interning.
 - Stage 5 (3c) route reuse: `--reuse-routes prev.json` (a routed checkpoint or any routed output)
   preserves a previous run's route for every net whose endpoints, wires, and pips still check out
-  under the current design, bound strong so router2 treats them as fixed and routes the dirty nets
-  around them; invalid routes are never preserved (`mistral/route_reuse.*`). It composes with
+  under the current design, bound strong and registered with router2 as pre-routed arcs. router2
+  still rips a pre-routed arc up when it becomes overused (about 18% of applied routes are
+  re-routed on the controlled edits), so the reuse report counts applied routes, not surviving
+  ones; invalid routes are never preserved (`mistral/route_reuse.*`). It composes with
   `--reuse-placement`. On router failure every preserved route is dropped and the router reruns
   from the same RNG state (`MISTRAL_ROUTE_REUSE_FORCE_FALLBACK` forces that path).
 - Stage 5 (3a/3b): both reuse paths compute a `ReusePlan` (`mistral/reuse_plan.*`) before applying
@@ -191,8 +193,10 @@ measured and decided:
 
 State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; Stage 5 has 1c (swap seam, batched
 refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route reuse), 3b
-(placement region expansion), and 3a (reuse plan, typed build states) done; the Stage 5 candidate
-list is complete. Every new capability
+(placement region expansion), 3a (reuse plan, typed build states), and 3c-2 (router2 binds only
+after every net's previous binding is ripped up, which removed every bind-time failure on the
+reuse runs and is byte-identical for the clean flow) done; the closing measurement recommends a
+router-side next unit (route survival reporting, then history seeding). Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.
