@@ -73,6 +73,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "batched annealer refinement: speculate this many swaps per batch, evaluate them "
                            "detached on --threads workers, consume in order (results depend on the seed and "
                            "this value, not on --threads; 0 = serial, default; experimental)");
+    specific.add_options()("reuse-routes", po::value<std::string>(),
+                           "previous routed output JSON or routed checkpoint whose routes are reused where the "
+                           "current design still allows them (Stage 5, 3c)");
     specific.add_options()("reuse-placement", po::value<std::string>(),
                            "previous nextpnr output JSON; cells with an identical name and signature are "
                            "constrained to their previous BEL, everything else is placed normally (experimental)");
@@ -168,6 +171,8 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     }
     if (vm.count("reuse-placement"))
         chipArgs.reuse_placement_path = vm["reuse-placement"].as<std::string>();
+    if (vm.count("reuse-routes"))
+        chipArgs.reuse_routes_path = vm["reuse-routes"].as<std::string>();
     if (vm.count("placer-lookahead")) {
         chipArgs.placer_lookahead = vm["placer-lookahead"].as<int>();
         if (chipArgs.placer_lookahead < 0)

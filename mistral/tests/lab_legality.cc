@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: ISC */
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_map>
 #include "checkpoint.h"
 #include "gtest/gtest.h"
 #include "lab_control_edits.h"
@@ -27,6 +29,7 @@
 #include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
+#include "route_reuse.h"
 
 USING_NEXTPNR_NAMESPACE
 
@@ -2473,5 +2476,179 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ctx->io_attr.clear();
     ctx->pllclk_sel_map.clear();
     ctx->ports.clear();
+}
+
+TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllows)
+{
+    // A real pip path inside LAB 0 from an FF output to a LUT input, found by
+    // a short search, so that the reuse checks see genuine endpoints.
+    auto &lab0 = ctx->labs.at(0);
+    std::vector<std::pair<BelId, IdString>> lut_inputs;
+    for (BelId lut : {lab0.alms[0].lut_bels[0], lab0.alms[0].lut_bels[1], lab0.alms[1].lut_bels[0]})
+        for (IdString pin : {id_A, id_B, id_C, id_D, id_E0, id_E1, id_F0, id_F1})
+            if (ctx->getBelPinWire(lut, pin) != WireId())
+                lut_inputs.emplace_back(lut, pin);
+    BelId ff_bel = lab0.alms[2].ff_bels[0];
+    const WireId source = ctx->getBelPinWire(ff_bel, id_Q);
+    ASSERT_NE(source, WireId());
+    std::vector<PipId> path;
+    BelId sink_bel;
+    IdString sink_pin;
+    {
+        dict<WireId, PipId> via;
+        std::vector<WireId> frontier{source};
+        via[source] = PipId();
+        for (int depth = 0; depth < 5 && sink_bel == BelId(); ++depth) {
+            std::vector<WireId> next;
+            for (WireId w : frontier) {
+                for (PipId pip : ctx->getPipsDownhill(w)) {
+                    WireId dst = ctx->getPipDstWire(pip);
+                    if (via.count(dst))
+                        continue;
+                    via[dst] = pip;
+                    next.push_back(dst);
+                    for (auto &li : lut_inputs)
+                        if (ctx->getBelPinWire(li.first, li.second) == dst && sink_bel == BelId()) {
+                            sink_bel = li.first;
+                            sink_pin = li.second;
+                        }
+                    if (sink_bel != BelId())
+                        break;
+                }
+                if (sink_bel != BelId())
+                    break;
+            }
+            frontier = next;
+        }
+        ASSERT_NE(sink_bel, BelId()) << "no short path from an FF output to a LUT input in LAB 0";
+        WireId cursor = ctx->getBelPinWire(sink_bel, sink_pin);
+        while (cursor != source) {
+            path.push_back(via.at(cursor));
+            cursor = ctx->getPipSrcWire(via.at(cursor));
+        }
+    }
+    const WireId sink = ctx->getBelPinWire(sink_bel, sink_pin);
+
+    CellInfo *drv = ctx->createCell(ctx->id("rr_drv"), id_MISTRAL_FF);
+    CellInfo *snk = ctx->createCell(ctx->id("rr_snk"), id_MISTRAL_ALUT2);
+    NetInfo *net = ctx->createNet(ctx->id("rr_net"));
+    drv->addOutput(id_Q);
+    drv->pin_data[id_Q].bel_pins = {id_Q};
+    snk->addInput(id_A);
+    snk->pin_data[id_A].bel_pins = {sink_pin};
+    drv->connectPort(id_Q, net);
+    snk->connectPort(id_A, net);
+    ctx->bindBel(ff_bel, drv, STRENGTH_STRONG);
+    ctx->bindBel(sink_bel, snk, STRENGTH_STRONG);
+    ASSERT_EQ(ctx->getNetinfoSourceWire(net), source);
+
+    auto route_for = [&](const std::vector<PipId> &pips, WireId src) {
+        // Newest first, as a wires map iterates: sink end first, source last.
+        std::vector<PreviousRouteEntry> entries;
+        for (PipId pip : pips)
+            entries.push_back(
+                    {ctx->getWireName(ctx->getPipDstWire(pip)).str(ctx.get()), ctx->getPipName(pip).str(ctx.get()), 1});
+        entries.push_back({ctx->getWireName(src).str(ctx.get()), std::string(), 1});
+        return entries;
+    };
+    auto unroute = [&]() {
+        std::vector<std::pair<WireId, PipId>> bound;
+        for (auto &w : net->wires)
+            bound.emplace_back(w.first, w.second.pip);
+        for (auto &b : bound)
+            b.second == PipId() ? ctx->unbindWire(b.first) : ctx->unbindPip(b.second);
+    };
+
+    // A: the previous route still fits: reused, bound weak, source and sink bound to the net.
+    PreviousRoutes previous;
+    previous["rr_net"] = route_for(path, source);
+    auto report = apply_route_reuse(*ctx, previous);
+    EXPECT_EQ(report.reused, 1u);
+    EXPECT_EQ(report.wires_bound, path.size() + 1);
+    EXPECT_EQ(ctx->getBoundWireNet(source), net);
+    EXPECT_EQ(ctx->getBoundWireNet(sink), net);
+    EXPECT_EQ(net->wires.at(sink).strength, STRENGTH_STRONG);
+    // E: a net that already has wires is left alone.
+    report = apply_route_reuse(*ctx, previous);
+    EXPECT_EQ(report.already_routed, 1u);
+    EXPECT_EQ(report.reused, 0u);
+    // G: the fallback drops what was preserved.
+    RouteReuseReport preserved;
+    preserved.reused_names.push_back("rr_net");
+    drop_reused_routes(*ctx, preserved);
+    EXPECT_EQ(preserved.dropped, 1u);
+    EXPECT_TRUE(net->wires.empty());
+    EXPECT_EQ(ctx->getBoundWireNet(source), nullptr);
+
+    // B: a route from another source is an endpoint mismatch.
+    previous["rr_net"] = route_for(path, ctx->getBelPinWire(lab0.alms[3].ff_bels[0], id_Q));
+    report = apply_route_reuse(*ctx, previous);
+    EXPECT_EQ(report.endpoint_mismatch, 1u);
+    EXPECT_TRUE(net->wires.empty());
+
+    // C: a leaf that drives no current sink is an endpoint mismatch.
+    {
+        auto extra = route_for(path, source);
+        PipId stray;
+        std::vector<WireId> route_wires{source};
+        for (PipId pip : path)
+            route_wires.push_back(ctx->getPipDstWire(pip));
+        for (WireId w : route_wires) {
+            for (PipId pip : ctx->getPipsDownhill(w))
+                if (std::find(path.begin(), path.end(), pip) == path.end() &&
+                    std::find(route_wires.begin(), route_wires.end(), ctx->getPipDstWire(pip)) == route_wires.end()) {
+                    stray = pip;
+                    break;
+                }
+            if (stray != PipId())
+                break;
+        }
+        ASSERT_NE(stray, PipId());
+        extra.insert(extra.begin(), {ctx->getWireName(ctx->getPipDstWire(stray)).str(ctx.get()),
+                                     ctx->getPipName(stray).str(ctx.get()), 1});
+        previous["rr_net"] = extra;
+        report = apply_route_reuse(*ctx, previous);
+        EXPECT_EQ(report.endpoint_mismatch, 1u);
+        EXPECT_TRUE(net->wires.empty());
+    }
+
+    // D: a pip the current flags forbid makes the route unavailable.
+    {
+        previous["rr_net"] = route_for(path, source);
+        const uint64_t flags_before = ctx->wires.at(sink).flags;
+        ctx->wires.at(sink).flags = WireInfo::BLOCKED;
+        report = apply_route_reuse(*ctx, previous);
+        EXPECT_EQ(report.unavailable, 1u);
+        EXPECT_TRUE(net->wires.empty());
+        ctx->wires.at(sink).flags = flags_before;
+    }
+
+    // F: a wire taken by another net makes the route unavailable; no previous
+    // route at all is counted separately.
+    {
+        NetInfo *other = ctx->createNet(ctx->id("rr_other"));
+        ctx->bindWire(sink, other, STRENGTH_LOCKED);
+        previous["rr_net"] = route_for(path, source);
+        report = apply_route_reuse(*ctx, previous);
+        EXPECT_EQ(report.unavailable, 1u);
+        ctx->unbindWire(sink);
+        ctx->nets.erase(other->name);
+        previous.clear();
+        report = apply_route_reuse(*ctx, previous);
+        EXPECT_EQ(report.no_previous, 1u);
+    }
+
+    // A again through the same checks, then clean up.
+    previous["rr_net"] = route_for(path, source);
+    report = apply_route_reuse(*ctx, previous);
+    EXPECT_EQ(report.reused, 1u);
+    unroute();
+    ctx->unbindBel(ff_bel);
+    ctx->unbindBel(sink_bel);
+    drv->disconnectPort(id_Q);
+    snk->disconnectPort(id_A);
+    ctx->nets.erase(net->name);
+    ctx->cells.erase(drv->name);
+    ctx->cells.erase(snk->name);
 }
 } // namespace

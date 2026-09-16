@@ -410,3 +410,68 @@ four small generic hooks, the frontend flag, the `Arch::route()` split
 (2b), and the fixtures. The checkpoint of Fabi386 is about three times the
 output JSON (section 3), almost all of it the IdString table and the
 iteration orders that identity requires.
+
+## 9. Route reuse (Stage 5, 3c)
+
+The parent design's Stage 3c asks for route reuse with region expansion,
+gated on preserved routes remaining valid and a demonstrated fallback. The
+checkpoint supplies the provenance it was blocked on: every route is named
+by wire and pip, route-through cells and their rewired inputs are ordinary
+named cells, and the reservations are recorded flags. `--reuse-routes
+<file>` takes a routed checkpoint (its `physical.routes`) or any routed
+nextpnr output (its `ROUTING` attributes) and runs after routing
+preparation, before the router (`mistral/route_reuse.cc`).
+
+Conservative by construction. A previous route is matched to a current net
+by name and preserved only when every check passes under the current
+design: the current source wire is the route's source; every current sink
+wire is on the route and reaches the source through the route's own pips;
+no leaf of the route is anything but a current sink (a stale branch would
+drive a pin that no longer belongs to the net); every wire and pip resolves
+on this device; every wire is free and every pip passes `checkPipAvail`
+under the current reservations and blocked wires. Nets the global router
+already bound are left to it. The check for pip availability is not
+optional: router2 trusts pre-routed pips even where its own availability
+test fails, on the assumption that whoever pre-routed them knew better.
+
+Preserved routes are bound at `STRENGTH_STRONG`. Router2 records complete
+pre-routed arcs and never revisits them, whatever their strength; what the
+strength decides is how other nets see the wires. Bound weak (the first
+attempt), the wires stayed available to other nets, so a dirty net that
+wanted one piled onto it, the pre-routed owner never moved, and the
+provenance experiment crawled to the iteration cap with one overused wire
+that only the final bind resolved. Bound strong, router2 marks the wires
+unavailable from its first iteration and dirty nets route around them, and
+a net that cannot is a real router failure rather than a stalemate. Its
+final pass rebinds every wire up to `STRENGTH_STRONG` at `STRENGTH_WEAK`,
+so the output carries the strengths an uninterrupted run writes and an
+unchanged design stays byte-identical. Region expansion is therefore not
+rip-up of preserved routes; it is the dirty nets' freedom to route around
+them, and beyond that the fallback below. Releasing only the preserved
+routes a failing net collides with, instead of all of them, is the refinement
+this leaves open.
+
+Fallback. Router2 does not fail at its iteration cap: it gives up, and this
+fork then runs router1 to legalise whatever is left, which with preserved
+routes in the way is a different routing, not the uninterrupted one (the
+provenance experiment: a seed-2 placement given the seed-1 routes kept 11
+of them, router2 crawled to 100 iterations with one overused wire, and
+router1 re-routed 2,000 arcs). Router2 therefore sets `router_gave_up` on
+the context when it stops at the cap, and the reuse path treats that, like
+a router exception, as failure: every preserved route is dropped, every
+other wire bound below `STRENGTH_LOCKED` is unbound as well (router1 has
+by then bound a legalised routing on every net; only the global router's
+work stays), and the router runs again from the RNG state it started with,
+so the fallback result is the uninterrupted run's routing rather than a
+third trajectory. The first version of this fallback dropped only the
+preserved routes and re-routed those eleven nets on top of router1's
+result in under a second, which is a routing but not the clean one; the
+tracker records both runs.
+`MISTRAL_ROUTE_REUSE_FORCE_FALLBACK` exercises the path without a failure.
+
+What is not reused: timing. Reused routes change no timing result; the
+router's timing analysis runs over the whole design as before, and the
+report is recomputed. Route reuse composes with placement reuse
+(`--reuse-placement`): matched cells keep their BELs, unchanged nets between
+them keep their routes, and the dirty set is what the edit touched plus
+whatever the placer moved.

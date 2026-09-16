@@ -48,6 +48,8 @@ set(SOURCES
     placement_coordinator.cc
     placement_reuse.h
     placement_reuse.cc
+    route_reuse.h
+    route_reuse.cc
     m10k.cc
     pll.cc
     pack.cc

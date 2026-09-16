@@ -30,6 +30,7 @@
 #include "placement_transaction.h"
 #include "placer1.h"
 #include "placer_heap.h"
+#include "route_reuse.h"
 #include "router1.h"
 #include "router2.h"
 #include "timing.h"
@@ -838,14 +839,59 @@ bool Arch::route()
     }
 
     std::string router = str_or_default(settings, id_router, defaultRouter);
-    bool result;
-    if (router == "router1") {
-        result = router1(getCtx(), Router1Cfg(getCtx()));
-    } else if (router == "router2") {
-        router2(getCtx(), Router2Cfg(getCtx()));
-        result = true;
+    bool result = false;
+    auto run_router = [&]() {
+        if (router == "router1") {
+            result = router1(getCtx(), Router1Cfg(getCtx()));
+        } else if (router == "router2") {
+            router2(getCtx(), Router2Cfg(getCtx()));
+            result = true;
+        } else {
+            log_error("Mistral architecture does not support router '%s'\n", router.c_str());
+        }
+    };
+    if (args.reuse_routes_path.empty()) {
+        run_router();
     } else {
-        log_error("Mistral architecture does not support router '%s'\n", router.c_str());
+        // Stage 5 (3c): preserved routes are seeds the router may rip up; if
+        // it fails anyway, drop them all and route from scratch from the same
+        // RNG state, so the fallback is the uninterrupted run's routing.
+        RouteReuseReport reuse = apply_route_reuse(*getCtx(), args.reuse_routes_path);
+        const uint64_t rng_before = getCtx()->rngstate;
+        bool fallback = getenv("MISTRAL_ROUTE_REUSE_FORCE_FALLBACK") != nullptr;
+        getCtx()->router_gave_up = false;
+        if (!fallback) {
+            try {
+                run_router();
+            } catch (log_execution_error_exception &) {
+                log_warning("Router failed with %" PRIu64 " reused routes; dropping them and routing from scratch.\n",
+                            reuse.reused);
+                fallback = true;
+            }
+            // router2 does not fail at its iteration cap: it gives up and
+            // router1 legalises whatever is left. With reused routes in the
+            // way that is a different routing, not the uninterrupted one, so
+            // treat it as the failure it is.
+            if (!fallback && reuse.reused > 0 && getCtx()->router_gave_up) {
+                log_warning("Router gave up with %" PRIu64 " reused routes; dropping them and routing from scratch.\n",
+                            reuse.reused);
+                fallback = true;
+            }
+        } else {
+            log_warning("Route reuse fallback forced by MISTRAL_ROUTE_REUSE_FORCE_FALLBACK.\n");
+        }
+        if (fallback) {
+            drop_reused_routes(*getCtx(), reuse);
+            // A router that gave up leaves router1's legalised routing on
+            // every net; from scratch means only the globals remain.
+            const size_t unrouted = unroute_below_locked(*getCtx());
+            log_info("Route reuse fallback: %zu nets unrouted; routing again from the pre-router RNG state.\n",
+                     unrouted);
+            getCtx()->rngstate = rng_before;
+            getCtx()->router_gave_up = false;
+            run_router();
+        }
+        report_route_reuse(reuse);
     }
     note_routing_complete();
     report_lab_states();

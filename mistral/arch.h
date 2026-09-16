@@ -53,6 +53,7 @@ struct ArchArgs
     int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
+    std::string reuse_routes_path;              // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
     SwapSeamMode sa_seam = SwapSeamMode::Off;   // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                           // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;            // Stage 5 (2b): stop route() after preparation, before the router

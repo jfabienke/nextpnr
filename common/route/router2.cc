@@ -1817,6 +1817,7 @@ struct Router2
             if (cfg.max_iter > 0 && iter > cfg.max_iter) {
                 log_warning("router2: giving up after %d iterations, %d overused wires remain.\n", iter - 1,
                             overused_wires);
+                ctx->router_gave_up = true;
                 break;
             }
             if (curr_cong_weight < 1e9)

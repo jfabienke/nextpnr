@@ -15,7 +15,8 @@ Handover point:
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
-  four phases); remaining candidates are 3b completion, 3c, and 3a.
+  four phases), 3c complete (route reuse); remaining candidates are 3b
+  completion and 3a.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -326,9 +327,10 @@ resume in output JSON, report, and bitstream (tracker entries "Stage 5 units
 [`mistral-checkpoint-design.md`](mistral-checkpoint-design.md), whose section
 2.6 lists what a reload of nextpnr's own JSON loses and why the checkpoint
 carries the IdString table and every iteration order. `Arch::route()` is
-split into `prepare_route()` and the router. Remaining candidates: the rest
-of 3b, 3c (route reuse, for which the checkpoint now names every generated
-cell, rewired input, and reservation), and 3a (typed build states).
+split into `prepare_route()` and the router. 3c is complete: `--reuse-routes`
+preserves a previous run's routes where the current design still allows
+them (design section 9; tracker entry "Stage 5 unit 3c"). Remaining
+candidates: the rest of 3b and 3a (typed build states).
 
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost

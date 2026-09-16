@@ -152,6 +152,11 @@ struct BaseCtx
     // strings, never interned; checkpoints record them as lineage.
     std::string design_source_path;
     bool design_source_is_checkpoint = false;
+    // Set by a router that stopped at its iteration cap with overuse left
+    // (router2 then hands the design to router1's legalisation pass). A
+    // caller that seeded the router with reused routes reads it to decide
+    // whether to drop them and route from scratch instead.
+    bool router_gave_up = false;
 
     // Must be called before performing any mutating changes on the Ctx/Arch.
     void lock(void)

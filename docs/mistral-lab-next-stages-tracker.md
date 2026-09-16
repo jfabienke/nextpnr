@@ -1492,6 +1492,63 @@ words at the routed phase. Twelve designs, forty-eight resumes, no
 difference. Both unit suites pass (56/56 Rust-enabled, 46/46 Rust-disabled);
 `git diff --check` and `clang-format` on the edited lines pass.
 
+### 2026-09-16: Stage 5 unit 3c: route reuse
+
+`--reuse-routes <file>` takes a routed checkpoint (`physical.routes`) or any
+routed nextpnr output (`ROUTING` attributes) and, after routing preparation
+and before the router, preserves every previous route the current design
+still allows: same source wire, every current sink on the route and
+reaching the source, no stale leaf, every wire free, every pip available
+under the current reservations and blocked wires. Preserved routes are
+bound `STRENGTH_STRONG`; router2 records them as pre-routed arcs it never
+revisits and keeps other nets off their wires, and its final pass rebinds
+them weak like its own work. Rationale, including why weak binding was
+tried first and rejected, is design document section 9
+(`mistral-checkpoint-design.md`). Implementation: `mistral/route_reuse.cc`,
+the option in `main.cc`, and the fallback in `Arch::route()`.
+
+Fallback. Router2 does not fail at its iteration cap: it gives up and this
+fork's router1 pass legalises what is left. That produced a valid but
+different routing with preserved routes in the way, and my first fallback
+then re-routed only the eleven dropped nets on top of it in under a second.
+Router2 now sets `router_gave_up` on the context, and the reuse path treats
+it like a router exception: drop the preserved routes, unbind everything
+below `STRENGTH_LOCKED` (12,832 nets on the run below), restore the
+pre-router RNG state, run the router again. The result is the uninterrupted
+run's routing.
+
+Fabi386, same binary throughout, `--seed 1 --threads 1 --rbf`; the clean
+reference is the checkpoint validation's clean run:
+
+| Gate | Run | Preserved | Router2 | Against the reference |
+| --- | --- | ---: | ---: | --- |
+| Identity | `--resume` placed + `--reuse-routes` routed checkpoint | 12,865 of 12,866 (the global clock is the global router's) | 1.26 s (plain placed resume: 11.07 s) | report and bitstream `cmp` identical; every net's wire, pip, and strength set identical; 151 nets differ only in wires-map order (two alternative sink wires of one user bound in the other order; cause not attributed) |
+| Forced fallback | same, `MISTRAL_ROUTE_REUSE_FORCE_FALLBACK=1` | 12,865 dropped | 12.60 s | `--write` JSON, report, and bitstream `cmp` identical (creator line aside) |
+| Provenance mismatch | `--seed 2` from the Yosys JSON with the seed-1 routes | 11 preserved, 12,624 rejected as endpoint mismatches, 208 without a previous route | gave up at 100 iterations with 1 overused wire (13.05 s); fallback unrouted 12,832 nets and routed again (13.99 s) | JSON, report, and bitstream `cmp` identical to a clean `--seed 2` run (11.70 s) |
+| Edited, 40 LUT INIT edits | `--reuse-placement` + `--reuse-routes` vs clean edited run | 12,671 of 13,397 (94.6%); 193 endpoint mismatches | 19.62 s over 29 iterations (clean: 10.25 s, 20) | placement 0.24 s vs 6.66 s; Fmax 34.72 vs 35.71 MHz |
+| Edited, + 40 input swaps | same | 12,503 (93.3%); 361 endpoint mismatches | 20.17 s over 40 iterations (clean: 10.23 s, 49) | placement 0.46 s vs 7.21 s; Fmax 35.18 vs 34.24 MHz |
+
+Reading. The mechanism is correct: preserved routes are never invalid
+(unit test covers a foreign source, a stale leaf, a blocked pip, a wire
+another net holds, an already-routed net, and the drop), an unchanged
+design reproduces the clean run, and both fallbacks reproduce the clean
+run rather than a third trajectory. The performance hypothesis from the
+Stage 5 opening entry, that route reuse reduces the nets searched, does
+not hold on these edits: with 93 to 95% of nets preserved, router2 still
+took twice as long, because the dirty nets route around fixed routes with
+less freedom and router2 accumulated about 4,000 bind-time rejections
+(`archfail`, a cumulative counter) over its extra iterations; quality is
+inside the seed spread either way. On the unchanged design the router is
+ten times faster. Route reuse stays opt-in and unpromoted; a release of
+only the preserved routes a failing net collides with, instead of all of
+them, is the refinement that could turn the edited case around.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` (adds `RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllows`) | 57/57 pass |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 47/47 pass; one run under five concurrent Fabi386 jobs reported a failure that 25 quiet reruns did not reproduce (name not captured) |
+| `git diff --check`, `clang-format` on the new and edited lines | Pass |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1564,6 +1621,10 @@ difference. Both unit suites pass (56/56 Rust-enabled, 46/46 Rust-disabled);
 | 2026-09-16 | 2b fixtures | Record orphan nets with attributes and recreate them before the orders are restored | The frontend never materialises a net nothing refers to; PLL and SDRAM IO designs lose 1 to 44 such nets on reload |
 | 2026-09-16 | 2b fixtures | Record every non-zero wire flags word at every phase | Placement blocks the PLL reference-clock spine in every design; without the flags a resumed router routes the reference clock through it |
 | 2026-09-16 | 2b fixtures | Validate every checkpoint chain with one binary, writer and reader alike | Two designs failed only because their checkpoints predated a rebuild; the diagnosis cost more than the fix |
+| 2026-09-16 | 3c | Preserve a previous route only under the full endpoint, leaf, resolution, and availability checks | router2 trusts pre-routed pips past its own availability test; the checks are the certification |
+| 2026-09-16 | 3c | Bind preserved routes strong, not weak | Weak wires stayed open to other nets while the pre-routed owner never moved; the provenance run crawled to the cap with one overused wire |
+| 2026-09-16 | 3c | Treat router2 giving up as failure when routes were reused, and route from scratch below locked strength | Router1's legalisation pass otherwise yields a different routing; the fallback now reproduces the clean run byte for byte |
+| 2026-09-16 | 3c | Keep `--reuse-routes` opt-in; record that it doubles router time on the edited designs | 94 to 95% of nets preserved, router2 19.6 and 20.2 s against 10.3 s clean; ten times faster only on an unchanged design |
 
 ## Stage gates and promotion
 
@@ -1573,4 +1634,4 @@ difference. Both unit suites pass (56/56 Rust-enabled, 46/46 Rust-disabled);
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | In progress: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all four phases, byte-identical on resume including the bitstream); remaining candidates 3b completion, 3c, 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only` available, all off by default; nothing promoted |
+| Stage 5: seams and checkpoints | In progress: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all four phases, byte-identical on resume including the bitstream), 3c complete (route reuse, correct but not a router-time win on edits); remaining candidates 3b completion and 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes` available, all off by default; nothing promoted |
