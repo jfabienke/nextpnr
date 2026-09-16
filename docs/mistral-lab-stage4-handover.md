@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `c57e1163` (Stage 5, 1c-B)
+- Commit: `da7aa9c9` (Stage 5, 2a)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a complete (packed and placed
@@ -306,6 +306,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `3aaa173` | Parallel freezing for lookahead candidates; scaling analysis |
 | `dc7fde5d` | Stage 5 unit 1c-A: annealer swap seam |
 | `c57e1163` | Stage 5 unit 1c-B: batched refinement, deterministic across workers |
+| `da7aa9c9` | Stage 5 units 2a-1 and 2a-2: packed and placed checkpoints, byte-identical on resume |
 
 ## Stage 5: applying the seams to the rest of the flow
 
