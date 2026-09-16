@@ -1822,6 +1822,82 @@ when the option is absent, and the Fabi386 clean gate reproduces
 | `./build/nextpnr-mistral-test` (Rust disabled) | 48/48 pass |
 | `git diff --check`, `clang-format` | Pass |
 
+### 2026-09-16: Fabi386 exec probe through Quartus 17 on the identical netlist
+
+Asked for after the closing measurement: how the current Fabi386 run
+compares with the Quartus runs recorded on the NAS. Those runs are not
+comparable with ours. They build the full `f386_mister` revision (core
+inside the MiSTer framework: 33.5k to 36k ALMs at 80 to 86% of the
+device, 28.6k to 31.9k registers, 41 or 42 DSPs, 1.6 Mbit of block RAM,
+three PLLs, HPS bridges), with production settings (physical synthesis
+for speed, high-performance effort, `parallel=2`) on the NAS's Ryzen 7
+2700; the fitter alone took 59 min to 2 h 29 min across the ten full
+runs of April to July, and the CPU clock (`emu|pll_inst|u_pll|general[0]`,
+33.3 MHz target) reached 15.8 to 18.3 MHz under the slow 1100 mV 100 C
+model. Our regression input is the execution-unit probe only: 10,607
+LUT cells and 989 registers at 12% of the device, no memory, DSP, or
+PLL, which we place and route in 26 s wall on an M1 Ultra (19 s with
+the batched annealer) to 35.87 MHz under nextpnr's single corner. Same
+device, different design, different scope of work, different machine.
+
+The like-for-like run: the exact netlist nextpnr routes
+(`build/fabi386-inputs/f386_exec_probe_nodsp.json`) handed to Quartus
+Prime Lite 17.0.2 in the NAS container, with the production settings of
+the recorded runs (`f386_mister.qsf` globals), the two pins of
+`exec_probe.qsf`, and a 12 MHz `create_clock` to match `--freq 12`, plus
+a second job at 50 MHz to make the fitter push. Two hand-overs were tried:
+
+1. Yosys `write_verilog` of the JSON with the cells left as `MISTRAL_*`
+   and Yosys's behavioural models as source. Quartus's name builder
+   crashed on the hundreds-of-characters escaped instance names
+   (`SGN_NAME_MAKER::process_group_name`, internal error); with every
+   cell and wire renamed to a short private name (`rename -hide;
+   rename -enumerate`) it synthesised, but the `MISTRAL_ALUT_ARITH`
+   model (`{CO, SO} = q0 + q1 + CI`) did not land on carry chains:
+   18,442 ALUTs and 10,113 ALMs for 10,607 cells, 1,523 registers for
+   989, and 11.1 MHz Fmax at both constraints. That is an artefact of
+   the hand-over, not a Quartus result, and it is recorded so nobody
+   repeats it.
+2. Yosys `techmap` with upstream Yosys's own Quartus map
+   (`techlibs/intel_alm/common/quartus_rename.v` at yosys-0.33, which
+   0.69 no longer ships; output buffer adapted for a cell without OE):
+   every cell becomes a `cyclonev_lcell_comb` (the arithmetic cells with
+   `lut_mask({16'h0, LUT1, 16'h0, LUT0})`, `datad`/`dataf`, `cin`,
+   `sumout`, `cout`), `dffeas`, `NOT`, `cyclonev_io_*`, or
+   `cyclonev_clkena`; 10,607 + 989 + 89 + 2 + 1 instances, WYSIWYG
+   remapping off so Quartus fits the netlist as given (physical
+   synthesis left on, as in production).
+
+| Flow, same 10,607-cell netlist | Place and route | Fmax (`clk`) | ALMs / registers |
+| --- | ---: | ---: | ---: |
+| nextpnr, `--seed 1 --threads 1 --freq 12`, M1 Ultra | 26 s wall (HeAP 5.5 s, annealer 9.0 s, router2 8.0 s) | 35.87 MHz, single corner (1.1 V, 100 C) | 8,179 ALMs (19.5%), 11,177 comb cells incl. 549 route-throughs, 989 registers |
+| nextpnr, `--freq 50` | 30 s wall, same routing (20 iterations) | 35.87 MHz (the run fails its target) | same |
+| Quartus 17.0.2, WYSIWYG, 12 MHz constraint, NAS `parallel=2` | map 31 s, fitter 3 min 15 s, timing 20 s, assembler 9 s | 64.7 MHz slow 1100 mV 100 C (66.6 MHz at -40 C) | 5,067 ALMs (12%), 9,269 ALUTs, 1,858 registers |
+| Quartus 17.0.2, WYSIWYG, 50 MHz constraint | map 31 s, fitter 3 min 19 s, timing 20 s, assembler 9 s | 69.5 MHz slow 1100 mV 100 C (71.8 MHz at -40 C) | 5,070 ALMs (12%), 9,262 ALUTs, 2,125 registers |
+
+Reading. On identical logic, at the same 1.1 V 100 C corner (nextpnr's
+hard-coded corner is the one Quartus calls its slow 1100 mV 100 C
+model), Quartus reaches 1.8 to 1.9 times our Fmax and fits the design
+into 62% of our ALM count, pairing 1.8 LUTs per ALM against our 1.4.
+Its fitter takes 3 min 15 s on the NAS at `parallel=2` against our 26 s
+wall on a faster machine: about eight times, perhaps four once the
+machines are normalised. The constraint moved Quartus by 7% (64.7 to
+69.5 MHz, with 267 more duplicated registers) and moved us not at all:
+router2 is not timing-ripup driven and HeAP normalises criticality, so
+`--freq` changes the report's verdict, not the routing. Quartus's
+physical synthesis rewrote its copy of the netlist (989 registers became
+1,858 and 2,125; 10,607 LUTs became 9,269 ALUTs); ours is placed and
+routed as given. Neither Fmax is silicon-verified for this design; they
+are the two tools' timing engines at one corner. What the Fabi386
+pipeline notes recorded as "Fmax-vs-Quartus unproven" is now a number
+for the probe: the quality gap is 1.8x on timing and 1.6x on packing
+density, the speed gap is in our favour by an order of magnitude, and
+the full core remains unattempted. Artifacts: NAS
+`fabi386_jobs/exec_probe_20260916{b,w}` (behavioural and WYSIWYG jobs
+with reports and bitstreams), local staging under
+`build/stage5-profile/quartus-probe/` (the JSON-to-Verilog script, the
+adapted techmap, both netlists, and the qsf/sdc per job).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1902,6 +1978,7 @@ when the option is absent, and the Fabi386 clean gate reproduces
 | 2026-09-16 | closing | Next unit is router-side: report route survival, then seed router2's history from the previous run | 18% of applied routes are re-routed on both edits; router2 is 68% of the edit run after placement reuse removed 54 points |
 | 2026-09-16 | 3c-3 | Report survival next to applied, and rewrite the plan after routing rather than keep a second record | Same numbers as the external script: 100% on the unchanged design, 82.0% and 81.3% on the edits |
 | 2026-09-16 | 3c-4 | Seed router2's history on preserved wires behind `--reuse-routes-history`; record 8 as the measured value and keep it off by default | 99% survival, 6 to 8 iterations, router2 3.0 to 4.1 s against 7.3 to 7.6 s unseeded; Fmax inside the seed spread; clean gate byte-identical |
+| 2026-09-16 | measurement | Compare with Quartus only on the identical netlist handed over as WYSIWYG primitives; the recorded full-core runs are a different design | Behavioural hand-over doubled ALMs and tripled the critical path (11 MHz); WYSIWYG: Quartus 64.7 to 69.5 MHz and 5,067 ALMs in 3 min 15 s of fitter against our 35.9 MHz and 8,179 ALMs in 26 s |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
