@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `9e5222a6` (Stage 5, 3c)
+- Commit: `386461fb` (Stage 5, 3a and 3b)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -311,6 +311,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `7462f138` | Stage 5 units 2b-1 and 2b-2: route-prepared and routed checkpoints, bitstream-identical on resume |
 | `1b912e54` | Checkpoint fixtures beyond Fabi386: twelve designs identical on every resume; orphan nets and wire flags |
 | `9e5222a6` | Stage 5 unit 3c: route reuse, correct with a from-scratch fallback; not a router-time win on edits |
+| `386461fb` | Stage 5 units 3a and 3b: reuse plan with reasons, placement region expansion, typed build states |
 
 ## Stage 5: applying the seams to the rest of the flow
 
