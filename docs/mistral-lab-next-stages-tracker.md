@@ -1707,6 +1707,30 @@ Unit 3c-2 validation, one binary for every run:
 | Checkpoint fixtures, all eleven designs, `validate_design.sh` (`slot2.qsf`, `slot2_ioreg.qsf` for sdrio) | Every packed, placed, route-prepared, and routed resume `cmp`-identical to its clean run on JSON, report, and bitstream; every clean run's two log checksums equal the pre-change fixture pass; archfail 0 everywhere |
 | `git diff --check`, `clang-format` | Pass |
 
+**Concurrency ceiling (asked after the measurement).** The same Fabi386
+run with every parallel option the branch has, one run each, sequential
+and alone (`/usr/bin/time`, wall and CPU):
+
+| Configuration | Wall | HeAP | Annealer | Router2 | Fmax | CPU |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `--threads 1` | 25.8 s | 5.5 s | 9.0 s | 8.0 s | 35.87 MHz | 31 s |
+| `--threads 4` / `8` / `16`, nothing else | 25.7 / 27.8 / 28.6 s | 5.4 to 5.6 s | 9.0 to 10.4 s | 8.1 to 9.1 s | 35.87 MHz | 31 to 34 s |
+| `--threads 8` + `--sa-seam on --sa-batch 32 --placer-lookahead 4` | 22.3 s | 5.6 s | 5.1 s | 8.2 s | 35.11 MHz | 52 s |
+| `--threads 16`, same options | 24.7 s | 5.7 s | 7.8 s | 7.8 s | 35.11 MHz | 100 s |
+| `--threads 2` + `--sa-seam on --sa-batch 32` | 19.2 s | 5.2 s | 3.0 s | 7.8 s | 35.11 MHz | 27 s |
+
+`--threads` never reaches router2: it partitions nets into a fixed four
+quadrants plus boundary passes and spawns exactly those threads
+(`partition_nets`, `do_route`), which is why its checksums are identical
+at every thread count and the sample showed worker threads at
+`--threads 1`. HeAP is serial and the lookahead only parallelises strict
+legalisation (under 2.5% of the run). The annealer is the only phase
+that gains, and it peaks at two workers, as 1c-B recorded. The serial
+baseline is 25.8 s today, not the 35 s median the Stage 4C entry
+recorded. The concurrent ceiling on this branch is therefore about 1.35x,
+and moving it needs a router partitioned by thread count and a placer
+that is not owner-bound, neither of which exists here.
+
 **Recommendation for the next unit, from the measured remainder.**
 After 3c-2 the edited-design flow with both reuse paths spends its time
 in router2 (about 68% before the fix, still the majority after it), and
