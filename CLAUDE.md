@@ -73,6 +73,12 @@ by one, so compare reports and log checksums as well. Compare reports only betwe
 same `--rbf` presence: bitstream generation re-runs a signoff timing analysis before the report is
 written, so a `--rbf` run's report differs from a run without it.
 
+The silicon-work designs (PLL, two-PLL, CLKBUF, M10K, M10K dual-clock, MLAB shapes, DSP,
+IO register, SDRAM IO) live in the sibling checkout `/Users/jvindahl/Development/ext/openflow-test/`
+(Verilog plus `constraints/slot2*.qsf`; flow: `yosys -q -p "read_verilog X.v; synth_intel_alm
+-family cyclonev; write_json X.json"`). Their synthesised JSON and the checkpoint validation
+driver `validate_design.sh` sit in `build/stage5-validation/fixtures/`, outside git.
+
 The end-to-end regression design is **Fabi386** (i386 core, ~48k ALUTs, DE10-Nano
 `5CSEBA6U23I7`). Its JSON/QSF inputs live outside git in `build/fabi386-inputs/`
 (`f386_exec_probe_nodsp.json`, `exec_probe.qsf`). They were reconstructed on 2026-09-16 after a

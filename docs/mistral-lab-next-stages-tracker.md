@@ -1415,13 +1415,82 @@ provenance candidate 3c (route reuse) needs.
 | `git diff --check`, `clang-format` on the new and edited lines | Pass |
 
 Costs and open items: the route-prepared checkpoint is about 90 MB and the
-routed one about 110 MB (routes are named wires and pips). The four
-fixtures beyond Fabi386 named in the design (feature fixture, M10K, PLL, IO
-register) are still to run; the PLL one matters because `pllclk_sel` on
-Fabi386 is 144 default entries, and the M10K one because those pin maps
-are never default. Rejecting conflicting options outright, as the design
-proposed, is not implementable without knowing which settings the user
-typed; the warning-plus-seed-error policy is recorded in the design.
+routed one about 110 MB (routes are named wires and pips). The fixtures
+beyond Fabi386 are the next entry; they found two more things to carry.
+Rejecting conflicting options outright, as the design proposed, is not
+implementable without knowing which settings the user typed; the
+warning-plus-seed-error policy is recorded in the design.
+
+### 2026-09-16: Checkpoint fixtures beyond Fabi386
+
+The design named four fixtures the Fabi386 probe cannot exercise. The
+silicon-work designs in `/Users/jvindahl/Development/ext/openflow-test/`
+cover them and more: `clkbuftest` (CLKBUF), `plltest` and `gates/g_2pll`
+(one and two PLLs), `gates/g_m10k`, `m10ktest`, `m10kshapes` (M10K shapes
+with MLAB), `m10kdc` (dual-clock M10K), `gates/g_dsp` (MUL18X18),
+`gates/g_ioreg` and `sdrio` (IO registers, the latter also under
+`constraints/slot2_ioreg.qsf`), and `fmaxtest`. Each was synthesised with
+`yosys -p "synth_intel_alm -family cyclonev"` and run through
+`build/stage5-validation/fixtures/validate_design.sh`: a clean flow with
+`--rbf`, then the packed, placed, route-prepared, and routed chains, each
+resumed with `--rbf` and compared with the clean run by `cmp` on the
+`--write` JSON, the `--report`, and the bitstream. The synthesised JSON and
+the driver stay under `build/`, outside git.
+
+The first pass found two more things the checkpoint had to carry (design
+document section 2.6, findings ten and eleven):
+
+1. Nets with neither driver nor users never come back from a reload: the
+   frontend materialises a net only when a cell or port refers to it.
+   Packing leaves such nets behind (`c0`, a PLL output it disconnected;
+   the 32 `$iobuf_i` halves of the bidirectional buffers it removed on the
+   SDRAM design), and the order lists then named nets the design did not
+   have. They are recorded with their attributes and recreated first.
+2. Placement ends by blocking the PLL reference-clock spine
+   (`WireInfo::BLOCKED`, 35 wires, in every design whether or not it has a
+   PLL), and the checkpoint carried wire flags only for `RESERVED_ROUTE`
+   wires and only from route-prepared on. Placed and route-prepared
+   resumes then let router2 take the PLL reference clock through the
+   spine, which the raw CRAM writes at bitstream time clobber: the G2/G4
+   silicon failure the flag exists to prevent, seen here as a different
+   route and bitstream under an identical report. Every non-zero flags
+   word is now recorded at every phase.
+
+A detour worth recording: after those fixes, `fmaxtest` and `m10kdc` still
+diverged on placed and route-prepared resumes, at router2's first
+iteration, while the Rust-disabled tree reproduced the clean run. Dumping
+router2's RNG state, shuffled order, criticalities, and per-net routes
+showed everything equal until the wire flags, and the cause was mundane:
+those designs' placed checkpoints had been written by the binary before
+the wire-flags change (the validation job was still running while it was
+rebuilt), so their restores lacked the 35 spine flags. The final pass below
+was written and resumed by one binary.
+
+Final pass, one binary for every writer and resume, `--seed 1 --threads 1`,
+`--rbf` on every compared run; each design resumed from packed, placed,
+route-prepared, and routed and compared with its clean run by `cmp` on
+`--write` JSON, `--report`, and `--rbf`:
+
+| Design | Cells / nets | Flagged wires | Orphan nets recreated | All four resumes |
+| --- | ---: | ---: | ---: | --- |
+| `clkbuftest` (CLKBUF) | 72 / 100 | 81 | 0 | identical |
+| `plltest` (PLL) | 68 / 94 | 107 | 1 | identical |
+| `gates/g_2pll` (two PLLs) | 38 / 49 | 59 | 2 | identical |
+| `gates/g_dsp` (MUL18X18) | 125 / 197 | 132 | 0 | identical |
+| `gates/g_ioreg` (IO register) | 46 / 55 | 48 | 0 | identical |
+| `gates/g_m10k` (M10K) | 48 / 68 | 33 | 0 | identical |
+| `m10ktest` (M10K) | 114 / 175 | 87 | 0 | identical |
+| `m10kshapes` (M10K shapes, MLAB) | 278 / 479 | 135 | 0 | identical |
+| `m10kdc` (dual-clock M10K) | 134 / 206 | 138 | 1 | identical |
+| `sdrio` (SDRAM IO, `slot2.qsf`) | 139 / 193 | 117 | 32 | identical |
+| `sdrio` (SDRAM IO, `slot2_ioreg.qsf`) | 130 / 196 | 90 | 44 | identical |
+| `fmaxtest` | 578 / 885 | 188 | 1 | identical |
+| Fabi386 (same binary) | 12,169 / 13,396 | 2,392 | 0 | identical, checksums `0xbb18ede9` / `0xbc1365c6` |
+
+Cells and nets are the routed counts; flagged wires are the non-zero flags
+words at the routed phase. Twelve designs, forty-eight resumes, no
+difference. Both unit suites pass (56/56 Rust-enabled, 46/46 Rust-disabled);
+`git diff --check` and `clang-format` on the edited lines pass.
 
 ## Decision log
 
@@ -1492,6 +1561,9 @@ typed; the warning-plus-seed-error policy is recorded in the design.
 | 2026-09-16 | 2b | `assignArchInfo()` covers `MISTRAL_BUF` | Route-through buffers need comb facts in any restored or reloaded context; the clean flow only ever set them at creation |
 | 2026-09-16 | 2b | Placement-time certifications run only for packed and placed restores | Route-through buffers are placed outside those rules by design; the writer's preparation is the certification after it |
 | 2026-09-16 | 2b | Warn on settings the checkpoint overrides, error only on `seed`, keep extra command-line settings | The flow cannot tell a typed option from a filled-in default; refusing every difference would refuse any checkpoint written with a non-default option |
+| 2026-09-16 | 2b fixtures | Record orphan nets with attributes and recreate them before the orders are restored | The frontend never materialises a net nothing refers to; PLL and SDRAM IO designs lose 1 to 44 such nets on reload |
+| 2026-09-16 | 2b fixtures | Record every non-zero wire flags word at every phase | Placement blocks the PLL reference-clock spine in every design; without the flags a resumed router routes the reference clock through it |
+| 2026-09-16 | 2b fixtures | Validate every checkpoint chain with one binary, writer and reader alike | Two designs failed only because their checkpoints predated a rebuild; the diagnosis cost more than the fix |
 
 ## Stage gates and promotion
 

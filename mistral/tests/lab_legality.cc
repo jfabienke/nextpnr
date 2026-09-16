@@ -2168,6 +2168,8 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     CellInfo *child_a = ctx->createCell(ctx->id("ckpt_child_a"), id_MISTRAL_FF);
     CellInfo *child_b = ctx->createCell(ctx->id("ckpt_child_b"), id_MISTRAL_FF);
     NetInfo *clk = ctx->createNet(ctx->id("ckpt_clk"));
+    NetInfo *orphan = ctx->createNet(ctx->id("ckpt_orphan")); // no driver, no users: a reload drops it
+    orphan->attrs[ctx->id("src")] = Property("ckpt.v:9");
     const IdString pad = ctx->id("ckpt_pad"), io_standard = ctx->id("IO_STANDARD"), drive = ctx->id("CURRENT_STRENGTH");
     for (CellInfo *ci : {root, child_a, child_b}) {
         ci->addInput(id_CLK);
@@ -2260,6 +2262,8 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ctx->unbindBel(root_bel);
     clk->driver.port = IdString();
     ctx->rngstate = rng_before + 17;
+    ctx->nets.erase(orphan->name); // as the frontend would have: never materialised
+    orphan = nullptr;
     {
         // root was inserted first of the three, so it iterates last; moving it
         // to the newest slot changes the order (and the erase swaps the
@@ -2293,6 +2297,11 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ASSERT_TRUE(ctx->checkpointPreload(packed.str()));
     ASSERT_TRUE(ctx->checkpointRestore());
     EXPECT_EQ(ctx->checkpointPhase(), "packed");
+    ASSERT_EQ(ctx->nets.count(ctx->id("ckpt_orphan")), 1u);
+    orphan = ctx->nets.at(ctx->id("ckpt_orphan")).get();
+    EXPECT_EQ(orphan->driver.cell, nullptr);
+    EXPECT_EQ(orphan->users.entries(), 0);
+    EXPECT_EQ(orphan->attrs.at(ctx->id("src")).as_string(), "ckpt.v:9");
     EXPECT_EQ(cell_order(), cells_before);
     EXPECT_EQ(user_order(clk), users_before);
     EXPECT_EQ(port_order(root), ports_before);
@@ -2414,7 +2423,7 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ctx->bindBel(root_bel, root, STRENGTH_LOCKED);
     std::ostringstream routed;
     ASSERT_TRUE(ctx->writeCheckpoint(routed, "routed"));
-    EXPECT_NE(routed.str().find("\"reserved_wires\""), std::string::npos);
+    EXPECT_NE(routed.str().find("\"wire_flags\""), std::string::npos);
     ctx->unbindPip(pip);
     ctx->unbindWire(src);
     lab0.alms[0] = alm0_before;
@@ -2460,6 +2469,7 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     }
     clk->driver.port = IdString();
     ctx->nets.erase(clk->name);
+    ctx->nets.erase(ctx->id("ckpt_orphan"));
     ctx->io_attr.clear();
     ctx->pllclk_sel_map.clear();
     ctx->ports.clear();

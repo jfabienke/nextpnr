@@ -172,6 +172,25 @@ union in which the MLAB group reads as 0. `assignArchInfo()` now covers
 buffers too, which also repairs the plain `--json` reload of a routed
 nextpnr output, where the same buffers exist.
 
+An eleventh, from the single-PLL fixture: placement ends by blocking the
+PLL reference-clock spine (`WireInfo::BLOCKED`, `fixup_pllclk_placement`),
+and the checkpoint recorded wire flags only for `RESERVED_ROUTE` wires and
+only from route-prepared on. A placed or route-prepared resume therefore
+let the router take the reference clock through the spine, which the raw
+CRAM writes at bitstream time then clobber: the G2/G4 silicon failure the
+flag exists to prevent, visible here as a different route and bitstream
+with an identical report. Every non-zero flags word is now recorded at
+every phase.
+
+A tenth came from the fixtures beyond Fabi386: the frontend materialises
+a net only when a cell connection or a port refers to it, so a net with
+neither driver nor users never comes back on reload. Packing leaves such
+nets behind (a PLL output it disconnected, the `$iobuf_i` halves of the
+bidirectional IO buffers it removed, 32 of them on the SDRAM IO-register
+design), and the order lists then name nets the design does not have.
+The checkpoint records them with their attributes (`netlist.orphan_nets`)
+and recreates them before the orders are restored.
+
 A seventh was found by the log checksum, the last comparison that still
 differed after the outputs were byte-identical: an undriven net keeps the
 port name of a driver the packer removed (`disconnectPort` clears the cell
@@ -203,7 +222,8 @@ One file, the ordinary nextpnr output JSON, plus a top-level object:
     "net_attrs": [[...], ...],
     "users": [[[<cell position>, <port idstring index>], ...], ...]
   },
-  "netlist": { "top_ports": [ { "name": "clk", "net": "clk", "type": 0 } ], "stale_driver_ports": [["clk", "O"]] },
+  "netlist": { "top_ports": [ { "name": "clk", "net": "clk", "type": 0 } ], "stale_driver_ports": [["clk", "O"]],
+               "orphan_nets": [ { "name": "c0", "attrs": [ { "name": "src", "value": { "str": "..." } } ] } ] },
   "packing": {
     "cluster_cells": [ { "cell": "...", "cluster": "<root>", "x": 0, "y": -1, "z": 6, "abs_z": true, "children": ["..."] } ],
     "pins": [ { "cell": "...", "ports": [ { "port": "...", "state": 3, "bel_pins": ["..."] } ] } ],
@@ -213,7 +233,7 @@ One file, the ordinary nextpnr output JSON, plus a top-level object:
     "bindings": [ { "cell": "...", "bel": "<bel name>", "strength": 3 } ],
     "pllclk_sel": [ { "key": "<uint64 decimal>", "sel": 3 } ],
     "labs": [ [ [ [<clk_ena_idx 0>, <1>, <aclr_idx 0>, <1>, <l6_mode>, <carry_mode>], ... 10 ALMs ], [<aclr_used 0>, <1>] ], ... ],
-    "reserved_wires": [ ["<wire name>", "<flags decimal>"], ... ],
+    "wire_flags": [ ["<wire name>", "<flags decimal>"], ... ],
     "routes": [ ["<net>", [ ["<wire name>", "<pip name or empty>", <strength>], ... ] ], ... ]
   }
 }
@@ -249,12 +269,14 @@ Rules:
   `Property::to_string()` bit encoding, so a string that happens to look
   like a bit vector cannot be misread.
 - `physical.bindings` and `physical.pllclk_sel` are present at every phase.
-  From `route-prepared` on, `physical.labs` (every LAB, every ALM: the
-  control allocation and the LUT6/carry modes `reassign_alm_inputs` sets),
-  `physical.reserved_wires` (the complete `flags` word of every wire with
-  `RESERVED_ROUTE`) and `physical.routes` (every net with bound wires, in
-  its `wires` map order: the globals at route-prepared, everything at
-  routed) are present too. Wires and pips are named; Mistral builds those
+  `physical.wire_flags` (the complete `flags` word of every wire whose
+  word is non-zero: `BLOCKED` from the device table and from the PLL
+  reference-clock spine that placement reserves, `RESERVED_ROUTE` from
+  routing preparation) is present at every phase. From `route-prepared`
+  on, `physical.labs` (every LAB, every ALM: the control allocation and
+  the LUT6/carry modes `reassign_alm_inputs` sets) and `physical.routes`
+  (every net with bound wires, in its `wires` map order: the globals at
+  route-prepared, everything at routed) are present too. Wires and pips are named; Mistral builds those
   names from tables interned at startup, so naming and parsing intern
   nothing, and the restore verifies that the table did not grow.
 - The file is written to a temporary name and renamed after the payload is

@@ -500,7 +500,22 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
         if (ni->driver.cell == nullptr && ni->driver.port != IdString())
             stale_driver_ports.push_back(Json::array{ni->name.str(ctx), ni->driver.port.str(ctx)});
     }
-    Json netlist = Json::object{{"top_ports", top_ports}, {"stale_driver_ports", stale_driver_ports}};
+    // Nets with neither driver nor users (a PLL output packing disconnected,
+    // say): the frontend materialises a net only when a cell or port refers
+    // to it, so these do not come back on reload. Recorded with their
+    // attributes and recreated before the orders are restored.
+    Json::array orphan_nets;
+    for (auto &net : nets) {
+        const NetInfo *ni = net.second.get();
+        if (ni->driver.cell != nullptr || ni->users.entries() != 0)
+            continue;
+        Json::array attrs_json;
+        for (auto &attr : ni->attrs)
+            attrs_json.push_back(Json::object{{"name", attr.first.str(ctx)}, {"value", property_json(attr.second)}});
+        orphan_nets.push_back(Json::object{{"name", ni->name.str(ctx)}, {"attrs", attrs_json}});
+    }
+    Json netlist = Json::object{
+            {"top_ports", top_ports}, {"stale_driver_ports", stale_driver_ports}, {"orphan_nets", orphan_nets}};
 
     // Packing: cluster geometry, pin maps, and the QSF-derived IO attributes.
     // Pin entries that assign_default_pinmap() would recreate are omitted;
@@ -575,13 +590,6 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
                                            alm.l6_mode, alm.carry_mode});
             labs_json.push_back(Json::array{alms, Json::array{lab_data.aclr_used[0], lab_data.aclr_used[1]}});
         }
-        Json::array reserved;
-        for (auto &wire : wires) {
-            if ((wire.second.flags & WireInfo::RESERVED_ROUTE) == 0)
-                continue;
-            reserved.push_back(Json::array{getWireName(wire.first).str(ctx), std::to_string(wire.second.flags)});
-        }
-        reserved_count = reserved.size();
         Json::array routes;
         for (auto &net : nets) {
             const NetInfo *ni = net.second.get();
@@ -598,9 +606,22 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
             ++routed_nets;
         }
         physical_obj["labs"] = labs_json;
-        physical_obj["reserved_wires"] = reserved;
         physical_obj["routes"] = routes;
     }
+    // Every wire whose flags word is set, at every phase: RESERVED_ROUTE from
+    // routing preparation, BLOCKED from the PLL reference-clock spine that
+    // placement reserves (and from the device table at start-up, harmless to
+    // repeat). A resumed router without the spine flags routed the PLL
+    // reference clock straight through the spine: the silicon failure the
+    // flag exists to prevent.
+    Json::array wire_flags;
+    for (auto &wire : wires) {
+        if (wire.second.flags == 0)
+            continue;
+        wire_flags.push_back(Json::array{getWireName(wire.first).str(ctx), std::to_string(wire.second.flags)});
+    }
+    reserved_count = wire_flags.size();
+    physical_obj["wire_flags"] = wire_flags;
     Json physical = physical_obj;
 
     // Non-interning lookup: the table above must stay complete.
@@ -647,7 +668,7 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
     out << text;
     log_info("Checkpoint: wrote phase '%s' (%zu idstrings, %zu cells, %zu nets, %zu top ports, %zu cluster cells, "
              "%zu non-default pin entries, %zu io_attr ports, %zu bindings, %zu pllclk selections, %zu LABs, %zu "
-             "reserved wires, %zu routed nets, rng_state %" PRIu64 ").\n",
+             "flagged wires, %zu routed nets, rng_state %" PRIu64 ").\n",
              phase.c_str(), idstrings.size(), size_t(cells.size()), size_t(nets.size()), top_ports.size(),
              cluster_cells.size(), pin_entries, io_attrs.size(), bindings.size(), pllclk.size(),
              rank >= 3 ? labs.size() : size_t(0), reserved_count, routed_nets, ctx->rngstate);
@@ -735,6 +756,21 @@ bool Arch::checkpointRestore()
         log_error("checkpoint: the netlist import interned %zu IdStrings beyond the recorded table; the checkpoint "
                   "does not belong to this netlist.\n",
                   idstring_idx_to_str->size() - pending_checkpoint->idstrings);
+
+    // Nets the reload could not materialise (see the writer): recreate them
+    // before the orders are restored, since those lists name them.
+    size_t orphan_nets = 0;
+    for (const auto &entry : root["netlist"]["orphan_nets"].array_items()) {
+        IdString name = known_id(ctx, entry["name"].string_value(), "orphan net");
+        if (nets.count(name))
+            continue;
+        net_aliases.erase(name); // a stale alias of a net that no longer exists would refuse the name
+        NetInfo *ni = ctx->createNet(name);
+        for (const auto &attr : entry["attrs"].array_items())
+            ni->attrs[known_id(ctx, attr["name"].string_value(), "orphan net attribute")] =
+                    property_from_json(attr["value"], "netlist.orphan_nets");
+        ++orphan_nets;
+    }
 
     // Iteration orders first: everything below addresses objects by name.
     const Json &order = root["order"];
@@ -924,28 +960,6 @@ bool Arch::checkpointRestore()
         }
     }
 
-    // The same call pack() ends with: comb/FF facts and default pin maps from
-    // the restored netlist, pin states, and clusters. The recorded pin
-    // entries are applied afterwards so that they win over the defaults:
-    // routing preparation leaves constant and unused LUT inputs with an
-    // empty bel-pin list, the LUT mask keys on that emptiness, and a default
-    // pass run after them would refill it.
-    assignArchInfo();
-    for (const auto &entry : packing["pins"].array_items()) {
-        CellInfo *ci = known_cell(ctx, entry["cell"].string_value(), "packing.pins");
-        for (const auto &pin : entry["ports"].array_items()) {
-            auto &pd = ci->pin_data[known_id(ctx, pin["port"].string_value(), "pin port")];
-            pd.bel_pins.clear();
-            const int state = pin["state"].int_value();
-            if (state < PIN_SIG || state > PIN_INV)
-                log_error("checkpoint: packing.pins carries pin state %d for %s.\n", state, ci->name.c_str(ctx));
-            pd.state = CellPinState(state);
-            for (const auto &bp : pin["bel_pins"].array_items())
-                pd.bel_pins.push_back(known_id(ctx, bp.string_value(), "bel pin"));
-            ++pin_entries;
-        }
-    }
-
     // Physical state: bindings at every phase, PLL clock selections, then the
     // legality sweep. Nothing may certify a placement it did not check.
     const auto &bindings = root["physical"]["bindings"].array_items();
@@ -994,6 +1008,11 @@ bool Arch::checkpointRestore()
     }
 
     size_t reserved_count = 0, routed_nets = 0;
+    for (const auto &entry : root["physical"]["wire_flags"].array_items()) {
+        WireId wire = wire_by_name(ctx, entry[0].string_value(), "physical.wire_flags");
+        wires.at(wire).flags = parse_u64(entry[1].string_value(), "wire flags");
+        ++reserved_count;
+    }
     if (rank >= 3) {
         const auto &labs_json = root["physical"]["labs"].array_items();
         if (labs_json.size() != labs.size())
@@ -1018,11 +1037,6 @@ bool Arch::checkpointRestore()
             if (used.size() != 2)
                 log_error("checkpoint: physical.labs[%zu] aclr_used is malformed.\n", lab);
             lab_data.aclr_used = {used[0].bool_value(), used[1].bool_value()};
-        }
-        for (const auto &entry : root["physical"]["reserved_wires"].array_items()) {
-            WireId wire = wire_by_name(ctx, entry[0].string_value(), "physical.reserved_wires");
-            wires.at(wire).flags = parse_u64(entry[1].string_value(), "reserved wire flags");
-            ++reserved_count;
         }
         for (const auto &route : root["physical"]["routes"].array_items()) {
             NetInfo *ni = known_net(ctx, route[0].string_value(), "physical.routes");
@@ -1063,11 +1077,11 @@ bool Arch::checkpointRestore()
     checkpoint_phase_ = phase;
     restored_input_json_ = pending_checkpoint->input.is_null() ? std::string() : pending_checkpoint->input.dump();
     pending_checkpoint.reset();
-    log_info("Checkpoint: restored phase '%s' (%zu cells, %zu nets, %zu top ports, %zu cluster cells, %zu non-default "
-             "pin entries, %zu io_attr ports, %zu bound cells, %zu reserved wires, %zu routed nets, rng_state %" PRIu64
-             ").\n",
-             phase.c_str(), size_t(cells.size()), size_t(nets.size()), size_t(ports.size()), cluster_cells, pin_entries,
-             size_t(io_attr.size()), bound, reserved_count, routed_nets, ctx->rngstate);
+    log_info("Checkpoint: restored phase '%s' (%zu cells, %zu nets of which %zu recreated, %zu top ports, %zu cluster "
+             "cells, %zu non-default pin entries, %zu io_attr ports, %zu bound cells, %zu flagged wires, %zu routed "
+             "nets, rng_state %" PRIu64 ").\n",
+             phase.c_str(), size_t(cells.size()), size_t(nets.size()), orphan_nets, size_t(ports.size()), cluster_cells,
+             pin_entries, size_t(io_attr.size()), bound, reserved_count, routed_nets, ctx->rngstate);
     return true;
 }
 
