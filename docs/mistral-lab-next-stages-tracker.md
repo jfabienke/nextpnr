@@ -1748,6 +1748,56 @@ now covers a surviving route, one changed by unbinding a pip, and the plan
 stamp), `./build/nextpnr-mistral-test` 48/48, `git diff --check` and
 `clang-format` clean.
 
+### 2026-09-16: Stage 5 unit 3c-4: history seeding for preserved routes
+
+The closing measurement's last recommendation. Router2 negotiates
+congestion with a per-wire history cost that grows only after a wire has
+been overused, so a dirty net pays nothing to take a preserved wire in its
+first iteration, both nets are then overused, and the preserved arc is
+ripped up as readily as the dirty one; 18% of applied routes ended
+re-routed. `--reuse-routes-history H` (opt-in, default 1.0 = off) seeds
+router2's history cost with H on every wire bound at `STRENGTH_STRONG`
+before the router runs, so the dirty nets treat the preserved wires as
+contested from the start and route around them. One branch in
+`setup_wires` (`Router2Cfg::prerouted_hist_cost`, set by the arch from
+`ArchArgs`, no settings key so nothing is interned) and one option.
+
+Sweep, `--seed 1 --threads 1`, `--reuse-placement` + `--reuse-routes`
+from the checkpoint validation's clean run, sequential and alone:
+
+| Edit | H | Router2 | Iterations | Survived of applied | Fmax |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 40 LUT INIT edits | 1 (off) | 7.34 s | 25 | 10,386 of 12,671 (82.0%) | 33.54 MHz |
+| | 2 | 4.58 s | 9 | 11,887 (93.8%) | 31.94 MHz |
+| | 4 | 3.70 s | 10 | 12,389 (97.8%) | 35.38 MHz |
+| | 8 | 3.02 s | 8 | 12,592 (99.4%) | 36.41 MHz |
+| | 16 | 2.81 s | 6 | 12,645 (99.8%) | 35.47 MHz |
+| + 40 input swaps | 1 (off) | 7.55 s | 36 | 10,169 of 12,503 (81.3%) | 35.35 MHz |
+| | 2 | 5.76 s | 27 | 11,633 (93.0%) | 35.67 MHz |
+| | 4 | 4.34 s | 9 | 12,179 (97.4%) | 34.84 MHz |
+| | 8 | 4.05 s | 7 | 12,398 (99.2%) | 33.54 MHz |
+| | 16 | 3.80 s | 7 | 12,453 (99.6%) | 35.20 MHz |
+
+Reading. Seeding turns the preserved routes into what the 3c reading
+assumed they already were. At H = 8 the router keeps 99% of what was
+applied, finishes in a quarter to a third of the iterations, and takes
+3.0 to 4.1 s against 7.3 to 7.6 s unseeded and 8.6 to 9.1 s for a clean
+route of the same designs; the whole edit flow is then about 10 s against
+26 s clean. Fmax moves inside the seed spread in both directions (31.9 to
+36.4 MHz across the sweep against 35.87 MHz clean), as every reuse run
+does. H = 16 buys little more and pushes the dirty nets harder, so 8 is
+the value recorded here; the option stays off by default and unpromoted,
+like every reuse path. The clean flow is untouched: the branch is dead
+when the option is absent, and the Fabi386 clean gate reproduces
+0xbb18ede9 / 0xbc1365c6.
+
+| Check | Result |
+| --- | --- |
+| Fabi386 clean, `--seed 1 --threads 1`, option absent | checksums 0xbb18ede9 / 0xbc1365c6 |
+| `./build/rust-enabled/nextpnr-mistral-test` | 58/58 pass |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 48/48 pass |
+| `git diff --check`, `clang-format` | Pass |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1827,6 +1877,7 @@ stamp), `./build/nextpnr-mistral-test` 48/48, `git diff --check` and
 | 2026-09-16 | 3c-2 | Rip up every net before binding any in router2's bind pass | All 4,066 bind failures on the INIT edit were wires still bound to a later reused net's stale route; two passes give archfail 0, four fewer iterations, 21 to 27% less router time on the edits, byte-identical clean flow |
 | 2026-09-16 | closing | Next unit is router-side: report route survival, then seed router2's history from the previous run | 18% of applied routes are re-routed on both edits; router2 is 68% of the edit run after placement reuse removed 54 points |
 | 2026-09-16 | 3c-3 | Report survival next to applied, and rewrite the plan after routing rather than keep a second record | Same numbers as the external script: 100% on the unchanged design, 82.0% and 81.3% on the edits |
+| 2026-09-16 | 3c-4 | Seed router2's history on preserved wires behind `--reuse-routes-history`; record 8 as the measured value and keep it off by default | 99% survival, 6 to 8 iterations, router2 3.0 to 4.1 s against 7.3 to 7.6 s unseeded; Fmax inside the seed spread; clean gate byte-identical |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -1839,4 +1890,4 @@ stamp), `./build/nextpnr-mistral-test` 48/48, `git diff --check` and
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order) and 3c-3 (route survival) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
+| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |

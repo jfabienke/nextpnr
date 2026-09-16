@@ -231,6 +231,8 @@ struct Router2
                     auto &nd = nets.at(bound->udata);
                     nd.wires[wire] = std::make_pair(bound->wires.at(wire).pip, 0);
                     pwd.curr_cong = 1;
+                    if (cfg.prerouted_hist_cost != 1.0f && bound->wires.at(wire).strength == STRENGTH_STRONG)
+                        pwd.hist_cong_cost = cfg.prerouted_hist_cost;
                     if (bound->wires.at(wire).strength == STRENGTH_PLACER) {
                         pwd.reserved_net = bound->udata;
                     } else if (bound->wires.at(wire).strength > STRENGTH_PLACER) {

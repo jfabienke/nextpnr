@@ -159,7 +159,10 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   still rips a pre-routed arc up when it becomes overused (about 18% of applied routes are
   re-routed on the controlled edits), so the reuse report counts applied and surviving routes
   separately and a `--reuse-plan-out` plan is rewritten after routing with `survived` per net;
-  invalid routes are never preserved (`mistral/route_reuse.*`). It composes with
+  invalid routes are never preserved (`mistral/route_reuse.*`). `--reuse-routes-history H` seeds
+  router2's history cost on every preserved wire so dirty nets route around them from the first
+  iteration; at H = 8 the edits keep 99% of applied routes and route in a third of the time (off
+  by default, `Router2Cfg::prerouted_hist_cost`). It composes with
   `--reuse-placement`. On router failure every preserved route is dropped and the router reruns
   from the same RNG state (`MISTRAL_ROUTE_REUSE_FORCE_FALLBACK` forces that path).
 - Stage 5 (3a/3b): both reuse paths compute a `ReusePlan` (`mistral/reuse_plan.*`) before applying
@@ -197,8 +200,8 @@ refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route re
 (placement region expansion), 3a (reuse plan, typed build states), and 3c-2 (router2 binds only
 after every net's previous binding is ripped up, which removed every bind-time failure on the
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
-reported) done; the closing measurement's remaining recommendation is history seeding in
-router2 for preserved routes. Every new capability
+reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; the
+closing measurement's recommendations are exhausted. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.

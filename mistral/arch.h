@@ -57,6 +57,7 @@ struct ArchArgs
     std::string reuse_routes_path;            // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
     std::string reuse_plan_path;              // Stage 5 (3a): write the reuse plan (cells and nets, with reasons) here
     bool reuse_dry_run = false;               // Stage 5 (3a): plan reuse but apply nothing
+    float reuse_routes_history = 1.0f;        // Stage 5 (3c-4): router2 history seeded on preserved wires; 1.0 = off
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router

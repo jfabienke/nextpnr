@@ -69,6 +69,11 @@ struct Router2Cfg
     // Default 0 keeps the historical behaviour; 1.0 makes present-overuse pressure full for all nets.
     float present_cong_floor = 0.0f;
 
+    // History cost seeded on every wire bound at STRENGTH_STRONG before the router runs (a
+    // pre-routed arc's wires), so other nets treat them as contested from the first iteration
+    // instead of learning it by overusing them. 1.0 leaves the history untouched.
+    float prerouted_hist_cost = 1.0f;
+
     // Maximum number of congestion iterations before giving up (0 = unlimited).
     int max_iter;
 

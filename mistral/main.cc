@@ -80,6 +80,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("reuse-plan-out", po::value<std::string>(),
                            "write the reuse plan (every cell and net decision with its reason) to this JSON file");
     specific.add_options()("reuse-dry-run", "plan placement and route reuse but apply nothing");
+    specific.add_options()("reuse-routes-history", po::value<float>(),
+                           "seed router2's history cost on every preserved wire so the dirty nets route around "
+                           "them from the first iteration (1.0 = off, default; experimental)");
     specific.add_options()("reuse-placement", po::value<std::string>(),
                            "previous nextpnr output JSON; cells with an identical name and signature are "
                            "constrained to their previous BEL, everything else is placed normally (experimental)");
@@ -182,6 +185,11 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     if (vm.count("reuse-plan-out"))
         chipArgs.reuse_plan_path = vm["reuse-plan-out"].as<std::string>();
     chipArgs.reuse_dry_run = vm.count("reuse-dry-run") != 0;
+    if (vm.count("reuse-routes-history")) {
+        chipArgs.reuse_routes_history = vm["reuse-routes-history"].as<float>();
+        if (chipArgs.reuse_routes_history < 1.0f)
+            log_error("--reuse-routes-history must be 1.0 or more.\n");
+    }
     if (vm.count("placer-lookahead")) {
         chipArgs.placer_lookahead = vm["placer-lookahead"].as<int>();
         if (chipArgs.placer_lookahead < 0)

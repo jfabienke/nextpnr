@@ -942,7 +942,9 @@ bool Arch::run_router_phase()
         if (router == "router1") {
             result = router1(getCtx(), Router1Cfg(getCtx()));
         } else if (router == "router2") {
-            router2(getCtx(), Router2Cfg(getCtx()));
+            Router2Cfg cfg(getCtx());
+            cfg.prerouted_hist_cost = args.reuse_routes_history;
+            router2(getCtx(), cfg);
             result = true;
         } else {
             log_error("Mistral architecture does not support router '%s'\n", router.c_str());

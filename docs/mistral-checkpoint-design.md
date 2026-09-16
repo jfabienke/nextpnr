@@ -471,6 +471,21 @@ releasing only the preserved routes a failing net collides with, is
 subsumed: nothing collides at bind time any more, and what remains is the
 re-routing that negotiated congestion itself decides on.
 
+History seeding (3c-4). That re-routing has a simple cause: router2's
+history cost grows only after a wire has been overused, so a dirty net's
+first route takes preserved wires for free, both nets are then overused,
+and the preserved arc is ripped up as readily as the dirty one.
+`--reuse-routes-history H` seeds the history cost with H on every wire
+bound strong before the router runs (`Router2Cfg::prerouted_hist_cost`,
+one branch in `setup_wires`), so the dirty nets pay to cross preserved
+wires from the first iteration and route around them where they can. The
+owner is not exempt from its own seeded history, but it is only re-routed
+when ripped up, which the seeding makes rare. Measured at H = 8, 99% of
+applied routes survive and the router finishes in 6 to 8 iterations; the
+value is a cost multiplier on contested wires, so a design that cannot
+route around its preserved wires still resolves through overuse, and the
+fallback still applies if the router gives up. It stays off by default.
+
 Fallback. Router2 does not fail at its iteration cap: it gives up, and this
 fork then runs router1 to legalise whatever is left, which with preserved
 routes in the way is a different routing, not the uninterrupted one (the
