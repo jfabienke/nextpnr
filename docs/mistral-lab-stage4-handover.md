@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `c8348030` (Stage 5, 3c-3 route survival)
+- Commit: `cfa98d50` (Stage 5, 3c-4 history seeding)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -20,8 +20,10 @@ Handover point:
   The closing measurement is recorded; from it, 3c-2 fixed router2's bind
   order (byte-identical clean flow, 21 to 27% less router time on edits with
   reuse); 3c-3 reports route survival next to applied routes (100% on the
-  unchanged design, 82% on the controlled edits). The remaining
-  recommendation is history seeding in router2 for preserved routes.
+  unchanged design, 82% on the controlled edits); 3c-4 seeds router2's
+  history on preserved wires behind `--reuse-routes-history` (99%
+  survival, router2 in a third of the time at H = 8, off by default). The
+  closing measurement's recommendations are exhausted.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -319,6 +321,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `386461fb` | Stage 5 units 3a and 3b: reuse plan with reasons, placement region expansion, typed build states |
 | `e608bf49` | Stage 5 closing measurement and unit 3c-2: router2 rips up every net before binding; 3c timing corrected (equal to clean, not double) |
 | `c8348030` | Stage 5 unit 3c-3: route survival measured after the router and reported next to applied routes |
+| `cfa98d50` | Stage 5 unit 3c-4: history seeding for preserved routes behind `--reuse-routes-history`; 99% survival at H = 8 |
 
 ## Stage 5: applying the seams to the rest of the flow
 
