@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+#include "reuse_plan.h"
+
 #include "nextpnr_namespaces.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -36,11 +38,30 @@ struct PlacementReuseReport
     uint64_t removed = 0;          // previous cell with no current counterpart
     uint64_t user_constrained = 0; // current cells already bound or carrying a BEL attribute (QSF pins, user)
     uint64_t missing_bel = 0;      // matched cells whose previous BEL no longer resolves
+    uint64_t released = 0;         // 3b: transplants released by region expansion
 };
 
-// Parses `path` and annotates matching cells with `BEL`. Must run after
-// packing and before placement. Fails the run on malformed input.
+struct ReusePlan;
+
+// Stage 5 (3a): computes the per-cell decisions without touching the design.
+// Must run after packing and before placement. Fails the run on malformed
+// input.
+void plan_placement_reuse(Context &ctx, const std::string &path, ReusePlan &plan);
+
+// Applies a plan: every Reuse decision becomes a hard `BEL` attribute.
+PlacementReuseReport apply_placement_reuse(Context &ctx, const ReusePlan &plan);
+
+// Plans and applies in one step (the Stage 4E entry point).
 PlacementReuseReport apply_placement_reuse(Context &ctx, const std::string &path);
+
+// Stage 5 (3b): region expansion after a failed local repair. Turns every
+// Reuse decision whose previous BEL lies within Manhattan `radius` (tile
+// units) of an anchor into Released, and clears its `BEL` attribute, so the
+// next placer attempt is free to move it. Anchors are the previous BELs of
+// changed cells and, for added cells, the previous BELs of the cells on
+// their nets. A negative radius releases every transplant. Returns the
+// number of cells released by this call.
+unsigned release_placement_region(Context &ctx, ReusePlan &plan, int radius);
 
 void report_placement_reuse(const PlacementReuseReport &report);
 

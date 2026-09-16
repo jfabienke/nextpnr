@@ -97,145 +97,192 @@ PreviousRoutes load_previous_routes(const std::string &path)
     return routes;
 }
 
-RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous)
+namespace {
+// The checks, shared by planning and applying. On Reuse, `resolved` holds
+// (wire, pip into it or PipId() for the source) in the recorded order.
+ReuseDecision check_route(Context &ctx, NetInfo *net, const std::vector<PreviousRouteEntry> &entries,
+                          std::vector<std::pair<WireId, PipId>> &resolved, std::string &reason)
 {
-    RouteReuseReport report;
-    report.previous_nets = previous.size();
-    report.current_nets = ctx.nets.size();
+    resolved.clear();
+    resolved.reserve(entries.size());
+    WireId route_source;
+    dict<WireId, PipId> pip_into;
+    for (const auto &e : entries) {
+        WireId wire;
+        PipId pip;
+        bool ok = true;
+        try {
+            wire = ctx.getWireByName(IdStringList::parse(&ctx, e.wire));
+            if (!e.pip.empty())
+                pip = ctx.getPipByName(IdStringList::parse(&ctx, e.pip));
+        } catch (const std::exception &) {
+            ok = false;
+        }
+        if (!ok || wire == WireId() || (!e.pip.empty() && pip == PipId())) {
+            reason = "wire or pip '" + (e.pip.empty() ? e.wire : e.pip) + "' does not resolve";
+            return ReuseDecision::Unresolved;
+        }
+        if (e.pip.empty()) {
+            if (route_source != WireId()) {
+                reason = "two source wires";
+                return ReuseDecision::Unresolved;
+            }
+            route_source = wire;
+        } else {
+            if (ctx.getPipDstWire(pip) != wire) {
+                reason = "pip does not drive its wire";
+                return ReuseDecision::Unresolved;
+            }
+            pip_into[wire] = pip;
+        }
+        resolved.emplace_back(wire, pip);
+    }
+    if (route_source == WireId()) {
+        reason = "no source wire";
+        return ReuseDecision::Unresolved;
+    }
+    WireId source = ctx.getNetinfoSourceWire(net);
+    if (source == WireId() || source != route_source) {
+        reason = "source wire differs";
+        return ReuseDecision::EndpointMismatch;
+    }
+    pool<WireId> route_wires;
+    for (auto &rw : resolved)
+        route_wires.insert(rw.first);
+    pool<WireId> sinks;
+    for (auto &user : net->users) {
+        bool covered = false;
+        for (WireId sink : ctx.getNetinfoSinkWires(net, user)) {
+            if (route_wires.count(sink) && chain_reaches_source(ctx, pip_into, source, sink)) {
+                covered = true;
+                sinks.insert(sink);
+            }
+        }
+        if (!covered) {
+            reason = "sink " + user.cell->name.str(&ctx) + "." + user.port.str(&ctx) + " is not on the route";
+            return ReuseDecision::EndpointMismatch;
+        }
+    }
+    pool<WireId> has_downhill;
+    for (auto &kv : pip_into)
+        has_downhill.insert(ctx.getPipSrcWire(kv.second));
+    for (auto &rw : resolved) {
+        if (rw.first == source)
+            continue;
+        if (!has_downhill.count(rw.first) && !sinks.count(rw.first)) {
+            reason = "leaf " + ctx.getWireName(rw.first).str(&ctx) + " drives no current sink";
+            return ReuseDecision::EndpointMismatch;
+        }
+    }
+    for (auto &rw : resolved) {
+        if (ctx.getBoundWireNet(rw.first) != nullptr) {
+            reason = "wire " + ctx.getWireName(rw.first).str(&ctx) + " is bound to " +
+                     ctx.getBoundWireNet(rw.first)->name.str(&ctx);
+            return ReuseDecision::Unavailable;
+        }
+        if (rw.second != PipId() && (!ctx.checkPipAvail(rw.second) || ctx.getBoundPipNet(rw.second) != nullptr)) {
+            reason = "pip " + ctx.getPipName(rw.second).str(&ctx) + " is not available";
+            return ReuseDecision::Unavailable;
+        }
+    }
+    reason = "endpoints and every wire and pip check out";
+    return ReuseDecision::Reuse;
+}
+} // namespace
+
+void plan_route_reuse(Context &ctx, const PreviousRoutes &previous, ReusePlan &plan)
+{
+    plan.previous_nets = previous.size();
+    plan.nets.clear();
     for (auto &net_pair : ctx.nets) {
         NetInfo *net = net_pair.second.get();
+        NetReuseDecision d;
+        d.net = net->name.str(&ctx);
         if (!net->wires.empty()) {
-            ++report.already_routed;
+            d.decision = ReuseDecision::AlreadyRouted;
+            d.reason = "bound before reuse (global router)";
+            plan.nets.push_back(std::move(d));
             continue;
         }
         if (net->driver.cell == nullptr || net->users.entries() == 0)
             continue; // nothing to route; router2 skips it too
-        auto prev = previous.find(net->name.str(&ctx));
+        auto prev = previous.find(d.net);
         if (prev == previous.end()) {
+            d.decision = ReuseDecision::Added;
+            d.reason = "no previous route of this name";
+            plan.nets.push_back(std::move(d));
+            continue;
+        }
+        d.wires = prev->second.size();
+        std::vector<std::pair<WireId, PipId>> resolved;
+        d.decision = check_route(ctx, net, prev->second, resolved, d.reason);
+        plan.nets.push_back(std::move(d));
+    }
+}
+
+RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous, const ReusePlan &plan)
+{
+    RouteReuseReport report;
+    report.previous_nets = previous.size();
+    report.current_nets = ctx.nets.size();
+    for (const auto &d : plan.nets) {
+        switch (d.decision) {
+        case ReuseDecision::AlreadyRouted:
+            ++report.already_routed;
+            continue;
+        case ReuseDecision::Added:
             ++report.no_previous;
             continue;
-        }
-        const auto &entries = prev->second;
-
-        // Resolve names. Wire and pip names use tables interned at start-up,
-        // so this interns nothing; an unknown name is a different device.
-        std::vector<std::pair<WireId, PipId>> resolved; // (wire, pip into it or PipId() for the source)
-        resolved.reserve(entries.size());
-        bool ok = true;
-        WireId route_source;
-        dict<WireId, PipId> pip_into;
-        for (const auto &e : entries) {
-            WireId wire;
-            PipId pip;
-            try {
-                wire = ctx.getWireByName(IdStringList::parse(&ctx, e.wire));
-                if (!e.pip.empty())
-                    pip = ctx.getPipByName(IdStringList::parse(&ctx, e.pip));
-            } catch (const std::exception &) {
-                ok = false;
-            }
-            if (!ok || wire == WireId() || (!e.pip.empty() && pip == PipId())) {
-                ok = false;
-                break;
-            }
-            if (e.pip.empty()) {
-                if (route_source != WireId()) {
-                    ok = false; // two sources
-                    break;
-                }
-                route_source = wire;
-            } else {
-                if (ctx.getPipDstWire(pip) != wire) {
-                    ok = false;
-                    break;
-                }
-                pip_into[wire] = pip;
-            }
-            resolved.emplace_back(wire, pip);
-        }
-        if (!ok || route_source == WireId()) {
+        case ReuseDecision::EndpointMismatch:
+            ++report.endpoint_mismatch;
+            continue;
+        case ReuseDecision::Unresolved:
             ++report.unresolved;
             continue;
-        }
-
-        // Endpoints: the current source is the route's source; every current
-        // sink is on the route and reaches the source; no leaf is anything else.
-        WireId source = ctx.getNetinfoSourceWire(net);
-        if (source == WireId() || source != route_source) {
-            ++report.endpoint_mismatch;
+        case ReuseDecision::Unavailable:
+            ++report.unavailable;
+            continue;
+        case ReuseDecision::Reuse:
+            break;
+        default:
             continue;
         }
-        pool<WireId> route_wires;
-        for (auto &rw : resolved)
-            route_wires.insert(rw.first);
-        pool<WireId> sinks;
-        bool endpoints_ok = true;
-        for (auto &user : net->users) {
-            bool covered = false;
-            for (WireId sink : ctx.getNetinfoSinkWires(net, user)) {
-                if (route_wires.count(sink) && chain_reaches_source(ctx, pip_into, source, sink)) {
-                    covered = true;
-                    sinks.insert(sink);
-                }
-            }
-            if (!covered) {
-                endpoints_ok = false;
-                break;
-            }
-        }
-        if (endpoints_ok) {
-            pool<WireId> has_downhill;
-            for (auto &kv : pip_into)
-                has_downhill.insert(ctx.getPipSrcWire(kv.second));
-            for (auto &rw : resolved) {
-                if (rw.first == source)
-                    continue;
-                if (!has_downhill.count(rw.first) && !sinks.count(rw.first)) {
-                    endpoints_ok = false; // a leaf that drives no current sink
-                    break;
-                }
-            }
-        }
-        if (!endpoints_ok) {
-            ++report.endpoint_mismatch;
-            continue;
-        }
-
-        // Availability under the current design: free wires, pips the
-        // current reservations and blocked wires allow.
-        bool available = true;
-        for (auto &rw : resolved) {
-            if (ctx.getBoundWireNet(rw.first) != nullptr) {
-                available = false;
-                break;
-            }
-            if (rw.second != PipId() && (!ctx.checkPipAvail(rw.second) || ctx.getBoundPipNet(rw.second) != nullptr)) {
-                available = false;
-                break;
-            }
-        }
-        if (!available) {
+        auto it = ctx.nets.find(ctx.id(d.net));
+        auto prev = previous.find(d.net);
+        if (it == ctx.nets.end() || prev == previous.end())
+            log_error("route reuse: plan names unknown net '%s'.\n", d.net.c_str());
+        NetInfo *net = it->second.get();
+        // Validate again against the live design: the plan is a record.
+        std::vector<std::pair<WireId, PipId>> resolved;
+        std::string reason;
+        if (check_route(ctx, net, prev->second, resolved, reason) != ReuseDecision::Reuse) {
             ++report.unavailable;
             continue;
         }
-
         // Bind strong: router2 marks the wires unavailable to other nets from
         // its first iteration and records the arcs as pre-routed, which it
         // never revisits anyway; its final pass rebinds every wire up to
         // STRENGTH_STRONG at STRENGTH_WEAK, so the output carries the same
         // strengths as an uninterrupted run. Reverse of the recorded order,
         // so the wires map iterates as the previous run's did.
-        for (auto it = resolved.rbegin(); it != resolved.rend(); ++it) {
-            if (it->second == PipId())
-                ctx.bindWire(it->first, net, STRENGTH_STRONG);
+        for (auto rit = resolved.rbegin(); rit != resolved.rend(); ++rit) {
+            if (rit->second == PipId())
+                ctx.bindWire(rit->first, net, STRENGTH_STRONG);
             else
-                ctx.bindPip(it->second, net, STRENGTH_STRONG);
+                ctx.bindPip(rit->second, net, STRENGTH_STRONG);
             ++report.wires_bound;
         }
         ++report.reused;
-        report.reused_names.push_back(net->name.str(&ctx));
+        report.reused_names.push_back(d.net);
     }
     return report;
+}
+
+RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous)
+{
+    ReusePlan plan;
+    plan_route_reuse(ctx, previous, plan);
+    return apply_route_reuse(ctx, previous, plan);
 }
 
 RouteReuseReport apply_route_reuse(Context &ctx, const std::string &path)

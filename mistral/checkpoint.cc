@@ -1075,6 +1075,10 @@ bool Arch::checkpointRestore()
 
     ctx->rngstate = parse_u64(root["manifest"]["rng_state"].string_value(), "rng_state");
     checkpoint_phase_ = phase;
+    build_phase = rank >= 4   ? BuildPhase::Routed
+                  : rank == 3 ? BuildPhase::RoutePrepared
+                  : rank == 2 ? BuildPhase::Placed
+                              : BuildPhase::Packed;
     restored_input_json_ = pending_checkpoint->input.is_null() ? std::string() : pending_checkpoint->input.dump();
     pending_checkpoint.reset();
     log_info("Checkpoint: restored phase '%s' (%zu cells, %zu nets of which %zu recreated, %zu top ports, %zu cluster "

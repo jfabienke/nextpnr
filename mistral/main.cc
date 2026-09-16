@@ -19,6 +19,7 @@
 
 #include <cerrno>
 #include <fstream>
+#include "build_state.h"
 #include "command.h"
 #include "design_utils.h"
 #include "jsonwrite.h"
@@ -76,6 +77,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("reuse-routes", po::value<std::string>(),
                            "previous routed output JSON or routed checkpoint whose routes are reused where the "
                            "current design still allows them (Stage 5, 3c)");
+    specific.add_options()("reuse-plan-out", po::value<std::string>(),
+                           "write the reuse plan (every cell and net decision with its reason) to this JSON file");
+    specific.add_options()("reuse-dry-run", "plan placement and route reuse but apply nothing");
     specific.add_options()("reuse-placement", po::value<std::string>(),
                            "previous nextpnr output JSON; cells with an identical name and signature are "
                            "constrained to their previous BEL, everything else is placed normally (experimental)");
@@ -94,6 +98,8 @@ void MistralCommandHandler::customBitstream(Context *ctx)
     write_lab_control_profile(*ctx);
     if (vm.count("rbf")) {
         std::string filename = vm["rbf"].as<std::string>();
+        // Stage 5 (3a): only a validated build publishes a bitstream.
+        validate_build(Build<BuildPhase::Routed>::adopt(*ctx));
         ctx->build_bitstream();
         std::vector<uint8_t> data;
         ctx->cyclonev->rbf_save(data);
@@ -173,6 +179,9 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.reuse_placement_path = vm["reuse-placement"].as<std::string>();
     if (vm.count("reuse-routes"))
         chipArgs.reuse_routes_path = vm["reuse-routes"].as<std::string>();
+    if (vm.count("reuse-plan-out"))
+        chipArgs.reuse_plan_path = vm["reuse-plan-out"].as<std::string>();
+    chipArgs.reuse_dry_run = vm.count("reuse-dry-run") != 0;
     if (vm.count("placer-lookahead")) {
         chipArgs.placer_lookahead = vm["placer-lookahead"].as<int>();
         if (chipArgs.placer_lookahead < 0)

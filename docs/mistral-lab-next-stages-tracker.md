@@ -1549,6 +1549,62 @@ them, is the refinement that could turn the edited case around.
 | `./build/nextpnr-mistral-test` (Rust disabled) | 47/47 pass; one run under five concurrent Fabi386 jobs reported a failure that 25 quiet reruns did not reproduce (name not captured) |
 | `git diff --check`, `clang-format` on the new and edited lines | Pass |
 
+### 2026-09-16: Stage 5 units 3a and 3b: reuse plan, placement region expansion, typed build states
+
+Rationale is design document section 10 (`mistral-checkpoint-design.md`).
+Three deliverables, all in C++:
+
+1. **The reuse plan** (`mistral/reuse_plan.*`, 3a). Placement reuse and
+   route reuse now compute a `ReusePlan` before applying anything: one
+   decision per cell and per net with a one-line reason.
+   `--reuse-plan-out file.json` writes it; `--reuse-dry-run` writes it and
+   applies nothing. Applying a plan validates each decision again against
+   the live design. The Stage 4E adapter and the 3c module keep their entry
+   points and are implemented on the plan.
+2. **Placement region expansion** (3b, `Arch::run_placement`). On a placer
+   failure the transplants within a growing radius (2, 5, 12 tiles) of the
+   dirty cells are released (BEL attribute cleared, decision `released`),
+   everything the placer bound is unbound, the pre-placement RNG state is
+   restored, and the placer runs again; the last rung releases every
+   transplant. `MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK=n` fails the first n
+   attempts; a real failure has not been provoked on Fabi386.
+3. **Typed build states** (`mistral/build_state.*`, 3a). `Build<Phase>` is a
+   move-only handle; `place_build`, `prepare_build`, `route_build`, and
+   `validate_build` consume their input, so routing a packed build or
+   placing twice does not compile (`static_assert`s in the unit test).
+   `Arch::place()`, `Arch::route()`, and the bitstream writer adopt the
+   context into the phase they need, which is a runtime check at the
+   legacy boundary, and go through the transitions; `validate_build`
+   checks the context and that every arc of every driven net reaches a
+   sink over the net's own pips. `--rbf` on a packed or placed design is
+   now refused where it wrote a meaningless bitstream before.
+
+Fabi386, same binary throughout:
+
+| Gate | Run | Result |
+| --- | --- | --- |
+| Plan against a controlled edit | `--reuse-dry-run --reuse-plan-out` on the 40 LUT INIT edits | 40 cells `changed`, every one of the generator's picks and no other, all with reason `parameter LUT differs`; 11,578 `reuse`, 2 `user-constrained` |
+| Plan against a controlled edit | same on the 40 INIT edits plus 40 input swaps | 80 `changed`: the 40 INIT cells with `parameter LUT differs` and the 40 swapped cells with `connectivity of port A differs`, exact match with the generator's picks (its RNG replayed, including the per-cell bit draws) |
+| Ladder, two forced failures | LUT INIT edit with placement reuse | attempt 1 released 3,606 transplants within 2 tiles, attempt 2 a further 5,844 within 5; attempt 3 placed (HeAP 3.5 s) with 2,128 transplants kept, routed, validated: 42,188 arcs |
+| Ladder, full fallback | four forced failures | 2,126 more within 12 tiles, then the last 2 released; placed from scratch (HeAP 5.5 s). Its placement and routing checksums equal the clean edited run's (`0xc9e140ca / 0xa66e5260`): the last rung is the clean placement. |
+| Phase check | `--pack-only --rbf`; placed resume `--no-route --rbf` | both refused: `Build phase is 'packed'/'placed', but this step needs 'routed'`; no bitstream written |
+| Identity through validation | placed resume + `--reuse-routes` + `--rbf` | 12,865 routes preserved, router2 1.13 s, `Validated: 42196 arcs routed`, report and bitstream `cmp` identical to the clean run |
+
+The dry run's route plan is computed on the clean placement the dry run
+produces, so it reports endpoint mismatches for almost every net; the
+route decisions that matter are the ones a real reuse run writes.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` (adds `BuildStatesAreTypedAndPhaseCheckedAtTheBoundary`; plan and release checks in the placement reuse test) | 58/58 pass |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 48/48 pass |
+| `git diff --check`, `clang-format` on the new and edited files | Pass |
+
+With this the Stage 5 candidate list from the opening measurement is
+exhausted: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a. What remains open is
+recorded per unit: the annealer is owner-bound, route reuse doubles router
+time on edits, placement region expansion has not met a real failure.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1625,6 +1681,9 @@ them, is the refinement that could turn the edited case around.
 | 2026-09-16 | 3c | Bind preserved routes strong, not weak | Weak wires stayed open to other nets while the pre-routed owner never moved; the provenance run crawled to the cap with one overused wire |
 | 2026-09-16 | 3c | Treat router2 giving up as failure when routes were reused, and route from scratch below locked strength | Router1's legalisation pass otherwise yields a different routing; the fallback now reproduces the clean run byte for byte |
 | 2026-09-16 | 3c | Keep `--reuse-routes` opt-in; record that it doubles router time on the edited designs | 94 to 95% of nets preserved, router2 19.6 and 20.2 s against 10.3 s clean; ten times faster only on an unchanged design |
+| 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
+| 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
+| 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
 
 ## Stage gates and promotion
 
@@ -1634,4 +1693,4 @@ them, is the refinement that could turn the edited case around.
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | In progress: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all four phases, byte-identical on resume including the bitstream), 3c complete (route reuse, correct but not a router-time win on edits); remaining candidates 3b completion and 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes` available, all off by default; nothing promoted |
+| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted |

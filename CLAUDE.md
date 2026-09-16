@@ -159,6 +159,13 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   around them; invalid routes are never preserved (`mistral/route_reuse.*`). It composes with
   `--reuse-placement`. On router failure every preserved route is dropped and the router reruns
   from the same RNG state (`MISTRAL_ROUTE_REUSE_FORCE_FALLBACK` forces that path).
+- Stage 5 (3a/3b): both reuse paths compute a `ReusePlan` (`mistral/reuse_plan.*`) before applying
+  it; `--reuse-plan-out plan.json` writes every cell and net decision with its reason and
+  `--reuse-dry-run` applies nothing. Placement reuse retries on placer failure by releasing
+  transplants within a growing radius of the dirty cells, then everything
+  (`MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK=n` forces n failures). `mistral/build_state.*` is the
+  typed phase machine: `Arch::place()`/`route()` and the bitstream writer adopt the context into the
+  phase they need and run the typed transitions; `--rbf` on an unrouted design is now an error.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
@@ -183,8 +190,9 @@ measured and decided:
   tried and reverted; check it before re-deriving one.
 
 State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; Stage 5 has 1c (swap seam, batched
-refinement), 4b (retired), 2a/2b (checkpoints for all four phases), and 3c (route reuse) done;
-the remaining candidates are 3b completion and 3a (typed build states). Every new capability
+refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route reuse), 3b
+(placement region expansion), and 3a (reuse plan, typed build states) done; the Stage 5 candidate
+list is complete. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.

@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
+#include "build_state.h"
 #include "checkpoint.h"
 #include "gtest/gtest.h"
 #include "lab_control_edits.h"
@@ -29,6 +30,7 @@
 #include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
+#include "reuse_plan.h"
 #include "route_reuse.h"
 
 USING_NEXTPNR_NAMESPACE
@@ -1297,6 +1299,51 @@ TEST_F(LabControlCaptureTest, PlacementReuseClassifiesCellsBySignatureAndTranspl
     EXPECT_EQ(cells[5]->attrs.count(id_bel), 0u);
     EXPECT_EQ(cells[5]->bel, alms.at(9).ff_bels.at(0));
     EXPECT_EQ(cells[6]->attrs.count(id_bel), 0u);
+
+    // Stage 5 (3a): the same decisions as a plan, with reasons, computed
+    // without touching the design; (3b): region release around dirty cells.
+    {
+        for (unsigned i = 0; i < 3; ++i)
+            cells[i]->attrs.erase(id_bel); // undo the apply above: the plan sees the design as it was
+        ReusePlan plan;
+        plan_placement_reuse(*ctx, path, plan);
+        auto decision = [&](unsigned i) {
+            for (auto &d : plan.cells)
+                if (d.cell == cells[i]->name.str(ctx.get()))
+                    return d;
+            return CellReuseDecision{};
+        };
+        EXPECT_EQ(decision(0).decision, ReuseDecision::Reuse);
+        EXPECT_EQ(decision(3).decision, ReuseDecision::Changed);
+        EXPECT_EQ(decision(3).reason, "parameter INIT differs");
+        EXPECT_EQ(decision(4).decision, ReuseDecision::Changed);
+        EXPECT_EQ(decision(4).reason, "connectivity of port DATAIN differs");
+        EXPECT_EQ(decision(5).decision, ReuseDecision::UserConstrained);
+        EXPECT_EQ(decision(6).decision, ReuseDecision::MissingBel);
+        EXPECT_EQ(plan.count_cells(ReuseDecision::Reuse), 3u);
+        EXPECT_EQ(plan.count_cells(ReuseDecision::Added), cells.size() - 7);
+        EXPECT_EQ(plan.removed_cells, 1u);
+        // Radius 0 around the changed cells' previous BELs (all in LAB 0)
+        // releases every transplant in that tile and clears its BEL attribute.
+        EXPECT_EQ(release_placement_region(*ctx, plan, 0), 3u);
+        EXPECT_EQ(plan.count_cells(ReuseDecision::Released), 3u);
+        EXPECT_EQ(plan.count_cells(ReuseDecision::Reuse), 0u);
+        EXPECT_EQ(cells[0]->attrs.count(id_bel), 0u);
+        EXPECT_EQ(plan.released_cells, 3u);
+        EXPECT_FALSE(plan.placement_full_fallback);
+        // A fresh plan, released entirely.
+        ReusePlan again;
+        plan_placement_reuse(*ctx, path, again);
+        EXPECT_EQ(release_placement_region(*ctx, again, -1), 3u);
+        EXPECT_TRUE(again.placement_full_fallback);
+        const std::string plan_path = std::string(::testing::TempDir()) + "/lab_reuse_plan.json";
+        write_reuse_plan(again, plan_path);
+        std::ifstream in(plan_path);
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find("\"placement_full_fallback\": true"), std::string::npos);
+        EXPECT_NE(text.find("\"parameter INIT differs\""), std::string::npos);
+        std::remove(plan_path.c_str());
+    }
     for (unsigned i = 0; i < 7; ++i)
         if (i != 5)
             EXPECT_EQ(cells[i]->bel, BelId()); // annotation only; the placer binds
@@ -2650,5 +2697,45 @@ TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllo
     ctx->nets.erase(net->name);
     ctx->cells.erase(drv->name);
     ctx->cells.erase(snk->name);
+}
+
+TEST_F(LabControlCaptureTest, BuildStatesAreTypedAndPhaseCheckedAtTheBoundary)
+{
+    // Transitions exist only between adjacent phases and consume their input.
+    static_assert(std::is_invocable_v<decltype(place_build), Build<BuildPhase::Packed>>, "packed -> placed");
+    static_assert(!std::is_invocable_v<decltype(place_build), Build<BuildPhase::Placed>>, "no placing twice");
+    static_assert(!std::is_invocable_v<decltype(route_build), Build<BuildPhase::Packed>>, "no routing a packed build");
+    static_assert(!std::is_invocable_v<decltype(route_build), Build<BuildPhase::Placed>>, "prepare comes first");
+    static_assert(std::is_invocable_v<decltype(route_build), Build<BuildPhase::RoutePrepared>>, "prepared -> routed");
+    static_assert(!std::is_invocable_v<decltype(validate_build), Build<BuildPhase::RoutePrepared>>,
+                  "only a routed build validates");
+    static_assert(!std::is_copy_constructible_v<Build<BuildPhase::Routed>>, "handles are move-only");
+    static_assert(!std::is_invocable_v<decltype(place_build), Build<BuildPhase::Packed> &>,
+                  "a transition consumes its handle");
+
+    // At the legacy boundary the phase is checked at run time.
+    const BuildPhase before = ctx->build_phase;
+    ctx->build_phase = BuildPhase::Loaded;
+    EXPECT_THROW(Build<BuildPhase::Packed>::adopt(*ctx), log_execution_error_exception);
+    ctx->build_phase = BuildPhase::Packed;
+    EXPECT_NO_THROW(Build<BuildPhase::Packed>::adopt(*ctx));
+    EXPECT_THROW(Build<BuildPhase::Placed>::adopt(*ctx), log_execution_error_exception);
+    // Validation refuses a design with an unrouted arc.
+    CellInfo *drv = ctx->createCell(ctx->id("bs_drv"), id_MISTRAL_FF);
+    CellInfo *snk = ctx->createCell(ctx->id("bs_snk"), id_MISTRAL_FF);
+    NetInfo *net = ctx->createNet(ctx->id("bs_net"));
+    drv->addOutput(id_Q);
+    snk->addInput(id_DATAIN);
+    drv->connectPort(id_Q, net);
+    snk->connectPort(id_DATAIN, net);
+    ctx->build_phase = BuildPhase::Routed;
+    EXPECT_THROW(validate_build(Build<BuildPhase::Routed>::adopt(*ctx)), log_execution_error_exception);
+    EXPECT_EQ(ctx->build_phase, BuildPhase::Routed); // a failed transition leaves no new phase behind
+    drv->disconnectPort(id_Q);
+    snk->disconnectPort(id_DATAIN);
+    ctx->nets.erase(net->name);
+    ctx->cells.erase(drv->name);
+    ctx->cells.erase(snk->name);
+    ctx->build_phase = before;
 }
 } // namespace

@@ -30,6 +30,7 @@
 #include "placement_transaction.h"
 #include "placer1.h"
 #include "placer_heap.h"
+#include "reuse_plan.h"
 #include "route_reuse.h"
 #include "router1.h"
 #include "router2.h"
@@ -708,104 +709,192 @@ void Arch::report_lab_states() const
 
 bool Arch::place()
 {
+    // Stage 5 (3a): adopt the context in the phase this step needs and run
+    // the typed transition; the phase check catches a second placement or a
+    // placement of an unpacked design at the legacy boundary.
+    place_build(Build<BuildPhase::Packed>::adopt(*getCtx()));
+    return true;
+}
+
+bool Arch::run_placement()
+{
     std::string placer = str_or_default(settings, id_placer, defaultPlacer);
-    if (!args.reuse_placement_path.empty())
-        report_placement_reuse(apply_placement_reuse(*getCtx(), args.reuse_placement_path));
-    lab_reuse_begin();
-
-    if (placer == "heap") {
-        PlacerHeapCfg cfg(getCtx());
-        cfg.ioBufTypes.insert(id_MISTRAL_IO);
-        cfg.ioBufTypes.insert(id_MISTRAL_IB);
-        cfg.ioBufTypes.insert(id_MISTRAL_OB);
-        cfg.cellGroups.emplace_back();
-        cfg.cellGroups.back().insert({id_MISTRAL_COMB});
-        cfg.cellGroups.back().insert({id_MISTRAL_FF});
-
-        // The Cyclone V is asymmetrical enough that it's somewhat beneficial to prefer connecting things horizontally.
-        cfg.hpwl_scale_x = 1;
-        cfg.hpwl_scale_y = 2;
-
-        cfg.beta = 0.5; // TODO: find a good value of beta for sensible ALM spreading
-        // EXPERIMENTAL (routing-congestion mitigation): beta caps the ALM-slot
-        // utilisation the cut-spreader tolerates per region; lowering it spreads
-        // cells across more of the (mostly-empty) die, distributing routing-wire
-        // demand. Sweepable via env to probe whether ALM-spreading relieves the
-        // router2 overuse floor before building a routing-demand-aware inflator.
-        if (const char *beta_env = getenv("MISTRAL_HEAP_BETA")) {
-            cfg.beta = float(atof(beta_env));
-            log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
-        }
-        cfg.criticalityExponent = 7;
-        cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
-                                           const HeAPDisplacedBindings &displaced) {
-            auto prepared = prepare_placement_transaction(*owner, placement_edits_for_candidate(targets, displaced));
-            if (!prepared)
-                log_error("Failed to preflight a detached HeAP cluster candidate.\n");
-            auto frozen = freeze_placement_candidate(*owner, prepared);
-            if (frozen.status == FrozenPlacementStatus::Unsupported)
-                return HeAPClusterTransactionOutcome::Unsupported;
-            if (frozen.status != FrozenPlacementStatus::Ready)
-                log_error("Failed to freeze a detached HeAP cluster candidate.\n");
-            auto assessment = evaluate_placement_candidate(frozen);
-            if (assessment.status != FrozenPlacementStatus::Ready)
-                log_error("Failed to evaluate a detached HeAP cluster candidate.\n");
-            if (!placement_candidate_rust_matches(frozen, assessment))
-                log_error("Rust disagrees with detached C++ for a HeAP cluster candidate.\n");
-            if (!assessment.legal)
-                return HeAPClusterTransactionOutcome::Rejected;
-            auto outcome = commit_placement_transaction(*owner, std::move(prepared));
-            if (outcome != PlacementCommitOutcome::Committed)
-                log_error("Failed to commit a detached HeAP cluster candidate.\n");
-            return HeAPClusterTransactionOutcome::Committed;
-        };
-        // Stage 4D: speculate candidate locations and evaluate them detached on
-        // `--threads` workers. Off unless --placer-lookahead is given; the serial
-        // per-candidate callback above remains the fallback for unsupported moves.
-        cfg.clusterLookahead = std::max(0, args.placer_lookahead);
-        const int lookahead = cfg.clusterLookahead;
-        const int threads = std::max(1, getCtx()->setting<int>("threads", 1));
-        std::unique_ptr<PlacementCandidateCoordinator> coordinator;
-        if (lookahead > 0) {
-            coordinator = std::make_unique<PlacementCandidateCoordinator>(*this, unsigned(threads));
-            log_info("Cluster lookahead enabled: %d candidates per batch, %u workers.\n", lookahead,
-                     coordinator->workers());
-            cfg.place_cluster_transactions = [&coordinator](Context *,
-                                                            const std::vector<HeAPClusterCandidate> &candidates) {
-                return coordinator->place(candidates);
-            };
-        }
-        if (args.sa_seam != SwapSeamMode::Off || args.sa_batch > 0) {
-            cfg.assess_swap = mistral_assess_swap;
-            cfg.commit_swap = mistral_commit_swap;
-            cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
-            cfg.swap_batch = std::max(0, args.sa_batch);
-            cfg.swap_threads = unsigned(threads);
-            if (cfg.swap_batch > 0 && cfg.swap_seam_shadow)
-                log_error("--sa-batch cannot be combined with --sa-seam shadow.\n");
-            log_info("Annealer swap seam: %s%s.\n", cfg.swap_seam_shadow ? "shadow" : "on",
-                     cfg.swap_batch > 0 ? " (batched)" : "");
-        }
-        const bool ok = placer_heap(getCtx(), cfg);
-        if (coordinator)
-            report_placement_batch_stats(*coordinator);
-        lab_reuse_end();
-        if (!ok)
-            return false;
-    } else if (placer == "sa") {
-        Placer1Cfg sa_cfg(getCtx());
-        if (args.sa_seam != SwapSeamMode::Off) {
-            sa_cfg.assess_swap = mistral_assess_swap;
-            sa_cfg.commit_swap = mistral_commit_swap;
-            sa_cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
-        }
-        const bool ok = placer1(getCtx(), sa_cfg);
-        lab_reuse_end();
-        if (!ok)
-            return false;
-    } else {
-        log_error("Mistral architecture does not support placer '%s'\n", placer.c_str());
+    // Stage 5 (3a): plan reuse before applying it; (3b): retry with a
+    // growing released region if the placer cannot repair locally.
+    ReusePlan *plan = nullptr;
+    if (!args.reuse_placement_path.empty()) {
+        reuse_plan_ = std::make_shared<ReusePlan>();
+        plan = reuse_plan_.get();
+        plan_placement_reuse(*getCtx(), args.reuse_placement_path, *plan);
+        if (!args.reuse_plan_path.empty())
+            write_reuse_plan(*plan, args.reuse_plan_path);
+        if (args.reuse_dry_run)
+            log_info("Reuse dry run: the placement plan is not applied.\n");
+        else
+            report_placement_reuse(apply_placement_reuse(*getCtx(), *plan));
     }
+
+    auto run_placer = [&]() -> bool {
+        lab_reuse_begin();
+
+        if (placer == "heap") {
+            PlacerHeapCfg cfg(getCtx());
+            cfg.ioBufTypes.insert(id_MISTRAL_IO);
+            cfg.ioBufTypes.insert(id_MISTRAL_IB);
+            cfg.ioBufTypes.insert(id_MISTRAL_OB);
+            cfg.cellGroups.emplace_back();
+            cfg.cellGroups.back().insert({id_MISTRAL_COMB});
+            cfg.cellGroups.back().insert({id_MISTRAL_FF});
+
+            // The Cyclone V is asymmetrical enough that it's somewhat beneficial to prefer connecting things
+            // horizontally.
+            cfg.hpwl_scale_x = 1;
+            cfg.hpwl_scale_y = 2;
+
+            cfg.beta = 0.5; // TODO: find a good value of beta for sensible ALM spreading
+            // EXPERIMENTAL (routing-congestion mitigation): beta caps the ALM-slot
+            // utilisation the cut-spreader tolerates per region; lowering it spreads
+            // cells across more of the (mostly-empty) die, distributing routing-wire
+            // demand. Sweepable via env to probe whether ALM-spreading relieves the
+            // router2 overuse floor before building a routing-demand-aware inflator.
+            if (const char *beta_env = getenv("MISTRAL_HEAP_BETA")) {
+                cfg.beta = float(atof(beta_env));
+                log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
+            }
+            cfg.criticalityExponent = 7;
+            cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
+                                               const HeAPDisplacedBindings &displaced) {
+                auto prepared =
+                        prepare_placement_transaction(*owner, placement_edits_for_candidate(targets, displaced));
+                if (!prepared)
+                    log_error("Failed to preflight a detached HeAP cluster candidate.\n");
+                auto frozen = freeze_placement_candidate(*owner, prepared);
+                if (frozen.status == FrozenPlacementStatus::Unsupported)
+                    return HeAPClusterTransactionOutcome::Unsupported;
+                if (frozen.status != FrozenPlacementStatus::Ready)
+                    log_error("Failed to freeze a detached HeAP cluster candidate.\n");
+                auto assessment = evaluate_placement_candidate(frozen);
+                if (assessment.status != FrozenPlacementStatus::Ready)
+                    log_error("Failed to evaluate a detached HeAP cluster candidate.\n");
+                if (!placement_candidate_rust_matches(frozen, assessment))
+                    log_error("Rust disagrees with detached C++ for a HeAP cluster candidate.\n");
+                if (!assessment.legal)
+                    return HeAPClusterTransactionOutcome::Rejected;
+                auto outcome = commit_placement_transaction(*owner, std::move(prepared));
+                if (outcome != PlacementCommitOutcome::Committed)
+                    log_error("Failed to commit a detached HeAP cluster candidate.\n");
+                return HeAPClusterTransactionOutcome::Committed;
+            };
+            // Stage 4D: speculate candidate locations and evaluate them detached on
+            // `--threads` workers. Off unless --placer-lookahead is given; the serial
+            // per-candidate callback above remains the fallback for unsupported moves.
+            cfg.clusterLookahead = std::max(0, args.placer_lookahead);
+            const int lookahead = cfg.clusterLookahead;
+            const int threads = std::max(1, getCtx()->setting<int>("threads", 1));
+            std::unique_ptr<PlacementCandidateCoordinator> coordinator;
+            if (lookahead > 0) {
+                coordinator = std::make_unique<PlacementCandidateCoordinator>(*this, unsigned(threads));
+                log_info("Cluster lookahead enabled: %d candidates per batch, %u workers.\n", lookahead,
+                         coordinator->workers());
+                cfg.place_cluster_transactions = [&coordinator](Context *,
+                                                                const std::vector<HeAPClusterCandidate> &candidates) {
+                    return coordinator->place(candidates);
+                };
+            }
+            if (args.sa_seam != SwapSeamMode::Off || args.sa_batch > 0) {
+                cfg.assess_swap = mistral_assess_swap;
+                cfg.commit_swap = mistral_commit_swap;
+                cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
+                cfg.swap_batch = std::max(0, args.sa_batch);
+                cfg.swap_threads = unsigned(threads);
+                if (cfg.swap_batch > 0 && cfg.swap_seam_shadow)
+                    log_error("--sa-batch cannot be combined with --sa-seam shadow.\n");
+                log_info("Annealer swap seam: %s%s.\n", cfg.swap_seam_shadow ? "shadow" : "on",
+                         cfg.swap_batch > 0 ? " (batched)" : "");
+            }
+            const bool ok = placer_heap(getCtx(), cfg);
+            if (coordinator)
+                report_placement_batch_stats(*coordinator);
+            lab_reuse_end();
+            if (!ok)
+                return false;
+        } else if (placer == "sa") {
+            Placer1Cfg sa_cfg(getCtx());
+            if (args.sa_seam != SwapSeamMode::Off) {
+                sa_cfg.assess_swap = mistral_assess_swap;
+                sa_cfg.commit_swap = mistral_commit_swap;
+                sa_cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
+            }
+            const bool ok = placer1(getCtx(), sa_cfg);
+            lab_reuse_end();
+            if (!ok)
+                return false;
+        } else {
+            log_error("Mistral architecture does not support placer '%s'\n", placer.c_str());
+        }
+        return true;
+    };
+
+    bool placed = false;
+    if (plan == nullptr || args.reuse_dry_run) {
+        placed = run_placer();
+    } else {
+        // The ladder: on a placer failure, release the transplants within a
+        // growing radius of the dirty cells (their previous BELs, or those of
+        // their neighbours for added cells), unbind everything the placer
+        // bound, restore the pre-placement RNG state, and try again; the last
+        // rung releases every transplant, which is the clean placement.
+        const uint64_t rng_before = getCtx()->rngstate;
+        static const int radii[] = {2, 5, 12, -1};
+        unsigned forced = 0;
+        if (const char *f = getenv("MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK"))
+            forced = unsigned(atoi(f));
+        for (unsigned attempt = 0;; ++attempt) {
+            plan->placement_attempts = attempt + 1;
+            bool failed = false;
+            if (attempt < forced) {
+                log_warning(
+                        "Placement reuse fallback forced for attempt %u by MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK.\n",
+                        attempt + 1);
+                failed = true;
+            } else {
+                try {
+                    placed = run_placer();
+                } catch (log_execution_error_exception &) {
+                    lab_reuse_end();
+                    placed = false;
+                }
+                failed = !placed;
+            }
+            if (!failed)
+                break;
+            if (attempt >= sizeof(radii) / sizeof(radii[0]))
+                log_error("Placement reuse: the placer failed after every transplant was released.\n");
+            const int radius = radii[attempt];
+            const unsigned released = release_placement_region(*getCtx(), *plan, radius);
+            size_t unbound = 0;
+            for (auto &cell : cells) {
+                CellInfo *ci = cell.second.get();
+                if (ci->bel != BelId() && ci->belStrength != STRENGTH_LOCKED) {
+                    unbindBel(ci->bel);
+                    ++unbound;
+                }
+            }
+            getCtx()->rngstate = rng_before;
+            if (radius < 0)
+                log_warning("Placement reuse: attempt %u failed; every transplant released (%u), %zu cells unbound; "
+                            "placing from scratch from the pre-placement RNG state.\n",
+                            attempt + 1, released, unbound);
+            else
+                log_warning("Placement reuse: attempt %u failed; released %u transplants within %d tiles of the dirty "
+                            "cells, %zu cells unbound; retrying from the pre-placement RNG state.\n",
+                            attempt + 1, released, radius, unbound);
+        }
+        if (!args.reuse_plan_path.empty())
+            write_reuse_plan(*plan, args.reuse_plan_path); // with the attempts and releases
+    }
+    if (!placed)
+        return false;
 
     // G4/B2: the placer migrates the PLL off the pack-chosen bel no matter how it is constrained
     // (four approaches measured as failures - see PLL_OUTCLK_DESIGN.md). So DERIVE the assignment
@@ -829,15 +918,24 @@ void Arch::prepare_route()
 
 bool Arch::route()
 {
-    if (checkpoint_phase_ == "route-prepared")
-        log_info("Routing preparation restored from the checkpoint; running the router.\n");
-    else
-        prepare_route();
+    Context &ctx = *getCtx();
+    Build<BuildPhase::RoutePrepared> prepared = [&]() {
+        if (checkpoint_phase_ == "route-prepared") {
+            log_info("Routing preparation restored from the checkpoint; running the router.\n");
+            return Build<BuildPhase::RoutePrepared>::adopt(ctx);
+        }
+        return prepare_build(Build<BuildPhase::Placed>::adopt(ctx));
+    }();
     if (args.route_prepare_only) {
         log_info("Routing preparation complete; the router is skipped (--route-prepare-only).\n");
         return true;
     }
+    route_build(std::move(prepared));
+    return true;
+}
 
+bool Arch::run_router_phase()
+{
     std::string router = str_or_default(settings, id_router, defaultRouter);
     bool result = false;
     auto run_router = [&]() {
@@ -856,7 +954,17 @@ bool Arch::route()
         // Stage 5 (3c): preserved routes are seeds the router may rip up; if
         // it fails anyway, drop them all and route from scratch from the same
         // RNG state, so the fallback is the uninterrupted run's routing.
-        RouteReuseReport reuse = apply_route_reuse(*getCtx(), args.reuse_routes_path);
+        PreviousRoutes previous = load_previous_routes(args.reuse_routes_path);
+        if (!reuse_plan_)
+            reuse_plan_ = std::make_shared<ReusePlan>();
+        plan_route_reuse(*getCtx(), previous, *reuse_plan_);
+        if (!args.reuse_plan_path.empty())
+            write_reuse_plan(*reuse_plan_, args.reuse_plan_path);
+        RouteReuseReport reuse;
+        if (args.reuse_dry_run)
+            log_info("Reuse dry run: the route plan is not applied.\n");
+        else
+            reuse = apply_route_reuse(*getCtx(), previous, *reuse_plan_);
         const uint64_t rng_before = getCtx()->rngstate;
         bool fallback = getenv("MISTRAL_ROUTE_REUSE_FORCE_FALLBACK") != nullptr;
         getCtx()->router_gave_up = false;

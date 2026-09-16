@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nextpnr_namespaces.h"
+#include "reuse_plan.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -56,8 +57,18 @@ struct RouteReuseReport
 
 PreviousRoutes load_previous_routes(const std::string &path);
 
-// Must run after routing preparation (LAB reservations and globals) and
-// before the router. Never mutates a net whose checks fail.
+struct ReusePlan;
+
+// Stage 5 (3a): the per-net decisions, computed without touching the
+// design. Must run after routing preparation (LAB reservations and globals)
+// and before the router.
+void plan_route_reuse(Context &ctx, const PreviousRoutes &previous, ReusePlan &plan);
+
+// Applies a plan: every Reuse decision is checked again against the live
+// design and bound; a net that no longer passes is left to the router.
+RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous, const ReusePlan &plan);
+
+// Plans and applies in one step. Never mutates a net whose checks fail.
 RouteReuseReport apply_route_reuse(Context &ctx, const PreviousRoutes &previous);
 RouteReuseReport apply_route_reuse(Context &ctx, const std::string &path);
 

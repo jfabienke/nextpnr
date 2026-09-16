@@ -24,6 +24,7 @@
 #include <sstream>
 
 #include "base_arch.h"
+#include "build_state.h"
 #include "lab_dispatch.h"
 #include "lab_profile.h"
 #include "lab_reuse.h"
@@ -53,10 +54,12 @@ struct ArchArgs
     int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
-    std::string reuse_routes_path;              // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
-    SwapSeamMode sa_seam = SwapSeamMode::Off;   // Stage 5 (1c): annealer swap seam
-    int sa_batch = 0;                           // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
-    bool route_prepare_only = false;            // Stage 5 (2b): stop route() after preparation, before the router
+    std::string reuse_routes_path;            // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
+    std::string reuse_plan_path;              // Stage 5 (3a): write the reuse plan (cells and nets, with reasons) here
+    bool reuse_dry_run = false;               // Stage 5 (3a): plan reuse but apply nothing
+    SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
+    int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
+    bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router
 };
 
 // These structures are used for fast ALM validity checking
@@ -376,7 +379,8 @@ struct Arch : BaseArch<ArchRanges>
     std::string checkpointPhaseAfterRoute() const override;
     std::shared_ptr<struct MistralCheckpoint> pending_checkpoint;
     std::string checkpoint_phase_;
-    std::string restored_input_json_; // the resumed checkpoint's manifest "input", propagated as lineage
+    std::string restored_input_json_;              // the resumed checkpoint's manifest "input", propagated as lineage
+    std::shared_ptr<struct ReusePlan> reuse_plan_; // Stage 5 (3a): the plan of this run's placement and route reuse
 
     void notifyContextMutation(ContextMutationKind kind) override
     {
@@ -630,6 +634,11 @@ struct Arch : BaseArch<ArchRanges>
     bool route() override;
     // Stage 5 (2b): the half of route() before the router (LAB preparation, globals).
     void prepare_route();
+    // Stage 5 (3a): the phase bodies the typed transitions run (build_state.h);
+    // place() and route() adopt the context and go through them.
+    bool run_placement();
+    bool run_router_phase();
+    BuildPhase build_phase = BuildPhase::Loaded;
 
     // -------------------------------------------------
     // Functions for device setup

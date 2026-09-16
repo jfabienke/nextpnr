@@ -1244,6 +1244,7 @@ bool Arch::pack()
 
     assignArchInfo();
 
+    build_phase = BuildPhase::Packed;
     return true;
 }
 

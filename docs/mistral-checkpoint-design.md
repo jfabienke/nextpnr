@@ -475,3 +475,53 @@ report is recomputed. Route reuse composes with placement reuse
 (`--reuse-placement`): matched cells keep their BELs, unchanged nets between
 them keep their routes, and the dirty set is what the edit touched plus
 whatever the placer moved.
+
+## 10. Reuse plan, placement region expansion, typed build states (3a, 3b)
+
+The parent design's Stage 3 asked for three things beyond what Stage 4E and
+unit 3c built: a reuse plan emitted before anything is applied, with a
+reason per decision; region expansion when a local placement repair fails;
+and a typed build state machine whose invalid transitions do not compile.
+All three are in C++ (the Rust crates are concluded).
+
+The plan (`mistral/reuse_plan.*`). Placement reuse and route reuse both
+compute a `ReusePlan` first: one decision per cell (reuse, changed, added,
+user-constrained, missing BEL, released) and per net (reuse, already
+routed, added, endpoint mismatch, unresolved, unavailable), each with a
+one-line reason such as `parameter LUT differs` or `sink x.A is not on the
+route`. `--reuse-plan-out` writes it as JSON; `--reuse-dry-run` writes it
+and applies nothing, which is how a plan is compared against a controlled
+edit. Applying a plan validates each decision again against the live
+design (a route is checked a second time before it is bound); the plan is
+a record of what will be done and why, not an authority.
+
+Region expansion (3b). Stage 4E transplants matched cells as hard BEL
+constraints and lets the placer place the rest. If the placer fails, the
+transplants within a growing Manhattan radius (2, then 5, then 12 tiles)
+of the dirty cells are released, that is their BEL attributes cleared and
+their plan decisions turned to `released`, everything the placer or the
+constraint placer bound is unbound (the packer's locked pins stay), the
+pre-placement RNG state is restored, and the placer runs again; the last
+rung releases every transplant, which is the clean placement. Anchors are
+the previous BELs of changed cells and, for added cells, the previous BELs
+of the cells on their nets. The ladder is exercised with
+`MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK=<n>`, which fails the first n
+attempts; a real placer failure has not been provoked on Fabi386, whose
+utilisation leaves the strict legaliser room to spread.
+
+Typed build states (3a, `mistral/build_state.*`). `Build<Phase>` is a
+move-only handle that exists only while the context is in that phase;
+`place_build`, `prepare_build`, `route_build`, and `validate_build` consume
+their input and return the next phase, so a transition that does not exist
+does not compile and a caller cannot keep an obsolete handle. The legacy
+entry points adopt the context into the phase they need, which checks at
+run time what the types cannot see across that boundary: `Arch::place()`
+adopts `Packed`, `Arch::route()` adopts `Placed` (or `RoutePrepared` after a
+route-prepared restore), and the bitstream writer adopts `Routed` and runs
+`validate_build`, which checks the context and that every arc of every
+driven net reaches a sink over the net's own pips. A bitstream request on
+a packed or placed design is therefore refused where it used to write a
+meaningless file. `pack()` and the checkpoint restore set the phase; only
+the checked loader constructs a restored one. The dirty state the parent
+design describes is the reuse plan itself: the invalidation set of an edit
+against a previous checkpoint, carried by the packed build into placement.
