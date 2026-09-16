@@ -1898,6 +1898,30 @@ with reports and bitstreams), local staging under
 `build/stage5-profile/quartus-probe/` (the JSON-to-Verilog script, the
 adapted techmap, both netlists, and the qsf/sdc per job).
 
+**Why Quartus's timing is better (asked next; two more jobs).** The
+1.8x splits into three measured factors:
+
+| Factor | Measurement | Share |
+| --- | --- | --- |
+| Netlist rewrite | Same WYSIWYG netlist with every physical-synthesis and netlist-optimisation option off (`exec_probe_20260916n`): 58.0 MHz against 64.7 MHz with them on; the fitter log credits register retiming with 2.0 ns of slack and the critical path ends at a `NEW_REG` it created | 1.12x |
+| Timing model | The silicon-calibrated `fmaxtest` chain (502 LUT cells, one carry chain, `build/stage5-validation/fixtures/fmaxtest.json`) through both tools the same way (`fmaxtest_20260916`, no physical synthesis): Quartus 41.6 MHz, nextpnr 34.1 MHz, silicon between 45 and 52 MHz per the gaps file's calibration. Placement has little room on one chain, so this is the two models at the same 1.1 V 100 C corner: nextpnr's is 18% below Quartus's and 25 to 35% below silicon | 1.22x |
+| Placement and routing | The remainder, 58.0 against 35.9 x 1.22 | 1.32x |
+
+The paths themselves say where the 1.32x lives. Quartus's critical path
+(`report_timing -detail full_path` on the 12 MHz job) is 15 LUT levels
+and 16 interconnect hops averaging 0.74 ns, no carry cell on it, and
+every critical LUT input is on the fast F input (0.09 ns per cell);
+nextpnr's is 30 arithmetic cells and 2 LUTs with 22 general routing hops
+averaging 0.99 ns (the multiplier's adder rows, entered through their
+data inputs), 78% interconnect either way. Quartus packs 1.8 LUTs per
+ALM against our 1.4, so its hops are shorter, and it permutes LUT
+inputs for timing; our placer and router optimise against
+`getPipDelay`'s per-wire-type constants (the gaps file: "P&R optimises
+guesswork and only signoff sees reality"; signoff and the constants
+agree here, 35.71 against 35.87 MHz). Nothing in this branch's Stage 5
+work touches any of the three; they are the next quality work if
+timing is the goal, in the order model, placement, then rewrite.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
