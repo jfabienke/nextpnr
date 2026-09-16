@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nextpnr.h"
+#include "placement_pool.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
 
@@ -76,14 +77,13 @@ class PlacementCandidateCoordinator
                   std::vector<PlacementCandidateAssessment> &results, std::vector<uint8_t> &rust_agrees);
 
   private:
-    struct Pool;
     struct WorkerTally;
     void assess(unsigned worker, const FrozenPlacementCandidate &frozen, PlacementCandidateAssessment &result,
                 uint8_t &rust_agrees, WorkerTally &tally);
     void run_jobs(size_t count, const std::function<void(unsigned, size_t)> &job);
     Arch &arch_;
     unsigned workers_;
-    std::unique_ptr<Pool> pool_;
+    std::unique_ptr<PlacementWorkerPool> pool_;
     std::vector<std::vector<NpnrLabAssessmentV2>> scratch_;
     PlacementBatchStats stats_;
 };

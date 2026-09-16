@@ -16,6 +16,17 @@ file records implementation state and evidence. The current restart guide is
 - Fabi386 baseline inputs: JSON
   `3cdb742d5b5b85b2905e7957d622c2ec64ab3adc8053ddad80ec7d4c23f54bd3`;
   QSF `67c27631ac1b6eac92e056914d758fd842b09db9a765b8fe46f904338098bcca`.
+  **2026-09-16:** the originals lived under `/private/tmp/fabi386-pnr.1FWP2M/`
+  and were lost to a reboot (Darwin 27 update). They were reconstructed: the QSF
+  from the two `Constraining IO` lines in retained logs (it hashes to the
+  pinned value exactly), and the JSON from the Stage 4E controlled-edit copy by
+  re-deriving the same 40 seeded bit flips and reversing them. The rebuilt JSON
+  is content-identical but re-serialised (sha256
+  `29411c1d4c7f68f09731cd9163e02716c87171a423378148f0efcf63bf85c3f5`); a serial
+  run on the rebuilt pair reproduces the Stage 4C report, routed JSON, and
+  checksums `0xbb18ede9` / `0xbc1365c6` byte for byte, so every comparison in
+  this record remains valid. The inputs now live in `build/fabi386-inputs/`
+  (uncommitted); keep a copy outside any temporary directory.
 - Warm baseline: live C++ verdict 146.09 ns, live C++ plan export 149.59 ns,
   capture 160.28 ns, detached C++ 132.74 ns, Rust FFI 174.66 ns, and complete
   Rust dispatch 363.27 ns per query. Median Fabi386 wall time was 34.981 s in
@@ -1109,6 +1120,99 @@ shadow mode against the live rules is its oracle instead.
 Artifacts under `build/stage5-validation/` (`seam-*` are the rejected V2
 implementation, `seam2-*` the overlay one) and `build/stage5-profile/`.
 
+### 2026-09-16: Stage 5 unit 1c-B: batched refinement
+
+**Why serial identity is impossible here.** In refinement the annealer draws
+its acceptance random only for legal, non-improving swaps, and that draw sits
+in the same RNG stream as the next candidate's location draws. About half of
+all legal swaps take one, so a speculated batch diverges from the serial
+stream after its first such swap. This is the case the design's frozen-epoch
+policy was written for, and 1c-B implements it: reproducibility across worker
+counts, not byte identity with the serial search.
+
+**Policy.** `--sa-batch N` (with `--threads W`) generates N candidates from
+the state at batch start, drawing the location RNG in order; acceptance uses
+a second `DeterministicRNG` seeded once from the main stream and advanced once
+per candidate. Workers evaluate candidates detached (legality through
+`Arch::overlay_bels_legal`, cost delta from the position overlay with one
+`MoveChangeData` scratch per worker). The owner consumes in order: a candidate
+whose read set (both cells, both BELs, their tiles, every net of both cells)
+intersects the footprint of swaps accepted earlier in the batch is re-derived
+and re-evaluated synchronously; unsupported candidates run the live path at
+their turn; an accepted swap is assessed again with a fresh stamp and its
+delta recomputed on the owner before commit. A recomputed delta that differs
+from the speculative one is fatal: it means an untracked dependency. Results
+depend on the seed and N, never on W. Chain swaps and net-share scoring stay
+serial. The worker pool moved from the Mistral coordinator into
+`common/place/placement_pool.h/.cc` (dynamic claiming, bounded spin, per-job
+exception capture on both the threaded and the inline path) so both consumers
+share it.
+
+The verification caught one real defect during bring-up: worker scratch copies
+of the net bounds were refreshed only after batched commits, while chain swaps
+and the live path for unsupported candidates also commit; a stale copy produced
+a wirelength delta of 2 where the truth was 1. Every commit now propagates from
+`commit_cost_changes` itself.
+
+**Determinism gate: met.** Fabi386, `--sa-batch 32`, seed 1:
+
+| Workers | SA refinement | Wall | Artifacts |
+| ---: | ---: | ---: | --- |
+| 1 | 4.38 s | 22.2 s | reference |
+| 2 | 3.31 s | 21.5 s | identical |
+| 4 | 3.40 s | 21.2 s | identical |
+| 8 | 5.41 s, repeat 5.23 s | 23.5 s | identical |
+| 16 | 7.60 s | 25.5 s | identical |
+
+Identical means routed JSON and report byte for byte, with 2,175,283
+candidates, 393,137 stale re-evaluations (18%), 132,478 commits, 110
+unsupported, and zero delta mismatches in every run.
+
+**Quality: inside the serial seed spread, trajectory depends on N.** Serial
+runs at seeds 1, 2, 3 end at iterations 38, 34, 31 with wirelength 50,280,
+50,996, 52,476, timing cost 408, 476, 319, and Fmax 35.87, 34.98, 32.96 MHz.
+Batched runs at seed 1:
+
+| N | Candidates | Ends at iteration | Wirelength | Timing cost | Fmax |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4,962,611 | 37 | 50,701 | — | 35.07 |
+| 4 | 5,582,068 | 38 | 50,639 | — | 35.05 |
+| 32 | 2,175,283 | 14 | 51,899 | 456 | 35.11 |
+| 128 | 4,498,191 | 29 | 50,395 | — | 35.30 |
+
+N = 1 shows the separate acceptance stream alone reproduces the serial run's
+length and quality. Larger N generate candidates from a staler state and
+change the trajectory; refinement stops at the first non-improving iteration,
+so run length is stochastic, and N = 32 happened to stop early. All results
+are within the seed spread; none is a regression beyond what a seed change
+produces.
+
+**Scaling: negative beyond two workers.** The best phase time on the N = 32
+trajectory is 3.31 s at two workers against 4.38 s at one (1.32x), and it
+degrades from four workers on. Per candidate the batched path costs 2.0 µs on
+one worker against 1.64 µs for the serial seam, because generation,
+pre-filtering, the staleness check, in-order consumption, and the
+recompute-at-commit all stay on the owner, while the detached share is under
+1 µs. A batch of 32 therefore holds about 30 µs of parallel work against a
+pool round trip of comparable size (68,070 round trips; at 8 workers 372,312
+spin wake-ups and 104,178 blocking ones). Smaller batches make it worse
+(N = 8: 562,475 round trips, 29 s); larger ones raise staleness (N = 128: 32%
+re-evaluated) and change the trajectory further. The phase is owner-bound.
+The remaining lever is to pipeline generation of batch N+1 during evaluation
+of batch N, which hides evaluation entirely and leaves the owner's own cost as
+the floor; it is not implemented.
+
+| Command | Result |
+| --- | --- |
+| `./build/rust-enabled/nextpnr-mistral-test` | 55/55 pass (new: `PlacementWorkerPool` index coverage, dynamic claiming, failure capture on both paths, inline no-op) |
+| `./build/nextpnr-mistral-test` (Rust disabled) | 45/45 pass |
+| Fabi386 `--sa-batch 32` at 1/2/4/8/16 workers plus a repeat | Byte-identical across worker counts; zero delta mismatches |
+| Fabi386 `--sa-batch 1/4/8/128` | Quality inside the serial seed spread |
+| `git diff --check`, `clang-format --dry-run -Werror` on touched C++ | Pass |
+
+Artifacts under `build/stage5-validation/` (`batch*`, `compare_batch.sh`,
+`run-batch.sh`).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -1161,6 +1265,10 @@ implementation, `seam2-*` the overlay one) and `build/stage5-profile/`.
 | 2026-09-15 | Stage 5 | Take SA refinement (1c) before incremental timing (4b), and make the swap assessment carry cost deltas | Timing is 10.7% of the run; in the annealer the cost delta and move set are 51% of the phase versus 20% for binding and legality |
 | 2026-09-15 | 1c-A | Assess swaps with overlay forms of the live rules, not V2 captures | V2 capture per swap made SA 3.8x slower (37.5 s); overlay rules make it 8% faster (9.3 s) with identical output and zero shadow mismatches |
 | 2026-09-15 | 1c-A | Keep the seam off by default | Serial gain is 1 s of a 28 s run; the unit's purpose is the detached evaluation the parallel batch needs |
+| 2026-09-16 | 1c-B | Batched refinement is a frozen-epoch policy with a per-candidate acceptance stream, gated on determinism across worker counts | Serial identity is impossible because acceptance draws interleave with location draws; identical artifacts at 1/2/4/8/16 workers |
+| 2026-09-16 | 1c-B | Verify every accepted swap by re-assessing and recomputing on the owner | Caught a stale worker-scratch defect during bring-up; zero mismatches over 2.2 M candidates afterwards |
+| 2026-09-16 | 1c-B | Keep `--sa-batch` off by default and record the phase as owner-bound | Best 1.32x at two workers, worse beyond four; detached work is under 1 µs per candidate against a comparable pool round trip |
+| 2026-09-16 | 1c-B | Share one worker pool between the lookahead coordinator and the annealer | `common/place/placement_pool.*`; the inline path now reports job failures like the threaded path |
 
 ## Stage gates and promotion
 

@@ -11,6 +11,8 @@ target_sources(nextpnr_place PUBLIC
     parallel_refine.h
     place_common.cc
     place_common.h
+    placement_pool.cc
+    placement_pool.h
     placer1.cc
     placer1.h
     placer_heap.cc

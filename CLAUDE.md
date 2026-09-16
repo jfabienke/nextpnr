@@ -31,6 +31,12 @@ cmake --build build/rust-enabled -j4            # nextpnr-mistral, nextpnr-mistr
 cmake --build build --target clangformat        # format with root .clang-format
 ```
 
+Since the Darwin 27 update, `xcrun` resolves the SDK to the Command Line Tools copy (MacOS 27.0),
+whose `.tbd` stubs the installed linker cannot parse (`tapi error: malformed file ... unknown
+architecture`). Xcode's own SDK still matches the linker, so export
+`SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk`
+before any `cmake --build`; no reconfigure is needed.
+
 Other arches: `-DARCH=ice40|ecp5|nexus|machxo2|generic|himbaechel` with the matching
 `*_INSTALL_PREFIX` / `HIMBAECHEL_UARCH` options (see README.md). `BUILD_GUI`, `USE_OPENMP`,
 `BUILD_PYTHON` (default ON) are the other relevant options in the top-level `CMakeLists.txt`.
@@ -66,12 +72,15 @@ routed JSON across runs, strip the `creator` line and any settings lines that le
 by one, so compare reports and log checksums as well.
 
 The end-to-end regression design is **Fabi386** (i386 core, ~48k ALUTs, DE10-Nano
-`5CSEBA6U23I7`). Its JSON/QSF inputs live outside the repo (ephemeral `/private/tmp/fabi386-pnr.*`;
-sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared with `cmp` on
-`--write` JSON and `--report` JSON, e.g.
+`5CSEBA6U23I7`). Its JSON/QSF inputs live outside git in `build/fabi386-inputs/`
+(`f386_exec_probe_nodsp.json`, `exec_probe.qsf`). They were reconstructed on 2026-09-16 after a
+reboot wiped the original `/private/tmp` copies; the tracker's baseline section records how and
+proves the rebuilt pair reproduces the reference artifacts. Never keep them only in a temporary
+directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSON, e.g.
 
 ```sh
-./build/rust-enabled/nextpnr-mistral --device 5CSEBA6U23I7 --json F.json --qsf F.qsf \
+./build/rust-enabled/nextpnr-mistral --device 5CSEBA6U23I7 --json build/fabi386-inputs/f386_exec_probe_nodsp.json \
+   --qsf build/fabi386-inputs/exec_probe.qsf \
    --seed 1 --threads 1 --placer heap --router router2 --freq 12 --router2-max-iter 100 \
    --lab-controls legacy --write out.json --report out.report.json
 ```
@@ -114,7 +123,10 @@ sha256 of the baseline inputs is pinned in the tracker). A/B runs are compared w
 - Stage 5 (1c-A): `--sa-seam off|shadow|on` routes `placer1` refinement swaps through a detached
   assessment (`Arch::overlay_bels_legal` on a `BelOverlay`, cost delta from the annealer's position
   overlay). Do not assess swaps by freezing V2 records: measured 3.8x slower. Shadow mode is the
-  oracle for this path.
+  oracle for this path. `--sa-batch N` (1c-B) is the batched, deterministic-across-workers policy;
+  it is not byte-identical to serial (acceptance draws share the RNG stream with location draws),
+  quality is inside the seed spread, and it does not scale past two workers because the annealer
+  is owner-bound. The worker pool both consumers use is `common/place/placement_pool.*`.
 - Stage 4E reuse is also opt-in: `--lab-reuse shadow|on` caches LAB-level legality sub-results
   behind per-LAB binding versions and a global facts epoch (`mistral/lab_reuse.*`, active only
   inside `Arch::place()`); `--reuse-placement prev.json` transplants previous BELs onto cells

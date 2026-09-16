@@ -122,6 +122,8 @@ struct PlacerHeapCfg
     std::function<Placer1SwapAssessment(Context *, const std::vector<Placer1SwapEdit> &)> assess_swap;
     std::function<bool(Context *, const std::vector<Placer1SwapEdit> &, const Placer1SwapAssessment &)> commit_swap;
     bool swap_seam_shadow = false;
+    int swap_batch = 0;
+    unsigned swap_threads = 1;
 
     bool disableCtrlSet;
 

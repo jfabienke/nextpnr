@@ -72,6 +72,14 @@ struct Placer1Cfg
     // Also run the live path for every seam-evaluated swap and require identical
     // legality and cost deltas; the live result decides. For validation.
     bool swap_seam_shadow = false;
+
+    // Batched refinement (requires assess_swap). Candidates are generated from
+    // the state at batch start, evaluated detached on `threads` workers, and
+    // consumed in order with a per-candidate acceptance stream; a candidate whose
+    // read set overlaps an earlier accepted swap is re-evaluated at its turn.
+    // Results depend on the seed and swap_batch, not on threads. 0 = off.
+    int swap_batch = 0;
+    unsigned threads = 1;
 };
 
 extern bool placer1(Context *ctx, Placer1Cfg cfg);

@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: ISC */
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <type_traits>
 #include "gtest/gtest.h"
 #include "lab_control_edits.h"
@@ -17,6 +19,7 @@
 #include "log.h"
 #include "nextpnr.h"
 #include "placement_coordinator.h"
+#include "placement_pool.h"
 #include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
@@ -503,6 +506,48 @@ BelId first_non_lab_bel(const Context &ctx)
     return BelId();
 }
 } // namespace
+
+TEST(PlacementWorkerPool, CoversEveryIndexOnceCapturesFailuresAndRunsInline)
+{
+    for (unsigned workers : {1u, 2u, 5u, 9u}) {
+        SCOPED_TRACE(workers);
+        PlacementWorkerPool pool(workers);
+        EXPECT_EQ(pool.workers(), workers);
+        // Every index exactly once, by whichever worker claims it; the worker id is in range.
+        std::vector<std::atomic<int>> hits(1000);
+        std::vector<std::atomic<int>> per_worker(workers);
+        for (auto &h : hits)
+            h.store(0);
+        for (auto &w : per_worker)
+            w.store(0);
+        const auto failure = pool.run(hits.size(), [&](unsigned worker, size_t i) {
+            ASSERT_LT(worker, workers);
+            hits[i].fetch_add(1);
+            per_worker[worker].fetch_add(1);
+        });
+        EXPECT_TRUE(failure.empty());
+        for (const auto &h : hits)
+            EXPECT_EQ(h.load(), 1);
+        int total = 0;
+        for (const auto &w : per_worker)
+            total += w.load();
+        EXPECT_EQ(total, 1000);
+        if (workers == 1)
+            EXPECT_EQ(per_worker[0].load(), 1000); // inline, no threads
+        // A throwing job is reported, the run completes, and the pool is still usable.
+        std::atomic<int> after{0};
+        const auto message = pool.run(64, [&](unsigned, size_t i) {
+            if (i == 17)
+                throw std::runtime_error("job seventeen failed");
+            after.fetch_add(1);
+        });
+        EXPECT_EQ(message, "job seventeen failed");
+        EXPECT_TRUE(pool.run(8, [&](unsigned, size_t) { after.fetch_add(1); }).empty());
+        EXPECT_GE(after.load(), 8);
+        // Zero work is a no-op.
+        EXPECT_TRUE(pool.run(0, [&](unsigned, size_t) { FAIL() << "must not run"; }).empty());
+    }
+}
 
 TEST_F(LabControlCaptureTest, BatchCoordinatorCommitsFirstLegalInProposalOrderForEveryWorkerCount)
 {

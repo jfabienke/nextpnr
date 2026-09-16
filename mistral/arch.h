@@ -54,6 +54,7 @@ struct ArchArgs
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
     SwapSeamMode sa_seam = SwapSeamMode::Off;   // Stage 5 (1c): annealer swap seam
+    int sa_batch = 0;                           // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
 };
 
 // These structures are used for fast ALM validity checking

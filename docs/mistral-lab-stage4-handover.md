@@ -317,13 +317,23 @@ C++).
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost
 delta from a position overlay), byte-identical output, and about 8% less SA
-time serially with no provisional binding. Off by default. Next is 1c-B:
-speculate a batch of swaps, evaluate them on workers against the blocked
-owner's state, consume in RNG order, and re-evaluate only candidates that
-share a net or LAB with an accepted swap. The 4.8% accepted-swap rate on
-Fabi386 is why that should scale.
+time serially with no provisional binding. Off by default.
 
-Key files: `common/place/placer1.h/.cc` (seam types, overlay, shadow),
+Unit 1c-B is complete as a measured experiment: `--sa-batch N` speculates N
+swaps per batch, evaluates them on `--threads` workers, and consumes them in
+order with a per-candidate acceptance stream and dependency-tracked
+re-evaluation. It is deterministic across worker counts (byte-identical at
+1/2/4/8/16), quality sits inside the serial seed spread, and every accepted
+swap is verified by recomputation. It does not scale: 1.32x at two workers,
+worse beyond four, because the annealer's per-candidate work is owner-bound
+and the detached share is under 1 µs. Off by default. The lever not taken is
+pipelining generation of the next batch during evaluation of the current one.
+Note that serial identity is structurally impossible for the annealer (the
+acceptance draw shares the RNG stream with location draws), which is why this
+unit uses the design's frozen-epoch policy rather than 4D's serial one.
+
+Key files: `common/place/placer1.h/.cc` (seam types, overlay, shadow, batch),
+`common/place/placement_pool.h/.cc` (shared worker pool),
 `common/place/placer_heap.h/.cc` (pass-through), `mistral/lab.cc` and
 `mistral/lab_control_plan.cc` (rules templated on occupancy),
 `mistral/arch.h` (`BelOverlay`), `mistral/placement_coordinator.cc`

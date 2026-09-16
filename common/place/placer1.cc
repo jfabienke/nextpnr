@@ -32,6 +32,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <ostream>
 #include <queue>
@@ -40,10 +41,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unordered_set>
 #include <vector>
 #include "fast_bels.h"
 #include "log.h"
 #include "place_common.h"
+#include "placement_pool.h"
 #include "timing.h"
 #include "util.h"
 
@@ -63,6 +66,46 @@ class SAPlacer
             return wirelen_t(cfg.hpwl_scale_x * (x1 - x0) + cfg.hpwl_scale_y * (y1 - y0));
         }
     };
+
+    // Position overlay for detached swap evaluation: cost computations see the
+    // moved cells at their proposed BELs instead of their live bindings. The
+    // live paths pass the empty `no_overlay`, so they are unchanged.
+    using BelOverlayList = std::vector<std::pair<const CellInfo *, BelId>>;
+    const BelOverlayList no_overlay;
+    static inline BelId overlay_bel(const BelOverlayList &overlay, const CellInfo *cell)
+    {
+        for (const auto &entry : overlay)
+            if (entry.first == cell)
+                return entry.second;
+        return cell->bel;
+    }
+    inline Loc overlay_loc(const BelOverlayList &overlay, const CellInfo *cell) const
+    {
+        if (!overlay.empty() && !cell->isPseudo())
+            return ctx->getBelLocation(overlay_bel(overlay, cell));
+        return cell->getLocation();
+    }
+    inline delay_t predict_arc_delay(const BelOverlayList &overlay, const NetInfo *net, const PortRef &sink) const
+    {
+        if (overlay.empty())
+            return ctx->predictArcDelay(net, sink);
+        // Same selection as Context::predictArcDelay, with overlay BELs.
+        const BelId driver_bel = overlay_bel(overlay, net->driver.cell), sink_bel = overlay_bel(overlay, sink.cell);
+        if (net->driver.cell == nullptr || driver_bel == BelId() || sink_bel == BelId())
+            return 0;
+        IdString driver_pin, sink_pin;
+        for (auto pin : ctx->getBelPinsForCellPin(net->driver.cell, net->driver.port)) {
+            driver_pin = pin;
+            break;
+        }
+        for (auto pin : ctx->getBelPinsForCellPin(sink.cell, sink.port)) {
+            sink_pin = pin;
+            break;
+        }
+        if (driver_pin == IdString() || sink_pin == IdString())
+            return 0;
+        return ctx->predictDelay(driver_bel, driver_pin, sink_bel, sink_pin);
+    }
 
   public:
     SAPlacer(Context *ctx, Placer1Cfg cfg)
@@ -234,6 +277,7 @@ class SAPlacer
             require_legal = false;
             diameter = 3;
             log_info("Running simulated annealing placer for refinement.\n");
+            batch_mode = cfg.assess_swap && cfg.swap_batch > 0 && cfg.netShareWeight <= 0;
         }
         auto saplace_start = std::chrono::high_resolution_clock::now();
 
@@ -244,6 +288,8 @@ class SAPlacer
         // Calculate costs after initial placement
         setup_costs();
         moveChange.init(this);
+        if (batch_mode)
+            batch_setup();
         curr_wirelen_cost = total_wirelen_cost();
         curr_timing_cost = total_timing_cost();
         last_wirelen_cost = curr_wirelen_cost;
@@ -269,14 +315,18 @@ class SAPlacer
                          iter, temp, double(curr_timing_cost), double(curr_wirelen_cost));
 
             for (int m = 0; m < 15; ++m) {
-                // Loop through all automatically placed cells
-                for (auto cell : autoplaced) {
-                    // Find another random Bel for this cell
-                    BelId try_bel = random_bel_for_cell(cell);
-                    // If valid, try and swap to a new position and see if
-                    // the new position is valid/worthwhile
-                    if (try_bel != BelId() && try_bel != cell->bel)
-                        try_swap_position(cell, try_bel);
+                if (batch_mode) {
+                    run_batched_pass(autoplaced);
+                } else {
+                    // Loop through all automatically placed cells
+                    for (auto cell : autoplaced) {
+                        // Find another random Bel for this cell
+                        BelId try_bel = random_bel_for_cell(cell);
+                        // If valid, try and swap to a new position and see if
+                        // the new position is valid/worthwhile
+                        if (try_bel != BelId() && try_bel != cell->bel)
+                            try_swap_position(cell, try_bel);
+                    }
                 }
                 // Also try swapping chains, if applicable
                 for (auto cb : chain_basis) {
@@ -291,9 +341,9 @@ class SAPlacer
                 // Verify correctness of incremental wirelen updates
                 for (size_t i = 0; i < net_bounds.size(); i++) {
                     auto net = net_by_udata[i];
-                    if (ignore_net(net))
+                    if (ignore_net(no_overlay, net))
                         continue;
-                    auto &incr = net_bounds.at(i), gold = get_net_bounds(net);
+                    auto &incr = net_bounds.at(i), gold = get_net_bounds(no_overlay, net);
                     NPNR_ASSERT(incr.x0 == gold.x0);
                     NPNR_ASSERT(incr.x1 == gold.x1);
                     NPNR_ASSERT(incr.y0 == gold.y0);
@@ -378,6 +428,8 @@ class SAPlacer
             // Reset incremental bounds
             moveChange.reset(this);
             moveChange.new_net_bounds = net_bounds;
+            if (batch_mode)
+                batch_refresh_scratch();
 
             // Recalculate total metric entirely to avoid rounding errors
             // accumulating over time
@@ -395,6 +447,14 @@ class SAPlacer
             log_info("  swap seam: assessed=%" PRIu64 ", illegal=%" PRIu64 ", rejected=%" PRIu64 ", committed=%" PRIu64
                      ", unsupported=%" PRIu64 "\n",
                      seam_assessed, seam_illegal, seam_rejected, seam_committed, seam_unsupported);
+            if (batch_mode)
+                log_info("  batched refinement: batches=%" PRIu64 ", candidates=%" PRIu64 ", skipped=%" PRIu64
+                         ", stale=%" PRIu64 ", unsupported=%" PRIu64 ", illegal=%" PRIu64 ", rejected=%" PRIu64
+                         ", committed=%" PRIu64 ", delta-mismatches=%" PRIu64 "; pool spin/block wakes=%" PRIu64
+                         "/%" PRIu64 "\n",
+                         batch_count, batch_candidates, batch_skipped, batch_stale, batch_unsupported, batch_illegal,
+                         batch_rejected, batch_committed, batch_delta_mismatches, worker_pool->spin_wakes(),
+                         worker_pool->block_wakes());
             if (cfg.swap_seam_shadow) {
                 log_info("  swap seam shadow: checked=%" PRIu64 ", mismatches=%" PRIu64 "\n", seam_shadow_checked,
                          seam_shadow_mismatches);
@@ -537,15 +597,14 @@ class SAPlacer
                 ++seam_assessed;
                 const bool legal = assessment.status == Placer1SwapAssessment::Status::Legal;
                 if (legal) {
-                    bel_overlay.clear();
-                    bel_overlay.emplace_back(cell, newBel);
+                    BelOverlayList overlay;
+                    overlay.emplace_back(cell, newBel);
                     if (other_cell != nullptr)
-                        bel_overlay.emplace_back(other_cell, oldBel);
-                    add_move_cell(moveChange, cell, oldBel);
+                        overlay.emplace_back(other_cell, oldBel);
+                    add_move_cell(moveChange, overlay, cell, oldBel);
                     if (other_cell != nullptr)
-                        add_move_cell(moveChange, other_cell, newBel);
-                    compute_cost_changes(moveChange);
-                    bel_overlay.clear();
+                        add_move_cell(moveChange, overlay, other_cell, newBel);
+                    compute_cost_changes(moveChange, overlay);
                 }
                 if (cfg.swap_seam_shadow) {
                     // Remember the detached answer, then let the live path run and compare.
@@ -598,10 +657,10 @@ class SAPlacer
                         update_nets_by_tile(other_cell, ctx->getBelLocation(newBel), ctx->getBelLocation(oldBel));
         }
 
-        add_move_cell(moveChange, cell, oldBel);
+        add_move_cell(moveChange, no_overlay, cell, oldBel);
 
         if (other_cell != nullptr) {
-            add_move_cell(moveChange, other_cell, newBel);
+            add_move_cell(moveChange, no_overlay, other_cell, newBel);
         }
 
         // Always check both the new and old locations; as in some cases of dedicated routing ripping up a cell can deny
@@ -616,7 +675,7 @@ class SAPlacer
         }
 
         // Recalculate metrics for all nets touched by the perturbation
-        compute_cost_changes(moveChange);
+        compute_cost_changes(moveChange, no_overlay);
         if (shadow_pending)
             shadow_compare(cell, true, moveChange.wirelen_delta, moveChange.timing_delta);
 
@@ -770,7 +829,7 @@ class SAPlacer
 
         for (const auto &mm : moved_cells) {
             CellInfo *cell = ctx->cells.at(mm.first).get();
-            add_move_cell(moveChange, cell, moved_cells.at(cell->name));
+            add_move_cell(moveChange, no_overlay, cell, moved_cells.at(cell->name));
             if (cfg.netShareWeight > 0)
                 update_nets_by_tile(cell, ctx->getBelLocation(moved_cells.at(cell->name)),
                                     ctx->getBelLocation(cell->bel));
@@ -780,7 +839,7 @@ class SAPlacer
 #if CHAIN_DEBUG
         log_info("legal chain swap %s\n", cell->name.c_str(ctx));
 #endif
-        compute_cost_changes(moveChange);
+        compute_cost_changes(moveChange, no_overlay);
         delta = lambda * (moveChange.timing_delta / last_timing_cost) +
                 (1 - lambda) * (double(moveChange.wirelen_delta) / last_wirelen_cost);
         if (cfg.netShareWeight > 0) {
@@ -872,20 +931,20 @@ class SAPlacer
     }
 
     // Return true if a net is to be entirely ignored
-    inline bool ignore_net(NetInfo *net)
+    inline bool ignore_net(const BelOverlayList &overlay, NetInfo *net)
     {
         if (net->driver.cell == nullptr)
             return true;
-        const BelId driver_bel = overlay_bel(net->driver.cell);
+        const BelId driver_bel = overlay_bel(overlay, net->driver.cell);
         return driver_bel == BelId() || ctx->getBelGlobalBuf(driver_bel);
     }
 
     // Get the bounding box for a net
-    inline BoundingBox get_net_bounds(NetInfo *net)
+    inline BoundingBox get_net_bounds(const BelOverlayList &overlay, NetInfo *net)
     {
         BoundingBox bb;
         NPNR_ASSERT(net->driver.cell != nullptr);
-        Loc dloc = overlay_loc(net->driver.cell);
+        Loc dloc = overlay_loc(overlay, net->driver.cell);
         bb.x0 = dloc.x;
         bb.x1 = dloc.x;
         bb.y0 = dloc.y;
@@ -895,9 +954,9 @@ class SAPlacer
         bb.ny0 = 1;
         bb.ny1 = 1;
         for (auto user : net->users) {
-            if (!user.cell->isPseudo() && overlay_bel(user.cell) == BelId())
+            if (!user.cell->isPseudo() && overlay_bel(overlay, user.cell) == BelId())
                 continue;
-            Loc uloc = overlay_loc(user.cell);
+            Loc uloc = overlay_loc(overlay, user.cell);
             if (bb.x0 == uloc.x)
                 ++bb.nx0;
             else if (uloc.x < bb.x0) {
@@ -928,7 +987,7 @@ class SAPlacer
     }
 
     // Get the timing cost for an arc of a net
-    inline double get_timing_cost(NetInfo *net, const PortRef &user)
+    inline double get_timing_cost(const BelOverlayList &overlay, NetInfo *net, const PortRef &user)
     {
         int cc;
         if (net->driver.cell == nullptr)
@@ -937,7 +996,7 @@ class SAPlacer
             return 0;
 
         float crit = tmg.get_criticality(CellPortKey(user));
-        double delay = ctx->getDelayNS(predict_arc_delay(net, user));
+        double delay = ctx->getDelayNS(predict_arc_delay(overlay, net, user));
         return delay * std::pow(crit, crit_exp);
     }
 
@@ -946,12 +1005,12 @@ class SAPlacer
     {
         for (auto &net : ctx->nets) {
             NetInfo *ni = net.second.get();
-            if (ignore_net(ni))
+            if (ignore_net(no_overlay, ni))
                 continue;
-            net_bounds[ni->udata] = get_net_bounds(ni);
+            net_bounds[ni->udata] = get_net_bounds(no_overlay, ni);
             if (cfg.timing_driven && int(ni->users.entries()) < cfg.timingFanoutThresh)
                 for (auto usr : ni->users.enumerate())
-                    net_arc_tcost[ni->udata][usr.index.idx()] = get_timing_cost(ni, usr.value);
+                    net_arc_tcost[ni->udata][usr.index.idx()] = get_timing_cost(no_overlay, ni, usr.value);
         }
     }
 
@@ -1033,44 +1092,6 @@ class SAPlacer
 
     } moveChange;
 
-    // Position overlay for detached swap evaluation: while it is set, cost
-    // computations see the moved cells at their proposed BELs instead of their
-    // live bindings. Empty on the live path, so that path is unchanged.
-    std::vector<std::pair<const CellInfo *, BelId>> bel_overlay;
-    inline BelId overlay_bel(const CellInfo *cell) const
-    {
-        for (const auto &entry : bel_overlay)
-            if (entry.first == cell)
-                return entry.second;
-        return cell->bel;
-    }
-    inline Loc overlay_loc(const CellInfo *cell) const
-    {
-        if (!bel_overlay.empty() && !cell->isPseudo())
-            return ctx->getBelLocation(overlay_bel(cell));
-        return cell->getLocation();
-    }
-    inline delay_t predict_arc_delay(const NetInfo *net, const PortRef &sink) const
-    {
-        if (bel_overlay.empty())
-            return ctx->predictArcDelay(net, sink);
-        // Same selection as Context::predictArcDelay, with overlay BELs.
-        const BelId driver_bel = overlay_bel(net->driver.cell), sink_bel = overlay_bel(sink.cell);
-        if (net->driver.cell == nullptr || driver_bel == BelId() || sink_bel == BelId())
-            return 0;
-        IdString driver_pin, sink_pin;
-        for (auto pin : ctx->getBelPinsForCellPin(net->driver.cell, net->driver.port)) {
-            driver_pin = pin;
-            break;
-        }
-        for (auto pin : ctx->getBelPinsForCellPin(sink.cell, sink.port)) {
-            sink_pin = pin;
-            break;
-        }
-        if (driver_pin == IdString() || sink_pin == IdString())
-            return 0;
-        return ctx->predictDelay(driver_bel, driver_pin, sink_bel, sink_pin);
-    }
     // Seam statistics.
     uint64_t seam_assessed = 0, seam_illegal = 0, seam_rejected = 0, seam_committed = 0, seam_unsupported = 0;
     uint64_t seam_shadow_checked = 0, seam_shadow_mismatches = 0;
@@ -1079,16 +1100,265 @@ class SAPlacer
     wirelen_t shadow_wirelen_delta = 0;
     double shadow_timing_delta = 0;
 
-    void add_move_cell(MoveChangeData &mc, CellInfo *cell, BelId old_bel)
+    // ------------------------------------------------------------------
+    // Batched refinement (Placer1Cfg::swap_batch). See the header for the policy.
+    bool batch_mode = false;
+    std::unique_ptr<PlacementWorkerPool> worker_pool;
+    std::vector<MoveChangeData> worker_mc; // one per worker; worker 0 is the owner
+    DeterministicRNG accept_rng;           // per-candidate acceptance stream
+    struct SwapCandidate
     {
-        Loc curr_loc = overlay_loc(cell);
+        CellInfo *cell = nullptr;
+        CellInfo *other = nullptr;
+        BelId old_bel, new_bel;
+        float accept_u = 0;
+        bool skip = false; // failed a pre-filter at generation: the serial path would return without a draw
+        Placer1SwapAssessment::Status status = Placer1SwapAssessment::Status::Unsupported;
+        wirelen_t wirelen_delta = 0;
+        double timing_delta = 0;
+    };
+    std::vector<SwapCandidate> batch;
+    // Footprint of swaps accepted earlier in the current batch.
+    std::vector<uint8_t> net_marks;
+    std::vector<decltype(NetInfo::udata)> marked_nets;
+    std::unordered_set<const CellInfo *> touched_cells;
+    pool<BelId> touched_bels;
+    std::unordered_set<int> touched_tiles;
+    uint64_t batch_count = 0, batch_candidates = 0, batch_skipped = 0, batch_stale = 0, batch_unsupported = 0,
+             batch_illegal = 0, batch_rejected = 0, batch_committed = 0, batch_delta_mismatches = 0;
+
+    inline int tile_of(BelId bel) const
+    {
+        const Loc loc = ctx->getBelLocation(bel);
+        return loc.y * (max_x + 1) + loc.x;
+    }
+
+    void batch_setup()
+    {
+        worker_pool = std::make_unique<PlacementWorkerPool>(cfg.threads);
+        worker_mc.resize(worker_pool->workers());
+        for (auto &mc : worker_mc)
+            mc.init(this);
+        net_marks.assign(ctx->nets.size(), 0);
+        accept_rng.rngstate = ctx->rng64();
+        log_info("Batched refinement: %d candidates per batch, %u workers.\n", cfg.swap_batch, worker_pool->workers());
+    }
+
+    void batch_refresh_scratch()
+    {
+        for (auto &mc : worker_mc)
+            mc.new_net_bounds = net_bounds;
+    }
+
+    // The early returns of try_swap_position that need no assessment.
+    bool batch_prefilter(const SwapCandidate &c) const
+    {
+        if (c.cell->cluster != ClusterId())
+            return false;
+        if (c.other != nullptr && (c.other->cluster != ClusterId() || c.other->belStrength > STRENGTH_WEAK))
+            return false;
+        if (!ctx->isValidBelForCellType(c.cell->type, c.new_bel))
+            return false;
+        if (c.other != nullptr && !ctx->isValidBelForCellType(c.other->type, c.old_bel))
+            return false;
+        return true;
+    }
+
+    static void batch_edits(const SwapCandidate &c, std::vector<Placer1SwapEdit> &edits)
+    {
+        edits.clear();
+        edits.push_back({c.new_bel, c.other, c.other ? c.other->belStrength : STRENGTH_NONE, c.cell, STRENGTH_WEAK});
+        edits.push_back({c.old_bel, c.cell, c.cell->belStrength, c.other, c.other ? STRENGTH_WEAK : STRENGTH_NONE});
+    }
+
+    // Detached: legality from the architecture, cost delta from the overlay, no mutation.
+    void batch_evaluate(SwapCandidate &c, MoveChangeData &mc)
+    {
+        std::vector<Placer1SwapEdit> edits;
+        batch_edits(c, edits);
+        const auto assessment = cfg.assess_swap(ctx, edits);
+        c.status = assessment.status;
+        c.wirelen_delta = 0;
+        c.timing_delta = 0;
+        if (c.status != Placer1SwapAssessment::Status::Legal)
+            return;
+        BelOverlayList overlay;
+        overlay.emplace_back(c.cell, c.new_bel);
+        if (c.other != nullptr)
+            overlay.emplace_back(c.other, c.old_bel);
+        mc.reset(this);
+        add_move_cell(mc, overlay, c.cell, c.old_bel);
+        if (c.other != nullptr)
+            add_move_cell(mc, overlay, c.other, c.new_bel);
+        compute_cost_changes(mc, overlay);
+        c.wirelen_delta = mc.wirelen_delta;
+        c.timing_delta = mc.timing_delta;
+    }
+
+    bool batch_nets_marked(const CellInfo *cell) const
+    {
+        for (const auto &port : cell->ports)
+            if (port.second.net != nullptr && net_marks[port.second.net->udata])
+                return true;
+        return false;
+    }
+
+    void batch_mark(const SwapCandidate &c)
+    {
+        touched_cells.insert(c.cell);
+        if (c.other != nullptr)
+            touched_cells.insert(c.other);
+        touched_bels.insert(c.old_bel);
+        touched_bels.insert(c.new_bel);
+        touched_tiles.insert(tile_of(c.old_bel));
+        touched_tiles.insert(tile_of(c.new_bel));
+        for (const CellInfo *cell : {c.cell, c.other}) {
+            if (cell == nullptr)
+                continue;
+            for (const auto &port : cell->ports)
+                if (port.second.net != nullptr && !net_marks[port.second.net->udata]) {
+                    net_marks[port.second.net->udata] = 1;
+                    marked_nets.push_back(port.second.net->udata);
+                }
+        }
+    }
+
+    void batch_consume(SwapCandidate &c)
+    {
+        static const double epsilon = 1e-20;
+        if (c.skip) {
+            ++batch_skipped;
+            return;
+        }
+        const bool stale = touched_cells.count(c.cell) || (c.other != nullptr && touched_cells.count(c.other)) ||
+                           touched_bels.count(c.old_bel) || touched_bels.count(c.new_bel) ||
+                           touched_tiles.count(tile_of(c.old_bel)) || touched_tiles.count(tile_of(c.new_bel)) ||
+                           batch_nets_marked(c.cell) || (c.other != nullptr && batch_nets_marked(c.other));
+        if (stale) {
+            // Re-derive the premise at this turn and evaluate synchronously.
+            ++batch_stale;
+            c.old_bel = c.cell->bel;
+            if (c.new_bel == c.old_bel)
+                return;
+            c.other = ctx->getBoundBelCell(c.new_bel);
+            if (!batch_prefilter(c))
+                return;
+            batch_evaluate(c, worker_mc[0]);
+        }
+        if (c.status == Placer1SwapAssessment::Status::Unsupported) {
+            ++batch_unsupported;
+            if (try_swap_position(c.cell, c.new_bel))
+                batch_mark(c);
+            return;
+        }
+        if (c.status == Placer1SwapAssessment::Status::Illegal) {
+            ++batch_illegal;
+            return;
+        }
+        double delta = lambda * (c.timing_delta / std::max<double>(last_timing_cost, epsilon)) +
+                       (1 - lambda) * (double(c.wirelen_delta) / std::max<double>(last_wirelen_cost, epsilon));
+        n_move++;
+        if (!(delta < 0 || (temp > 1e-8 && c.accept_u <= std::exp(-delta / temp)))) {
+            ++batch_rejected;
+            return;
+        }
+        // Accepted: assess again with a fresh stamp and recompute the delta on the owner.
+        // A different delta means an undetected dependency, which is a bug, not a policy.
+        std::vector<Placer1SwapEdit> edits;
+        batch_edits(c, edits);
+        const auto assessment = cfg.assess_swap(ctx, edits);
+        if (assessment.status != Placer1SwapAssessment::Status::Legal)
+            log_error("Batched swap for '%s' became illegal at its turn without a tracked dependency.\n",
+                      ctx->nameOf(c.cell));
+        BelOverlayList overlay;
+        overlay.emplace_back(c.cell, c.new_bel);
+        if (c.other != nullptr)
+            overlay.emplace_back(c.other, c.old_bel);
+        moveChange.reset(this);
+        add_move_cell(moveChange, overlay, c.cell, c.old_bel);
+        if (c.other != nullptr)
+            add_move_cell(moveChange, overlay, c.other, c.new_bel);
+        compute_cost_changes(moveChange, overlay);
+        if (moveChange.wirelen_delta != c.wirelen_delta || moveChange.timing_delta != c.timing_delta) {
+            ++batch_delta_mismatches;
+            log_warning("Batched swap mismatch: cell '%s' other '%s' old %s new %s; recomputed wl %d tmg %.9g, "
+                        "speculative wl %d tmg %.9g\n",
+                        ctx->nameOf(c.cell), c.other ? ctx->nameOf(c.other) : "-", ctx->nameOfBel(c.old_bel),
+                        ctx->nameOfBel(c.new_bel), int(moveChange.wirelen_delta), moveChange.timing_delta,
+                        int(c.wirelen_delta), c.timing_delta);
+            for (const auto &bc : moveChange.bounds_changed_nets_x)
+                log_warning("  x-net '%s' marked=%d kind=%d old [%d..%d] new [%d..%d]\n", ctx->nameOf(net_by_udata[bc]),
+                            int(net_marks[bc]), int(moveChange.already_bounds_changed_x[bc]), net_bounds[bc].x0,
+                            net_bounds[bc].x1, moveChange.new_net_bounds[bc].x0, moveChange.new_net_bounds[bc].x1);
+            for (const auto &bc : moveChange.bounds_changed_nets_y)
+                log_warning("  y-net '%s' marked=%d kind=%d old [%d..%d] new [%d..%d]\n", ctx->nameOf(net_by_udata[bc]),
+                            int(net_marks[bc]), int(moveChange.already_bounds_changed_y[bc]), net_bounds[bc].y0,
+                            net_bounds[bc].y1, moveChange.new_net_bounds[bc].y0, moveChange.new_net_bounds[bc].y1);
+            log_error("Batched swap for '%s' changed cost at its turn without a tracked dependency.\n",
+                      ctx->nameOf(c.cell));
+        }
+        if (!cfg.commit_swap(ctx, edits, assessment))
+            log_error("Batched swap commit found a changed design for cell '%s'.\n", ctx->nameOf(c.cell));
+        commit_cost_changes(moveChange);
+        batch_mark(c);
+        n_accept++;
+        ++batch_committed;
+    }
+
+    void run_batched_pass(const std::vector<CellInfo *> &autoplaced)
+    {
+        const size_t limit = size_t(cfg.swap_batch);
+        size_t index = 0;
+        while (index < autoplaced.size()) {
+            batch.clear();
+            // 1. Generate from the state at batch start, drawing the location RNG in order.
+            for (; index < autoplaced.size() && batch.size() < limit; ++index) {
+                CellInfo *cell = autoplaced[index];
+                BelId try_bel = random_bel_for_cell(cell);
+                if (try_bel == BelId() || try_bel == cell->bel)
+                    continue;
+                SwapCandidate c;
+                c.cell = cell;
+                c.old_bel = cell->bel;
+                c.new_bel = try_bel;
+                c.other = ctx->getBoundBelCell(try_bel);
+                c.accept_u = accept_rng.rng() / float(0x3fffffff);
+                c.skip = !batch_prefilter(c);
+                batch.push_back(c);
+            }
+            if (batch.empty())
+                continue;
+            ++batch_count;
+            batch_candidates += batch.size();
+            // 2. Evaluate detached. The owner is blocked here, so the design is immutable for workers.
+            const auto failure = worker_pool->run(batch.size(), [&](unsigned worker, size_t i) {
+                if (!batch[i].skip)
+                    batch_evaluate(batch[i], worker_mc.at(worker));
+            });
+            if (!failure.empty())
+                log_error("A refinement worker failed: %s\n", failure.c_str());
+            // 3. Consume in order.
+            for (auto n : marked_nets)
+                net_marks[n] = 0;
+            marked_nets.clear();
+            touched_cells.clear();
+            touched_bels.clear();
+            touched_tiles.clear();
+            for (auto &c : batch)
+                batch_consume(c);
+        }
+    }
+
+    void add_move_cell(MoveChangeData &mc, const BelOverlayList &overlay, CellInfo *cell, BelId old_bel)
+    {
+        Loc curr_loc = overlay_loc(overlay, cell);
         Loc old_loc = ctx->getBelLocation(old_bel);
         // Check net bounds
         for (const auto &port : cell->ports) {
             NetInfo *pn = port.second.net;
             if (pn == nullptr)
                 continue;
-            if (ignore_net(pn))
+            if (ignore_net(overlay, pn))
                 continue;
             BoundingBox &curr_bounds = mc.new_net_bounds[pn->udata];
             // Incremental bounding box updates
@@ -1234,16 +1504,16 @@ class SAPlacer
         }
     }
 
-    void compute_cost_changes(MoveChangeData &md)
+    void compute_cost_changes(MoveChangeData &md, const BelOverlayList &overlay)
     {
         for (const auto &bc : md.bounds_changed_nets_x) {
             if (md.already_bounds_changed_x[bc] == MoveChangeData::FULL_RECOMPUTE)
-                md.new_net_bounds[bc] = get_net_bounds(net_by_udata[bc]);
+                md.new_net_bounds[bc] = get_net_bounds(overlay, net_by_udata[bc]);
         }
         for (const auto &bc : md.bounds_changed_nets_y) {
             if (md.already_bounds_changed_x[bc] != MoveChangeData::FULL_RECOMPUTE &&
                 md.already_bounds_changed_y[bc] == MoveChangeData::FULL_RECOMPUTE)
-                md.new_net_bounds[bc] = get_net_bounds(net_by_udata[bc]);
+                md.new_net_bounds[bc] = get_net_bounds(overlay, net_by_udata[bc]);
         }
 
         for (const auto &bc : md.bounds_changed_nets_x)
@@ -1255,8 +1525,8 @@ class SAPlacer
         if (cfg.timing_driven) {
             for (const auto &tc : md.changed_arcs) {
                 double old_cost = net_arc_tcost.at(tc.first).at(tc.second.idx());
-                double new_cost =
-                        get_timing_cost(net_by_udata.at(tc.first), net_by_udata.at(tc.first)->users.at(tc.second));
+                double new_cost = get_timing_cost(overlay, net_by_udata.at(tc.first),
+                                                  net_by_udata.at(tc.first)->users.at(tc.second));
                 md.new_arc_costs.emplace_back(std::make_pair(tc, new_cost));
                 md.timing_delta += (new_cost - old_cost);
                 md.already_changed_arcs[tc.first][tc.second.idx()] = false;
@@ -1274,6 +1544,17 @@ class SAPlacer
             net_arc_tcost[tc.first.first].at(tc.first.second.idx()) = tc.second;
         curr_wirelen_cost += md.wirelen_delta;
         curr_timing_cost += md.timing_delta;
+        // Every commit, whichever path made it (batched, live for unsupported swaps, or chain
+        // swaps), must reach the workers' scratch copies of the bounds, or their next
+        // speculative delta reads stale values.
+        if (batch_mode) {
+            for (auto &mc : worker_mc) {
+                for (const auto &bc : md.bounds_changed_nets_x)
+                    mc.new_net_bounds[bc] = net_bounds[bc];
+                for (const auto &bc : md.bounds_changed_nets_y)
+                    mc.new_net_bounds[bc] = net_bounds[bc];
+            }
+        }
     }
 
     // Simple routeability driven placement

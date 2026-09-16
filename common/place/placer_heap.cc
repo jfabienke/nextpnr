@@ -433,6 +433,8 @@ class HeAPPlacer
             placer1_cfg.assess_swap = cfg.assess_swap;
             placer1_cfg.commit_swap = cfg.commit_swap;
             placer1_cfg.swap_seam_shadow = cfg.swap_seam_shadow;
+            placer1_cfg.swap_batch = cfg.swap_batch;
+            placer1_cfg.threads = cfg.swap_threads;
             if (!placer1_refine(ctx, placer1_cfg)) {
                 return false;
             }

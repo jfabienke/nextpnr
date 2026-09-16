@@ -769,11 +769,16 @@ bool Arch::place()
                 return coordinator->place(candidates);
             };
         }
-        if (args.sa_seam != SwapSeamMode::Off) {
+        if (args.sa_seam != SwapSeamMode::Off || args.sa_batch > 0) {
             cfg.assess_swap = mistral_assess_swap;
             cfg.commit_swap = mistral_commit_swap;
             cfg.swap_seam_shadow = args.sa_seam == SwapSeamMode::Shadow;
-            log_info("Annealer swap seam: %s.\n", cfg.swap_seam_shadow ? "shadow" : "on");
+            cfg.swap_batch = std::max(0, args.sa_batch);
+            cfg.swap_threads = unsigned(threads);
+            if (cfg.swap_batch > 0 && cfg.swap_seam_shadow)
+                log_error("--sa-batch cannot be combined with --sa-seam shadow.\n");
+            log_info("Annealer swap seam: %s%s.\n", cfg.swap_seam_shadow ? "shadow" : "on",
+                     cfg.swap_batch > 0 ? " (batched)" : "");
         }
         const bool ok = placer_heap(getCtx(), cfg);
         if (coordinator)
