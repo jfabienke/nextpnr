@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <random>
 #include <sstream>
@@ -2155,4 +2156,203 @@ TEST_F(LabControlCaptureTest, ShadowDiagnosticsAreCappedAndStrictModesFailClosed
     ctx->args.lab_controls = LabControlMode::Legacy;
 }
 #endif
+
+TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIterationOrders)
+{
+    // Fresh cells so the fixture's own cells keep their state; every name is
+    // interned before the checkpoint is written, as in a real run.
+    CellInfo *root = ctx->createCell(ctx->id("ckpt_root"), id_MISTRAL_FF);
+    CellInfo *child_a = ctx->createCell(ctx->id("ckpt_child_a"), id_MISTRAL_FF);
+    CellInfo *child_b = ctx->createCell(ctx->id("ckpt_child_b"), id_MISTRAL_FF);
+    NetInfo *clk = ctx->createNet(ctx->id("ckpt_clk"));
+    const IdString pad = ctx->id("ckpt_pad"), io_standard = ctx->id("IO_STANDARD"), drive = ctx->id("CURRENT_STRENGTH");
+    for (CellInfo *ci : {root, child_a, child_b}) {
+        ci->addInput(id_CLK);
+        ci->addInput(id_DATAIN);
+        ci->addOutput(id_Q);
+        ci->connectPort(id_CLK, clk);
+        ci->setAttr(ctx->id("keep"), Property(1, 1));
+        ci->setAttr(ctx->id("src"), Property("ckpt.v:1"));
+        ci->setParam(ctx->id("INIT"), Property(0, 1));
+    }
+    root->cluster = root->name;
+    root->constr_children = {child_a, child_b};
+    child_a->cluster = root->name;
+    child_a->constr_z = 1;
+    child_b->cluster = root->name;
+    child_b->constr_x = 0;
+    child_b->constr_y = 1;
+    child_b->constr_z = 2;
+    child_b->constr_abs_z = true;
+    child_a->pin_data[id_DATAIN].state = PIN_INV;
+    child_a->pin_data[id_DATAIN].bel_pins = {id_DATAIN};
+    child_a->pin_data[id_CLK].state = PIN_SIG;
+    child_a->pin_data[id_CLK].bel_pins = {id_CLK};
+    ctx->io_attr[pad][io_standard] = Property("3.3-V LVTTL");
+    ctx->io_attr[pad][drive] = Property(12, 8);
+    ctx->pllclk_sel_map[123456789012345ull] = 3;
+    const BelId root_bel = ctx->labs.at(0).alms.at(0).ff_bels.at(0);
+    ctx->bindBel(root_bel, root, STRENGTH_LOCKED); // as the packer binds QSF-located IO cells
+    clk->driver.port = id_Q;                       // stale driver port of an undriven net, as the packer leaves behind
+    {
+        PortInfo top;
+        top.name = pad;
+        top.net = clk;
+        top.type = PORT_IN;
+        ctx->ports[pad] = top;
+    }
+    const uint64_t rng_before = ctx->rngstate;
+
+    auto cell_order = [&]() {
+        std::vector<IdString> names;
+        for (auto &cell : ctx->cells)
+            names.push_back(cell.first);
+        return names;
+    };
+    auto user_order = [&](const NetInfo *net) {
+        std::vector<std::pair<IdString, IdString>> users;
+        for (auto &user : net->users)
+            users.emplace_back(user.cell->name, user.port);
+        return users;
+    };
+    auto port_order = [&](const CellInfo *ci) {
+        std::vector<IdString> names;
+        for (auto &port : ci->ports)
+            names.push_back(port.first);
+        return names;
+    };
+    auto attr_order = [&](const CellInfo *ci) {
+        std::vector<IdString> names;
+        for (auto &attr : ci->attrs)
+            names.push_back(attr.first);
+        return names;
+    };
+    const auto cells_before = cell_order();
+    const auto users_before = user_order(clk);
+    const auto ports_before = port_order(root);
+    const auto attrs_before = attr_order(root);
+    ASSERT_EQ(users_before.size(), 3u);
+
+    std::ostringstream packed, placed;
+    ASSERT_TRUE(ctx->writeCheckpoint(packed, "packed"));
+    ASSERT_TRUE(ctx->writeCheckpoint(placed, "placed"));
+    EXPECT_NE(packed.str().find("\"cluster_cells\""), std::string::npos);
+    EXPECT_NE(packed.str().find("\"bindings\""), std::string::npos);
+    EXPECT_NE(packed.str().find("\"pllclk_sel\""), std::string::npos);
+
+    // Wreck everything the checkpoint owns: packing state, physical choices,
+    // the RNG, and the iteration orders of cells, users, ports, attributes.
+    for (CellInfo *ci : {root, child_a, child_b}) {
+        ci->cluster = ClusterId();
+        ci->constr_children.clear();
+        ci->constr_x = ci->constr_y = ci->constr_z = 0;
+        ci->constr_abs_z = false;
+        ci->pin_data.clear();
+    }
+    ctx->io_attr.clear();
+    ctx->pllclk_sel_map.clear();
+    ctx->ports.clear();
+    ctx->unbindBel(root_bel);
+    clk->driver.port = IdString();
+    ctx->rngstate = rng_before + 17;
+    {
+        // root was inserted first of the three, so it iterates last; moving it
+        // to the newest slot changes the order (and the erase swaps the
+        // newest entry into its old slot, which perturbs the rest as well).
+        auto keep = std::move(ctx->cells.at(root->name));
+        ctx->cells.erase(root->name);
+        ctx->cells[root->name] = std::move(keep);
+    }
+    child_b->disconnectPort(id_CLK); // free slot 2, then slot 1: the reconnects swap places
+    child_a->disconnectPort(id_CLK);
+    child_b->connectPort(id_CLK, clk);
+    child_a->connectPort(id_CLK, clk);
+    {
+        auto keep = root->ports.at(id_CLK);
+        root->ports.erase(id_CLK);
+        root->ports[id_CLK] = keep;
+        auto keep_attr = root->attrs.at(ctx->id("keep"));
+        root->attrs.erase(ctx->id("keep"));
+        root->attrs[ctx->id("keep")] = keep_attr;
+    }
+    EXPECT_NE(cell_order(), cells_before);
+    EXPECT_NE(user_order(clk), users_before);
+    EXPECT_NE(port_order(root), ports_before);
+    EXPECT_NE(attr_order(root), attrs_before);
+
+    struct LogSink
+    {
+        LogSink() { log_streams.emplace_back(&std::cerr, LogLevel::LOG_MSG); }
+        ~LogSink() { log_streams.pop_back(); }
+    } sink;
+    ASSERT_TRUE(ctx->checkpointPreload(packed.str()));
+    ASSERT_TRUE(ctx->checkpointRestore());
+    EXPECT_EQ(ctx->checkpointPhase(), "packed");
+    EXPECT_EQ(cell_order(), cells_before);
+    EXPECT_EQ(user_order(clk), users_before);
+    EXPECT_EQ(port_order(root), ports_before);
+    EXPECT_EQ(attr_order(root), attrs_before);
+    EXPECT_EQ(root->cluster, root->name);
+    ASSERT_EQ(root->constr_children.size(), 2u);
+    EXPECT_EQ(root->constr_children[0], child_a);
+    EXPECT_EQ(root->constr_children[1], child_b);
+    EXPECT_EQ(child_a->cluster, root->name);
+    EXPECT_EQ(child_a->constr_z, 1);
+    EXPECT_EQ(child_b->constr_y, 1);
+    EXPECT_EQ(child_b->constr_z, 2);
+    EXPECT_TRUE(child_b->constr_abs_z);
+    ASSERT_EQ(child_a->pin_data.count(id_DATAIN), 1u);
+    EXPECT_EQ(child_a->pin_data.at(id_DATAIN).state, PIN_INV);
+    EXPECT_EQ(child_a->pin_data.at(id_DATAIN).bel_pins, std::vector<IdString>{id_DATAIN});
+    EXPECT_EQ(child_a->pin_data.at(id_CLK).state, PIN_SIG);
+    ASSERT_EQ(ctx->io_attr.count(pad), 1u);
+    EXPECT_TRUE(ctx->io_attr.at(pad).at(io_standard).is_string);
+    EXPECT_EQ(ctx->io_attr.at(pad).at(io_standard).as_string(), "3.3-V LVTTL");
+    EXPECT_FALSE(ctx->io_attr.at(pad).at(drive).is_string);
+    EXPECT_EQ(ctx->io_attr.at(pad).at(drive).as_int64(), 12);
+    EXPECT_EQ(ctx->io_attr.at(pad).at(drive).size(), 8);
+    EXPECT_EQ(ctx->rngstate, rng_before);
+    ASSERT_EQ(ctx->ports.count(pad), 1u);
+    EXPECT_EQ(ctx->ports.at(pad).net, clk);
+    EXPECT_EQ(ctx->ports.at(pad).type, PORT_IN);
+    ctx->ports.clear(); // the placed restore below expects the reload's empty table
+    EXPECT_EQ(root->bel, root_bel);
+    EXPECT_EQ(root->belStrength, STRENGTH_LOCKED);
+    EXPECT_EQ(clk->driver.cell, nullptr);
+    EXPECT_EQ(clk->driver.port, id_Q);
+    // Physical state travels at every phase; the placed restore below rebinds.
+    ASSERT_EQ(ctx->pllclk_sel_map.count(123456789012345ull), 1u);
+    ctx->unbindBel(root_bel);
+    // The restore rebuilt the FF facts from the restored netlist.
+    EXPECT_EQ(child_a->ffInfo.ctrlset.clk.net, clk);
+
+    ctx->rngstate = rng_before + 5;
+    ASSERT_TRUE(ctx->checkpointPreload(placed.str()));
+    ASSERT_TRUE(ctx->checkpointRestore());
+    EXPECT_EQ(ctx->checkpointPhase(), "placed");
+    ASSERT_EQ(ctx->pllclk_sel_map.count(123456789012345ull), 1u);
+    EXPECT_EQ(ctx->pllclk_sel_map.at(123456789012345ull), 3);
+    EXPECT_EQ(ctx->rngstate, rng_before);
+    EXPECT_EQ(root->bel, root_bel);
+    ctx->unbindBel(root_bel);
+
+    // A checkpoint for another device or an unknown phase is refused before
+    // anything is touched.
+    std::string wrong_device = packed.str();
+    wrong_device.replace(wrong_device.find("5CSEBA6U23I7"), 12, "5CGXFC5C6F27");
+    EXPECT_THROW(ctx->checkpointPreload(wrong_device), log_execution_error_exception);
+    std::string routed = packed.str();
+    routed.replace(routed.find("\"phase\": \"packed\""), 17, "\"phase\": \"routed\"");
+    EXPECT_THROW(ctx->checkpointPreload(routed), log_execution_error_exception);
+
+    for (CellInfo *ci : {root, child_a, child_b}) {
+        ci->disconnectPort(id_CLK);
+        ctx->cells.erase(ci->name);
+    }
+    clk->driver.port = IdString();
+    ctx->nets.erase(clk->name);
+    ctx->io_attr.clear();
+    ctx->pllclk_sel_map.clear();
+    ctx->ports.clear();
+}
 } // namespace

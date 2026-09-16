@@ -26,6 +26,7 @@
 #include "pybindings.h"
 #endif
 
+#include <cstdio>
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/program_options.hpp>
@@ -327,6 +328,10 @@ po::options_description CommandHandler::getGeneralOptions()
 #endif
     general.add_options()("json", po::value<std::string>(), "JSON design file to ingest");
     general.add_options()("write", po::value<std::string>(), "JSON design file to write");
+    general.add_options()("checkpoint", po::value<std::string>(),
+                          "write a JSON checkpoint of the last completed phase (arch support required)");
+    general.add_options()("resume", po::value<std::string>(),
+                          "resume from a JSON checkpoint instead of --json; completed phases are skipped");
     general.add_options()("top", po::value<std::string>(), "name of top module");
     general.add_options()("seed", po::value<uint64_t>(), "seed value for random number generator");
     general.add_options()("randomize-seed,r", "randomize seed value for random number generator");
@@ -639,11 +644,14 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
         return a.exec();
     }
 #endif
-    if (vm.count("json")) {
-        std::string filename = vm["json"].as<std::string>();
-        auto f = open_ifstream_and_log_error(filename, "'--json' file");
+    if (vm.count("json") && vm.count("resume"))
+        log_error("--json and --resume are mutually exclusive.\n");
+    if (vm.count("json") || vm.count("resume")) {
+        const bool resume = vm.count("resume") != 0;
+        std::string filename = vm[resume ? "resume" : "json"].as<std::string>();
+        auto f = open_ifstream_and_log_error(filename, resume ? "'--resume' file" : "'--json' file");
 
-        if (!parse_json(f, filename, ctx.get()))
+        if (!parse_json(f, filename, ctx.get(), resume))
             log_error("Loading design failed.\n");
 
         if (vm.count("sdc")) {
@@ -654,6 +662,8 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
 
         customAfterLoad(ctx.get());
     }
+
+    std::string completed_phase; // for --checkpoint: the last phase this run completed
 
 #ifndef NO_PYTHON
     init_python(argv[0]);
@@ -667,9 +677,22 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
     } else
 #endif
             if (ctx->design_loaded) {
-        bool do_pack = vm.count("pack-only") != 0 || vm.count("no-pack") == 0;
-        bool do_place = vm.count("pack-only") == 0 && vm.count("no-place") == 0;
-        bool do_route = vm.count("pack-only") == 0 && vm.count("no-route") == 0;
+        // A resumed context has already completed the phases up to its
+        // checkpoint phase; the flow continues from the next one.
+        const std::string resumed_phase = ctx->checkpointPhase();
+        const bool resumed_packed = !resumed_phase.empty();
+        const bool resumed_placed = resumed_phase == "placed" || resumed_phase == "route-prepared" ||
+                                    resumed_phase == "routed";
+        const bool resumed_routed = resumed_phase == "routed";
+        bool do_pack = !resumed_packed && (vm.count("pack-only") != 0 || vm.count("no-pack") == 0);
+        bool do_place = !resumed_placed && vm.count("pack-only") == 0 && vm.count("no-place") == 0;
+        bool do_route = !resumed_routed && vm.count("pack-only") == 0 && vm.count("no-route") == 0;
+        if (do_route)
+            completed_phase = "routed";
+        else if (do_place || resumed_placed)
+            completed_phase = "placed";
+        else if (do_pack || resumed_packed)
+            completed_phase = "packed";
 
         if (do_pack) {
             run_script_hook("pre-pack");
@@ -713,6 +736,23 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
         auto f = open_ofstream_and_log_error(filename, "JSON '--write' file");
         if (!write_json_file(f, filename, ctx.get()))
             log_error("Saving design failed.\n");
+    }
+
+    if (vm.count("checkpoint")) {
+        if (completed_phase.empty())
+            log_error("--checkpoint: no phase has completed; nothing to checkpoint.\n");
+        std::string filename = vm["checkpoint"].as<std::string>();
+        // Written under a temporary name and renamed once complete, so a
+        // crash mid-write leaves no half checkpoint behind.
+        std::string tmp_filename = filename + ".tmp";
+        {
+            auto f = open_ofstream_and_log_error(tmp_filename, "JSON '--checkpoint' file");
+            if (!write_json_file(f, tmp_filename, ctx.get(), &completed_phase))
+                log_error("Saving checkpoint failed.\n");
+        }
+        if (std::rename(tmp_filename.c_str(), filename.c_str()) != 0)
+            log_error("Renaming checkpoint '%s' to '%s' failed.\n", tmp_filename.c_str(), filename.c_str());
+        log_info("Wrote checkpoint of phase '%s' to '%s'.\n", completed_phase.c_str(), filename.c_str());
     }
 
     if (vm.count("sdf")) {

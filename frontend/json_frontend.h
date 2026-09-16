@@ -21,6 +21,10 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-bool parse_json(std::istream &in, const std::string &filename, Context *ctx);
+// With `resume`, the file must carry a "nextpnr_checkpoint" object: the
+// backend preloads it before the netlist import, the frontend skips
+// attributesToArchInfo(), and the backend restores its state afterwards
+// (see BaseCtx::checkpointPreload / checkpointRestore).
+bool parse_json(std::istream &in, const std::string &filename, Context *ctx, bool resume = false);
 
 NEXTPNR_NAMESPACE_END

@@ -125,6 +125,26 @@ struct BaseCtx
     virtual void notifyCellMutation(CellInfo *, ContextMutationKind kind) { notifyContextMutation(kind); }
     virtual void notifyNetMutation(NetInfo *, ContextMutationKind kind) { notifyContextMutation(kind); }
 
+    // Checkpoints: a backend that can persist its packed/placed state beyond
+    // what the JSON writer keeps (cluster geometry, pin maps, backend choices,
+    // iteration orders) emits one JSON object here and restores it in two
+    // steps: preload before the netlist import (manifest, IdString table),
+    // restore after it. Defaults report no support, so the generic flow
+    // refuses --checkpoint and --resume.
+    virtual bool writeCheckpoint(std::ostream &, const std::string &phase) const
+    {
+        (void)phase;
+        return false;
+    }
+    virtual bool checkpointPreload(const std::string &checkpoint_json)
+    {
+        (void)checkpoint_json;
+        return false;
+    }
+    virtual bool checkpointRestore() { return false; }
+    // Phase of the checkpoint this context was restored from; empty otherwise.
+    virtual std::string checkpointPhase() const { return std::string(); }
+
     // Must be called before performing any mutating changes on the Ctx/Arch.
     void lock(void)
     {

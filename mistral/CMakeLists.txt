@@ -42,7 +42,9 @@ set(SOURCES
     placement_revision.cc
     placement_transaction.h
     placement_transaction.cc
+    checkpoint.h
     placement_coordinator.h
+    checkpoint.cc
     placement_coordinator.cc
     placement_reuse.h
     placement_reuse.cc

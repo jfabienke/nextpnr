@@ -123,7 +123,10 @@ struct ModuleInfo
 
 template <typename FrontendType> struct GenericFrontend
 {
-    GenericFrontend(Context *ctx, const FrontendType &impl, bool split_io) : ctx(ctx), impl(impl), split_io(split_io) {}
+    GenericFrontend(Context *ctx, const FrontendType &impl, bool split_io, bool defer_arch_info = false)
+            : ctx(ctx), impl(impl), split_io(split_io), defer_arch_info(defer_arch_info)
+    {
+    }
     void operator()()
     {
         // Find which module is top
@@ -142,6 +145,7 @@ template <typename FrontendType> struct GenericFrontend
     Context *ctx;
     const FrontendType &impl;
     const bool split_io;
+    const bool defer_arch_info;
     using mod_dat_t = typename FrontendType::ModuleDataType;
     using mod_port_dat_t = typename FrontendType::ModulePortDataType;
     using cell_dat_t = typename FrontendType::CellDataType;
@@ -292,8 +296,10 @@ template <typename FrontendType> struct GenericFrontend
             import_toplevel_ports(m, data);
             // Mark design as loaded through nextpnr
             ctx->settings[ctx->id("synth")] = 1;
-            // Process nextpnr-specific attributes
-            ctx->attributesToArchInfo();
+            // Process nextpnr-specific attributes, unless a checkpoint restore
+            // will do it in the backend's own order
+            if (!defer_arch_info)
+                ctx->attributesToArchInfo();
         }
     }
 

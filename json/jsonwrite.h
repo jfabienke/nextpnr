@@ -26,7 +26,9 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-extern bool write_json_file(std::ostream &, std::string &, Context *);
+// With `checkpoint_phase`, the file also carries the backend's checkpoint
+// object for that phase (see BaseCtx::writeCheckpoint).
+extern bool write_json_file(std::ostream &, std::string &, Context *, const std::string *checkpoint_phase = nullptr);
 
 NEXTPNR_NAMESPACE_END
 

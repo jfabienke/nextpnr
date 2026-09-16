@@ -187,7 +187,7 @@ struct JsonFrontendImpl
     }
 };
 
-bool parse_json(std::istream &in, const std::string &filename, Context *ctx)
+bool parse_json(std::istream &in, const std::string &filename, Context *ctx, bool resume)
 {
     Json root;
     {
@@ -198,12 +198,21 @@ bool parse_json(std::istream &in, const std::string &filename, Context *ctx)
         root = Json::parse(json_str, error, JsonParse::COMMENTS);
         if (root.is_null())
             log_error("Failed to parse JSON file '%s': %s.\n", filename.c_str(), error.c_str());
+        if (resume) {
+            const Json &checkpoint = root["nextpnr_checkpoint"];
+            if (checkpoint.is_null())
+                log_error("JSON file '%s' carries no \"nextpnr_checkpoint\" object to resume from\n", filename.c_str());
+            if (!ctx->checkpointPreload(checkpoint.dump()))
+                log_error("This architecture cannot resume from a checkpoint\n");
+        }
         root = root["modules"];
         if (root.is_null())
             log_error("JSON file '%s' doesn't look like a netlist (doesn't contain \"modules\" key)\n",
                       filename.c_str());
     }
-    GenericFrontend<JsonFrontendImpl>(ctx, JsonFrontendImpl(root), /*split_io=*/true)();
+    GenericFrontend<JsonFrontendImpl>(ctx, JsonFrontendImpl(root), /*split_io=*/true, /*defer_arch_info=*/resume)();
+    if (resume && !ctx->checkpointRestore())
+        log_error("Restoring the checkpoint in '%s' failed\n", filename.c_str());
     return true;
 }
 

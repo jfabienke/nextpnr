@@ -101,6 +101,7 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   ABI) -> `placement_revision` (session/revision stamps, Stage 4A) -> `placement_transaction`
   (serial frozen transactions hooked into HeAP via `PlacerHeapCfg::place_cluster_transaction`,
   Stage 4B) -> `lab_frozen_batch` (RAII owner of Rust-owned immutable batches, Stage 4C).
+  `checkpoint.cc` (Stage 5, 2a) persists and restores the packed and placed phases.
 - `rust/npnr_mistral_lab` is the pure evaluator (`model.rs`, `rules.rs`, `v2.rs`, wire formats);
   `rust/npnr_mistral_lab_ffi` is the C ABI consumed by `mistral/lab_v2_abi.h` /
   `lab_control_abi.h`. Rust owns only validated values and scratch; C++ owns the live design,
@@ -133,6 +134,14 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   with an identical name and signature (`mistral/placement_reuse.*`), and HeAP's constraint
   placer validates them. Reuse runs re-route from a different RNG state, so compare quality,
   not bytes.
+- Stage 5 (2a) checkpoints: `--checkpoint file.json` writes the output JSON plus a
+  `nextpnr_checkpoint` object for the last completed phase (packed or placed today); `--resume
+  file.json` replaces `--json`, restores it, and runs the remaining phases. `mistral/checkpoint.cc`
+  implements the `BaseCtx` hooks. A resumed run is byte-identical to the uninterrupted run because
+  the checkpoint replays the IdString table and every `dict`/users iteration order; a plain reload
+  of nextpnr's own JSON reproduces neither (design doc section 2.6). Nothing between a checkpoint
+  write and the netlist import may intern a string, which is why `write_module` looks up
+  `"module"` without interning.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
@@ -150,15 +159,16 @@ measured and decided:
 - `docs/mistral-lab-next-stages-design.md` — architectural rationale (with
   `mistral-lab-legality-design/plan/profile.md` and `parallel-incremental-design.md`).
 - `docs/mistral-checkpoint-design.md` — Stage 5 units 2a/2b: checkpoint field audit, format, restore
-  order, and the name-based comparison gate (routed JSON numbers nets by IdString index, so a
-  restored process cannot be compared byte for byte).
+  order, section 2.6 (what a reload of nextpnr's own JSON loses), and the byte-identity gate: a
+  resumed run's `--write` JSON, `--report`, and log checksums equal the clean run's.
 - `MISTRAL_GAPS.md` — silicon-verified findings for the DE10-Nano flow (PLL, IO registers, HPS
   bridges, DSP, M10K, router deadlock mechanisms). Several "obvious fixes" recorded there were
   tried and reverted; check it before re-deriving one.
 
-State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; every new capability is off by
-default and unpromoted. Next is a design for cross-build checkpoints and physical artifact
-provenance (design doc section 6.8, levels three and four). Hard rules that still apply: the
+State: Stages 1–3 and 4A–4E complete for the Stage 4 scope; Stage 5 has 1c (swap seam, batched
+refinement), 4b (retired), and 2a (packed and placed checkpoints) done; 2b (route-prepared and
+routed checkpoints, which needs the `Arch::route()` split) is next. Every new capability is off by
+default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.
 

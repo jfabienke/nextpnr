@@ -366,6 +366,14 @@ struct Arch : BaseArch<ArchRanges>
         note_lab_net_mutation(net);
         note_placement_mutation(kind);
     }
+    // Stage 5 units 2a/2b: versioned checkpoints (mistral/checkpoint.cc).
+    bool writeCheckpoint(std::ostream &out, const std::string &phase) const override;
+    bool checkpointPreload(const std::string &checkpoint_json) override;
+    bool checkpointRestore() override;
+    std::string checkpointPhase() const override;
+    std::shared_ptr<struct MistralCheckpoint> pending_checkpoint;
+    std::string checkpoint_phase_;
+
     void notifyContextMutation(ContextMutationKind kind) override
     {
         // A newly created cell or net is nobody's dependency until it is bound

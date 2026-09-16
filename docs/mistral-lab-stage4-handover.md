@@ -14,8 +14,8 @@ Handover point:
 - Commit: `c57e1163` (Stage 5, 1c-B)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
-- Next: cross-build checkpoints and physical artifact provenance (design
-  section 6.8 levels three and four), which are a new design decision.
+- Stage 5: 1c complete, 4b retired, 2a complete (packed and placed
+  checkpoints); next is 2b (route-prepared and routed checkpoints).
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -315,10 +315,14 @@ The candidate list and its priority order are recorded in the tracker's
 3a (typed build states, in C++). 1c is complete (1c-A and 1c-B). 4b is
 retired: re-attributing the profile shows propagation at 2.9% of the run and
 the timing structure built once per phase; the placers' hashed criticality
-lookups were the real cost and are now per-arc tables. Next is 2a/2b, the
-versioned checkpoint; its design is
-[`mistral-checkpoint-design.md`](mistral-checkpoint-design.md) (field audit,
-format, restore order, increments, and the name-based comparison gate).
+lookups were the real cost and are now per-arc tables. 2a is complete:
+`--checkpoint` and `--resume` for the packed and placed phases, byte-identical
+on resume (tracker entry "Stage 5 units 2a-1 and 2a-2"); the design is
+[`mistral-checkpoint-design.md`](mistral-checkpoint-design.md), whose section
+2.6 lists what a reload of nextpnr's own JSON loses and why the checkpoint
+carries the IdString table and every iteration order. Next is 2b: split
+`Arch::route()` into preparation and the router, persist the LAB control
+state and reservations, then routed resume and manifest lineage.
 
 Unit 1c-A is complete: `--sa-seam off|shadow|on` gives `placer1` refinement a
 detached swap assessment (legality from `Arch::overlay_bels_legal`, cost

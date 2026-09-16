@@ -1,9 +1,14 @@
 # Mistral Checkpoint Design (Stage 5, units 2a/2b)
 
-Status: proposed design, 2026-09-16. Refines Stage 2 of
-[`parallel-incremental-design.md`](parallel-incremental-design.md) for the
-Mistral backend with a field audit of the current code. Nothing here exists
-yet. The tracker records implementation state; this document owns rationale.
+Status: designed 2026-09-16; units 2a-1 and 2a-2 (packed and placed
+checkpoints) implemented the same day in `mistral/checkpoint.cc`, with the
+generic hooks in `common/kernel/basectx.h`, `json/jsonwrite.cc`,
+`frontend/json_frontend.cc` and `common/kernel/command.cc`. Refines Stage 2
+of [`parallel-incremental-design.md`](parallel-incremental-design.md) for
+the Mistral backend with a field audit of the current code. Section 2.6 and
+the format in section 3 record what the implementation found that the
+proposal had missed. The tracker records implementation state; this
+document owns rationale.
 
 ## 1. Decision and scope
 
@@ -89,6 +94,68 @@ Counts on Fabi386, for the acceptance gate: 1,226 clustered cells, 7,813
 non-default pin-state entries (from the parent design's audit), 549
 route-through cells, 4,191 LABs, 2 IO attributes.
 
+### 2.6 What a reload of nextpnr's own JSON loses (found by implementation)
+
+The proposal assumed that reading the output JSON back rebuilds the logical
+netlist as the writing process had it, so that only the arch-owned fields
+above needed persisting. It does not, in four ways, and each one changes
+the placement or routing that follows:
+
+1. **Iteration order.** nextpnr's `dict` iterates newest entry first, and
+   packing's deletions move the last entry into the hole, so the post-pack
+   order of `ctx->cells`, `ctx->nets`, every cell's `ports`, `attrs` and
+   `params`, every net's `attrs`, and every net's `users` store is a
+   function of history. json11 objects are sorted maps, so a reload
+   produces name order instead. HeAP walks cells and users to build its
+   equations, the annealer and router draw from the RNG in cell and net
+   order, and floating-point sums depend on term order: a different order
+   is a different trajectory. The checkpoint therefore records every one of
+   these orders and the restore rebuilds each container in place (values
+   are moved, so every pointer stays valid; users are re-added and each
+   `user_idx` reassigned).
+2. **IdString indices.** Interning order differs between the writing and
+   the reading process, and indices are what `IdString` comparison and the
+   writer's net numbering use. The checkpoint records the whole table in
+   index order; the restore verifies that everything the process has
+   already interned is a prefix of it (same build, same options) and
+   interns the rest before the netlist is imported, so the frontend then
+   finds every name at the recorded index. Net numbering in the resumed
+   run's output is thereby identical to the clean run's, which turns the
+   section 7 gate from name comparison into byte identity.
+3. **Top-level ports.** A nextpnr-written file carries the `synth` setting,
+   and the frontend then skips IO buffer creation and with it `ctx->ports`.
+   The packer reads that table (`prepare_io`) and the writer emits it. It
+   is persisted with its net and direction.
+4. **Disconnected cell ports.** The frontend creates one port per
+   connection bit, so a port with an empty connection (an FF's unused
+   `SCLR`, say) does not exist after reload. Code that asks
+   `ports.count(x)` would then answer differently. Each cell's port list in
+   the checkpoint carries the direction, and the restore recreates missing
+   ports before it reorders.
+
+A fifth finding is in the writer rather than the reader: `write_module`
+interned the `"module"` attribute key on every write. A run that writes an
+intermediate file therefore interned that key before the route-through
+nets, and a run that did not interned it after them, which shifted every
+route-through net's number by one. The lookup is now non-interning; a
+write no longer changes the table.
+
+Bindings are a sixth: the packer binds QSF-located IO cells and PLL cells
+(`STRENGTH_LOCKED`) before placement, so a packed checkpoint carries
+bindings too. They are persisted explicitly at every phase, by BEL name,
+and resolved through the BEL list rather than `getBelByNameStr`, whose
+name parser interns every component.
+
+A seventh was found by the log checksum, the last comparison that still
+differed after the outputs were byte-identical: an undriven net keeps the
+port name of a driver the packer removed (`disconnectPort` clears the cell
+pointer, not the port), and `Context::checksum()` hashes that name. On
+Fabi386 it is one net, the top-level clock, with `O` left behind by the
+removed nextpnr input buffer. It changes no behaviour, but the resumed
+context is meant to be the writer's context, so the checkpoint carries it
+(`netlist.stale_driver_ports`) and the checksums then agree across process
+kinds as well.
+
 ## 3. Format
 
 One file, the ordinary nextpnr output JSON, plus a top-level object:
@@ -96,30 +163,29 @@ One file, the ordinary nextpnr output JSON, plus a top-level object:
 ```json
 "nextpnr_checkpoint": {
   "manifest": {
-    "schema": 1,
-    "backend": "mistral",
-    "backend_state_version": 1,
+    "schema": 1, "backend": "mistral", "backend_state_version": 1,
     "phase": "packed" | "placed" | "route-prepared" | "routed",
-    "device": "5CSEBA6U23I7",
-    "nextpnr": "<build version>",
-    "libmistral": "<fingerprint>",
-    "seed": 1,
-    "rng_state": "<uint64 as decimal string>",
-    "settings": { ... },
-    "input_sha256": "<of the Yosys JSON>",
-    "parent_sha256": "<of the checkpoint this was resumed from, if any>"
+    "device": "5CSEBA6U23I7", "nextpnr": "<build version>",
+    "seed": "<uint64 decimal>", "rng_state": "<uint64 decimal>", "idstrings": 55320
   },
+  "idstrings": ["", "...", ...],
+  "order": {
+    "cells": ["<cell>", ...], "nets": ["<net>", ...],
+    "settings": ["<key>", ...], "attrs": ["<key>", ...],
+    "cell_ports": [[[<port idstring index>, <direction>], ...], ...],
+    "cell_attrs": [[<idstring index>, ...], ...], "cell_params": [[...], ...],
+    "net_attrs": [[...], ...],
+    "users": [[[<cell position>, <port idstring index>], ...], ...]
+  },
+  "netlist": { "top_ports": [ { "name": "clk", "net": "clk", "type": 0 } ], "stale_driver_ports": [["clk", "O"]] },
   "packing": {
-    "clusters": { "<root cell>": [ { "cell": "...", "x": 0, "y": -1, "z": 6, "abs_z": true }, ... ] },
-    "pins": { "<cell>": { "<port>": { "bel_pins": ["..."], "state": "inv" } } },
-    "io_attr": { "<port>": { "<name>": "<value>" } },
-    "generated": ["<cell>", ...]
+    "cluster_cells": [ { "cell": "...", "cluster": "<root>", "x": 0, "y": -1, "z": 6, "abs_z": true, "children": ["..."] } ],
+    "pins": [ { "cell": "...", "ports": [ { "port": "...", "state": 3, "bel_pins": ["..."] } ] } ],
+    "io_attr": [ { "port": "...", "attrs": [ { "name": "...", "value": { "str": "..." } | { "bits": "..." } } ] } ]
   },
   "physical": {
-    "pllclk_sel": [ { "key": "<uint64 decimal>", "sel": 3 } ],
-    "labs": { "<lab index>": { "clk_ena_idx": [0, 1], "aclr_idx": [0, 1], "aclr_used": [true, false] } },
-    "reserved_routes": [ { "wire": "<wire name>", "uphill": 2 } ],
-    "generated_routethru": ["<cell>", ...]
+    "bindings": [ { "cell": "...", "bel": "<bel name>", "strength": 3 } ],
+    "pllclk_sel": [ { "key": "<uint64 decimal>", "sel": 3 } ]
   }
 }
 ```
@@ -127,67 +193,91 @@ One file, the ordinary nextpnr output JSON, plus a top-level object:
 Rules:
 
 - The manifest is written first and validated before anything is adopted. A
-  missing or older `backend_state_version` is an error, not a partial load.
-- Only sections at or below `phase` are present. A `placed` checkpoint has
-  `packing` and `physical.pllclk_sel`; `physical.labs` and
-  `reserved_routes` appear from `route-prepared`.
-- Cells and wires are named by their nextpnr names, never by index. Indices
-  depend on `IdString` interning order, which differs between the writing and
-  the restoring process.
-- Property values are written with `Property::to_string()`, the same
-  encoding the frontend already parses.
+  missing or older `backend_state_version` is an error, not a partial load;
+  so is another device or a phase this build cannot restore. A different
+  nextpnr version is a warning: identity with the writing run is then not
+  promised.
+- `idstrings` is the complete table in index order (section 2.6, item 2).
+  The `order` section's per-object lists are aligned with `order.cells`
+  and `order.nets` and hold IdString indices, which the replayed table
+  makes exact; `users` names cells by their position in `order.cells`. All
+  other sections name objects by their nextpnr names.
+- `packing.pins` omits every entry that `assign_default_pinmap()` would
+  recreate (state `PIN_SIG`, one bel pin equal to the port or its
+  `comb_pinmap` image, port present). On Fabi386 that leaves the 7,813
+  non-default entries of section 2.5 out of 63,103. The one order the
+  restore does not reproduce is `pin_data`'s own: recorded entries come
+  first, regenerated defaults follow in port order. Nothing but the ALM
+  debug dump in `lab.cc` iterates that map; every consumer looks pins up by
+  name.
+- Property values are written as `{"str": s}` or `{"bits": s}` with the
+  `Property::to_string()` bit encoding, so a string that happens to look
+  like a bit vector cannot be misread.
+- `physical.bindings` and `physical.pllclk_sel` are present at every phase.
+  Later phases add `physical.labs`, `reserved_routes` and the routed
+  section (2b).
 - The file is written to a temporary name and renamed after the payload is
   complete, so a crash leaves no half checkpoint.
 
+Size on Fabi386: the packed checkpoint is about 73 MB against a 25 MB
+output JSON. The IdString table is 28 MB (the netlist names once more),
+the orders about 30 MB, packing about 12 MB. The proposal's estimate of a
+few hundred kilobytes assumed the netlist reload was order-preserving; it
+is not, and the orders are the price of identity.
+
 A checkpoint is not the plain output JSON of today. The `placement_reuse`
 adapter (Stage 4E) keeps parsing plain output JSON for the name-and-signature
-case and does not depend on this format; once checkpoints exist, its loader
-becomes the second consumer of the same parser.
+case and does not depend on this format.
 
 ## 4. Writing
 
 `--checkpoint <file>` writes the checkpoint of the last completed phase at the
 point the flow stops (`--pack-only`, `--no-place`, `--no-route`, or the end).
-`Arch::write_checkpoint(phase, path)` collects sections 2.2 to 2.5 from the
-live context, then calls the existing `write_json` with the extra object.
-Nothing in the flow changes when the option is absent.
+`write_json_file` takes an optional phase; with one it emits the modules as
+today and then asks `BaseCtx::writeCheckpoint(stream, phase)` for the
+object, which `Arch` implements in `mistral/checkpoint.cc`. Other backends
+report no support and the option is refused. The writer interns nothing
+(section 2.6), so the table it records is the table the run would have had
+without the option. Nothing in the flow changes when the option is absent.
 
 ## 5. Restoring
 
-`--resume <file>` replaces `--json`. Order, from the parent design's restore
-ordering, adapted to the code:
+`--resume <file>` replaces `--json`. The order, as implemented:
 
-1. Parse the file; validate the manifest against this build, this device,
-   and the requested operation. Options that conflict with the manifest's
-   settings are rejected; the checkpoint's settings win otherwise.
-2. Load the logical design through the existing frontend in a deferred mode:
-   `import_toplevel_ports` runs, `attributesToArchInfo()` does not. This is
-   one flag on `GenericFrontend`; the default path is unchanged.
-3. Restore packing: `io_attr`; then for each cluster, set `cluster`,
-   `constr_*` on every member and rebuild the root's `constr_children` in
-   the recorded order; then `pin_data` per cell per port.
-4. `assignArchInfo()`: rebuild `combInfo` and `ffInfo` from the restored
-   netlist, pin states, and clusters. This is the same call `pack()` ends
-   with.
-5. If `phase >= placed`: bind every cell with `NEXTPNR_BEL` at its
-   `BEL_STRENGTH` through `bindBel`, which rebuilds `unique_input_count`;
-   restore `pllclk_sel_map`. The existing `attributesToArchInfo()` does the
-   binding part; it is reused for that and only that.
-6. If `phase >= route-prepared`: restore LAB control indices and
-   `aclr_used`; set `RESERVED_ROUTE` flags and uphill indices on the named
-   wires; the route-through cells are already in the netlist.
-7. If `phase == routed`: bind wires and pips from `ROUTING`, as today.
-8. Restore `ctx->rngstate`; mark `ctx->settings["step"]`; run `ctx->check()`
-   and the backend's LAB legality sweep over every bound LAB BEL. Only then
-   publish the context.
+1. `parse_json` parses the file and hands the `nextpnr_checkpoint` object
+   to `BaseCtx::checkpointPreload` before any import: validate the
+   manifest against this build, this device and the restorable phases;
+   replay the IdString table (prefix verified, remainder interned in
+   order). The parsed object is kept for step 3.
+2. Load the logical design through the existing frontend in a deferred
+   mode: `import_toplevel_ports` runs, `attributesToArchInfo()` does not.
+   This is one flag on `GenericFrontend`; the default path is unchanged.
+   The import must intern nothing beyond the recorded table, or the
+   checkpoint does not belong to this netlist and the restore stops.
+3. `BaseCtx::checkpointRestore`: rebuild every recorded iteration order
+   (cells, nets, settings, attrs, per-cell ports with missing ports
+   recreated, per-cell attrs and params, per-net users and attrs); restore
+   the top-level port table; restore packing (`cluster` and `constr_*` per
+   cell, `constr_children` in recorded order, the non-default `pin_data`
+   entries, `io_attr`); then `assignArchInfo()`, the same call `pack()`
+   ends with, which rebuilds `combInfo`, `ffInfo` and the default pin maps.
+4. Bind every recorded binding through `bindBel` (which rebuilds
+   `unique_input_count`), restore `pllclk_sel_map`, and run the live
+   legality check over every bound BEL: a checkpoint that certifies an
+   illegal placement is refused, not repaired.
+5. Restore `ctx->rngstate`. The flow then runs `ctx->check()` as it does
+   after packing, and skips the completed phases: a `packed` resume runs
+   place and route; a `placed` resume runs route (which begins with
+   `lab_pre_route`). Route-prepared and routed resumes are unit 2b, which
+   requires splitting `Arch::route()` into `prepare_route()` and the
+   router call.
 
-The restore builds into a fresh context. A failed restore is an error with
-the offending section named; it never leaves a partially restored design.
-The flow then skips completed phases: a `packed` resume runs place and route;
-a `placed` resume runs route (which begins with `lab_pre_route`); a
-`route-prepared` resume runs the router only, which requires splitting
-`Arch::route()` into `prepare_route()` and the router call; a `routed`
-resume runs signoff and bitstream generation.
+The file's `settings` are imported by the frontend as for any
+nextpnr-written JSON and therefore win over conflicting command-line
+options, including `threads`; validating and reporting such conflicts is
+part of 2b-2 with the manifest lineage. A failed restore is an error that
+names the offending section and object; it never leaves a partially
+restored design in use.
 
 ## 6. Increments
 
@@ -200,13 +290,17 @@ resume runs signoff and bitstream generation.
 
 ## 7. Acceptance and comparison rules
 
-Byte identity of routed JSON is the wrong gate here, and the reason is
-recorded in the tracker: the writer numbers nets by `IdString` index, and a
-restored process interns strings in load order. Comparison is therefore by
-name: for every cell, the same BEL and strength; for every net, the same
-set of (wire, pip) pairs; and the report (`--report`) byte-identical, since
-it carries no indices. Log checksums are compared only between runs of the
-same process kind.
+The proposal argued that byte identity of routed JSON was the wrong gate,
+because the writer numbers nets by `IdString` index and a restored process
+interns strings in load order. Replaying the table (section 2.6, item 2)
+removes that argument: a resumed run's output JSON is byte-identical to the
+clean run's once the `creator` line is ignored, and that is the gate. The
+name comparison (for every cell the same BEL and strength, for every net
+the same routing) is kept as the diagnostic that names the first differing
+object when the byte gate fails, and the report (`--report`) must be
+byte-identical as well. The comparison script is
+`build/stage5-validation/checkpoint/compare.py` (kept outside git with the
+other validation drivers).
 
 Identity holds only if the RNG state is restored. Packing may consume RNG
 draws (`ctx->shuffle` in the annealer's legaliser, HeAP's initial placement);
@@ -228,7 +322,8 @@ placement reuse gets a typed source instead of parsing output JSON, and
 route reuse (3c) gets the provenance it needs: generated cells, rewired
 inputs, and reservations are named in the checkpoint.
 
-Costs: two new sections in the writer and a loader of comparable size to
-`placement_reuse.cc`, the frontend flag, the `Arch::route()` split, and the
-fixtures. The checkpoint of Fabi386 is the output JSON (33 MB) plus a few
-hundred kilobytes.
+Costs: the writer and loader in `mistral/checkpoint.cc` (about 600 lines),
+four small generic hooks, the frontend flag, the `Arch::route()` split
+(2b), and the fixtures. The checkpoint of Fabi386 is about three times the
+output JSON (section 3), almost all of it the IdString table and the
+iteration orders that identity requires.

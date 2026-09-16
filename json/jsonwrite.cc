@@ -129,7 +129,19 @@ std::string format_port_bits(const PortGroup &port, int &dummy_idx)
 
 void write_module(std::ostream &f, Context *ctx)
 {
-    auto val = ctx->attrs.find(ctx->id("module"));
+    // Look the module attribute up without interning "module": a write must
+    // not change the IdString table, or the numbering of nets interned later
+    // (route-throughs, for one) differs between a run that writes an
+    // intermediate file and one that does not.
+    auto val = ctx->attrs.end();
+    {
+        auto module_idx = ctx->idstring_str_to_idx->find("module");
+        if (module_idx != ctx->idstring_str_to_idx->end()) {
+            IdString module_id;
+            module_id.index = module_idx->second;
+            val = ctx->attrs.find(module_id);
+        }
+    }
     int dummy_idx = int(ctx->idstring_idx_to_str->size()) + 1000;
     if (val != ctx->attrs.end())
         f << stringf("    %s: {\n", get_string(val->second.as_string()).c_str());
@@ -218,7 +230,7 @@ void write_module(std::ostream &f, Context *ctx)
     f << stringf("    }");
 }
 
-void write_context(std::ostream &f, Context *ctx)
+void write_context(std::ostream &f, Context *ctx, const std::string *checkpoint_phase)
 {
     f << stringf("{\n");
     f << stringf("  \"creator\": %s,\n",
@@ -226,18 +238,23 @@ void write_context(std::ostream &f, Context *ctx)
     f << stringf("  \"modules\": {\n");
     write_module(f, ctx);
     f << stringf("\n  }");
+    if (checkpoint_phase != nullptr) {
+        f << stringf(",\n  \"nextpnr_checkpoint\": ");
+        if (!ctx->writeCheckpoint(f, *checkpoint_phase))
+            log_error("This architecture does not support checkpoints.\n");
+    }
     f << stringf("\n}\n");
 }
 
 }; // End Namespace JsonWriter
 
-bool write_json_file(std::ostream &f, std::string &filename, Context *ctx)
+bool write_json_file(std::ostream &f, std::string &filename, Context *ctx, const std::string *checkpoint_phase)
 {
     try {
         using namespace JsonWriter;
         if (!f)
             log_error("failed to open JSON file.\n");
-        write_context(f, ctx);
+        write_context(f, ctx, checkpoint_phase);
         log_break();
         return true;
     } catch (log_execution_error_exception) {
