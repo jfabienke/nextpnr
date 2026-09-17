@@ -60,7 +60,6 @@ struct ArchArgs
     float reuse_routes_history = 1.0f;        // Stage 5 (3c-4): router2 history seeded on preserved wires; 1.0 = off
     int alm_pairing = 0;                      // Stage 6 (6b): pair plain LUTs into ALMs before placement; 0 = off
     int spread_demand = 0;                    // Stage 6 (6c): HeAP spreads comb cells by unique inputs; 0 = off
-    bool lab_input_lines = false;             // Stage 6 (6d): reserve LAB input lines per net at routing preparation
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router
@@ -585,8 +584,6 @@ struct Arch : BaseArch<ArchRanges>
         // Check reserved routes
         if (is_pip_blocked(pip))
             return false;
-        if (lab_input_lines && !reserved_pin_admits(pip))
-            return false;
         return BaseArch::checkPipAvail(pip);
     }
 
@@ -594,23 +591,8 @@ struct Arch : BaseArch<ArchRanges>
     {
         if (is_pip_blocked(pip))
             return false;
-        if (lab_input_lines && !reserved_pin_admits(pip))
-            return false;
         return BaseArch::checkPipAvailForNet(pip, net);
     }
-
-    // Stage 6 (6d): a pin bound at STRENGTH_PLACER through a line admits only that line's pip.
-    bool reserved_pin_admits(PipId pip) const
-    {
-        WireId dst = getPipDstWire(pip);
-        const NetInfo *bound = getBoundWireNet(dst);
-        if (bound == nullptr)
-            return true;
-        auto it = bound->wires.find(dst);
-        return it == bound->wires.end() || it->second.strength < STRENGTH_PLACER || it->second.pip == PipId() ||
-               it->second.pip == pip;
-    }
-    bool lab_input_lines = false; // set from ArchArgs; tests may flip it
 
     // -------------------------------------------------
 
