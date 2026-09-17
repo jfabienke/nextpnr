@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `cfa98d50` (Stage 5, 3c-4 history seeding)
+- Commit: `af6c01b3` (timing-model attribution; next unit is the -7 grade cell constants)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -23,7 +23,11 @@ Handover point:
   unchanged design, 82% on the controlled edits); 3c-4 seeds router2's
   history on preserved wires behind `--reuse-routes-history` (99%
   survival, router2 in a third of the time at H = 8, off by default). The
-  closing measurement's recommendations are exhausted.
+  closing measurement's recommendations are exhausted. The Quartus
+  comparison on the identical netlist (1.8x on Fmax: rewrite 1.12x, model
+  1.22x, placement 1.32x) and the model attribution on fmaxtest are in
+  the tracker; the next unit is re-deriving the cell delay constants for
+  the -7 grade.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -322,6 +326,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `e608bf49` | Stage 5 closing measurement and unit 3c-2: router2 rips up every net before binding; 3c timing corrected (equal to clean, not double) |
 | `c8348030` | Stage 5 unit 3c-3: route survival measured after the router and reported next to applied routes |
 | `cfa98d50` | Stage 5 unit 3c-4: history seeding for preserved routes behind `--reuse-routes-history`; 99% survival at H = 8 |
+| `af6c01b3` | Quartus comparison on the identical netlist, timing-gap decomposition, and model attribution on fmaxtest; signoff report switches |
 
 ## Stage 5: applying the seams to the rest of the flow
 
