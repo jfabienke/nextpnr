@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `af6c01b3` (timing-model attribution; next unit is input permutation for timing)
+- Commit: `b5dc749d` (first full-core attempt; next unit is ALM pairing density)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -26,8 +26,11 @@ Handover point:
   closing measurement's recommendations are exhausted. The Quartus
   comparison on the identical netlist (1.8x on Fmax: rewrite 1.12x, model
   1.22x, placement 1.32x) and the model attribution on fmaxtest are in
-  the tracker; the cell constants turned out to be the -7 table already,
-  and the next placement-side unit is input permutation for timing.
+  the tracker; the cell constants turned out to be the -7 table already.
+  The first full-core attempt (55k cells) fails on LAB input capacity from
+  both sides while Quartus fits the same cells into 20,576 ALMs at 1.92
+  per ALM against our 1.4, so the next unit is ALM pairing density, with
+  input permutation for timing after it.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -327,6 +330,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `c8348030` | Stage 5 unit 3c-3: route survival measured after the router and reported next to applied routes |
 | `cfa98d50` | Stage 5 unit 3c-4: history seeding for preserved routes behind `--reuse-routes-history`; 99% survival at H = 8 |
 | `af6c01b3` | Quartus comparison on the identical netlist, timing-gap decomposition, and model attribution on fmaxtest; signoff report switches |
+| `b5dc749d` | First full-core attempt: legaliser stall under the LAB input limit, router plateau without it, Quartus at 1.92 cells per ALM; ALM pairing density is next |
 
 ## Stage 5: applying the seams to the rest of the flow
 
