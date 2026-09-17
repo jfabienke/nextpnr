@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `48171fab` (Stage 6, 6a to 6c; next is 6d, a rules revision)
+- Commit: `9b648dcb` (Stage 6, 6a to 6e; the next lever is the router)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -32,10 +32,12 @@ Handover point:
   per ALM against our 1.4. Stage 6: 6a (legaliser stall exit) and 6b
   (`--alm-pairing`, 1.37 to 1.74 cells per ALM, the full core places) are
   done; the wall is now routing at that density (59% fabric wires, 23%
-  input lines); 6c (`--spread-demand`) trims that plateau by 10% without
-  converging it, so 6d (per-class input-line feasibility, a rules
-  revision that reopens the Rust crate) is next, and a placement-routing
-  congestion loop is the stage after.
+  input lines); 6c (`--spread-demand`) trims that plateau by 10%, 6e
+  (`--spread-congestion`) by 35%, neither to convergence; 6d, the line
+  pre-assignment, was built, measured negative, and removed, and the
+  per-class rule was shown unable to bind under the count, so the crate
+  stays concluded. The next lever is router2's negotiation of the LAB
+  input lines together with the local fabric.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -337,6 +339,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `af6c01b3` | Quartus comparison on the identical netlist, timing-gap decomposition, and model attribution on fmaxtest; signoff report switches |
 | `b5dc749d` | First full-core attempt: legaliser stall under the LAB input limit, router plateau without it, Quartus at 1.92 cells per ALM; ALM pairing density is next |
 | `8f31b9af` | Stage 6 units 6a and 6b: legaliser stall exit with a LAB occupancy report; ALM pairing packer, full core places; input-line structure measured |
+| `9b648dcb` | Stage 6 units 6c, 6d (negative, removed), 6e: demand-weighted and congestion-driven spreading; the core's router plateau at 12,200 |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
