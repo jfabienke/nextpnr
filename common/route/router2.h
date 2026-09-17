@@ -77,6 +77,13 @@ struct Router2Cfg
     // Maximum number of congestion iterations before giving up (0 = unlimited).
     int max_iter;
 
+    // Every N iterations (0 = never) rip up and re-route every arc, not only the arcs on overused
+    // wires: the detours that earlier iterations forced onto legal but roundabout routes are
+    // relaxed under the current costs instead of accumulating. With reroute_contested_only, only
+    // the nets that use a wire with accumulated history are queued.
+    int reroute_period = 0;
+    bool reroute_contested_only = false;
+
     // Print additional performance profiling information
     bool perf_profile = false;
 

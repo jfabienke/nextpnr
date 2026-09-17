@@ -2430,6 +2430,144 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 `./build/nextpnr-mistral-test` 49/49, exec probe off byte-identical,
 `git diff --check` and `clang-format` clean.
 
+### 2026-09-17: Stage 6, unit 6f: the router's share of the gap, measured
+
+The unit set out to give router2 a negotiation that handles the LAB
+input lines together with the local fabric. It started with the best 6e
+plateau's overuse dump and ended by measuring where the wires go, on the
+full core and on the identical exec-probe netlist that Quartus routed.
+
+The plateau is diffuse and churns. At the record's best point (pairing
+with congestion-driven spreading, iteration 8) the 12,182 overused wires
+sit in 2,990 tiles, the top 50 tiles hold 8% of them, 96% are contested
+by exactly two nets, only 10% are still overused seven iterations later,
+and consecutive iterations share 12%; total wire use grows every
+iteration (755k to 897k). Only the length-12 column wires persist (46%
+of them). That is not a matching problem on the lines and not a hot
+spot; it is a region whose demand exceeds the fabric.
+
+Six router2 variants from one placed checkpoint of that configuration
+(`--no-route --checkpoint`, 819 s; the control's trajectory equals the
+record's run to the wire; `--router2-max-iter 15`; the router1 fallback
+after the cap was discarded). Overused wires, best iteration and last:
+
+| Variant | Best | At 15 | Router2 |
+| --- | ---: | ---: | ---: |
+| control | 12,182 (8) | 13,419 | 1,830 s (six in parallel; 1,367 s alone) |
+| present-congestion floor 1.0 (legality pressure independent of criticality) | 13,263 (8) | 14,533 | 2,069 s |
+| no timing-driven routing | 13,574 (8) | 15,251 | 2,019 s |
+| `--router2-reroute 4` (every arc re-routed every fourth iteration) | 11,863 (8) | 12,269 | 1,823 s |
+| `--router2-reroute 4 --router2-reroute-contested` | 12,072 (11) | 12,531 | 1,875 s |
+| A* estimate weight 1.0 instead of 1.25 | 10,629 (8) | 12,212 | 1,934 s |
+| `--router2-unit-cost` (one unit per wire instead of its delay) | 5,694 (5) | 6,626 | 1,781 s |
+| `--router2-unit-cost` with the estimate at 1.0 | 5,256 (5) | 6,122 | 1,811 s |
+
+None converges. The criticality formula is not the cause: with the
+worst slack far negative, a path's criticality is its violation as a
+fraction of the worst, so most arcs keep most of their congestion
+pressure, and removing the scaling makes the plateau worse. The one
+router-side lever that moves the core is the base cost: costing every
+wire one unit instead of its delay halves the plateau (5,694 against
+12,182, with 7% fewer wires in use, 703k against 755k at the first
+iteration) and with the admissible estimate 5,256; the overuse that
+remains is more concentrated (1,290 tiles at the best iteration, the
+top 50 tiles hold 15%; V2 27%, input lines 20%, V4 17%, H6 15%, H3
+14%) and churns the same way (5% persists from iteration 5 to 15). It
+buys that with timing: on the probe 4% of Fmax, on the core unmeasured
+because the core does not route.
+
+Supply against demand, from a per-tile utilisation dump added to
+router2's heatmap set (`_utilisation_by_tile_<iter>.csv`: wires in the
+graph, in use, overused, per tile and wire type). The core at iteration
+8: fabric wires 66.7% used device-wide (V2 76.6%, V4 74.6%, H3 73.7%,
+H6 57.7%, WM 66.9%, input lines 45.5%), the congested region (x 22 to
+52, y 28 to 66) 73.6%, the median tile 77%, the top tenth of tiles 91%,
+the peak tile 98%. Quartus's fit of the same core (`core_probe_20260917`)
+reports 23.8% average and 66.1% peak interconnect usage (C2 20%, C4 26%,
+C12 25%, R3 24%, R6 20%, R14 28%, block 26%, local 22%).
+
+The exec probe, identical netlist, both flows routed (Quartus
+`exec_probe_20260916n`, physical synthesis off; nextpnr the reference
+run). The graph's wire counts against Quartus's resource table: V2
+117,357 against C2 119,108, V4 55,431 against C4 56,300, H3 126,673
+against R3 130,992, H6 248,612 against R6 266,960, input lines 285,892
+against block interconnects 289,320, local lines 84,580 against 84,580.
+Wires used:
+
+| Resource | nextpnr | Quartus | Ratio |
+| --- | ---: | ---: | ---: |
+| fabric (V2, V4, V12, H3, H6, H14 against C2, C4, C12, R3, R6, R14) | 52,882 | 18,676 | 2.8 |
+| V2 / C2 | 13,401 | 3,662 | 3.7 |
+| V4 / C4 | 5,224 | 1,857 | 2.8 |
+| V12 / C12 | 809 | 63 | 12.8 |
+| H3 / R3 | 15,356 | 5,308 | 2.9 |
+| H6 / R6 | 17,240 | 7,554 | 2.3 |
+| H14 / R14 | 852 | 232 | 3.7 |
+| LAB input lines / block interconnects | 27,389 | 14,778 | 1.9 |
+| local lines / local interconnects | 2,714 | 4,312 | 0.6 |
+
+The two placements (Quartus's cell locations from a TimeQuest script on
+the NAS, joined to the hand-over Verilog by name; 78% of its nets
+matched):
+
+| Measure | nextpnr | Quartus |
+| --- | ---: | ---: |
+| half-perimeter wirelength per sink | 0.79 tiles | 0.92 tiles |
+| LABs entered per net | 2.24 | 1.78 |
+| sinks in the driver's LAB | 22.7% | 28.8% |
+| sinks in the driver's row, another LAB | 14.4% | 18.8% |
+| sinks in the driver's column | 15.3% | 7.0% |
+| rows touched per net | 1.80 | 1.52 |
+| register in the same ALM as its LUT | 4% (14 of 341) | 95% (536 of 562) |
+| LABs used | 1,069 | 655 |
+| fabric wires per LAB entered | 1.83 | 0.82 to 1.06 |
+
+Why a LAB entry costs what it costs, from the graph (LAB 45,47 and its
+four neighbours, `MISTRAL_DUMP_LAB_LINES=x,y`): the 46 lines have 568
+source pips, H6 379, H3 123, the LAB's own outputs 40, V2 8, V4 6, clock
+12; 12 lines have any column source; the 40 outputs drive 422 pips (H6
+150, H3 92, V2 88, V4 40, lines 52); the LAB above drives 64 column
+wires of which one feeds a line of this LAB, the LAB below none. In the
+routed probe, entries into lines come from H6 13,734, H3 10,306, the
+LAB's own outputs 2,161, V2 798, V4 404. Single-sink nets by Manhattan
+distance cost 0.41 fabric wires in the same LAB, 3.12 one tile away,
+4.33 two, 4.68 three, 5.71 four, 6.51 at five to nine, 14.19 at ten and
+more; a one-row hop is a stair, H3 then V2 then H3 then the line.
+
+The base cost's share, exec probe: `--router2-unit-cost` routes it in 16
+iterations with 137,736 wires against 149,576, fabric 41,781 in the
+four short classes against 51,221 (18% fewer), 34.56 MHz against 35.87;
+the A* estimate at 1.0 routes it in 21 iterations, 7.27 s against
+9.51 s, 36.23 MHz.
+
+Reading. The gap is demand, and the demand is structural: the fabric
+enters a LAB through row wires, a vertical hop costs two or three wires,
+and nextpnr's placement neither avoids vertical hops, nor packs a
+register with its LUT, nor draws a net's sinks into fewer rows and LABs,
+so it enters a LAB with 1.83 fabric wires where Quartus spends about
+one. On the core that is 67% of the fabric against Quartus's 24%, and
+no negotiation closes a fabric at 67%. The router-side unit is closed
+with two opt-in knobs (the periodic re-route, 3% on the core, and the
+unit cost, which halves the core's plateau at the price of delay-blind
+routes) and the diagnostic dumps; the next unit is placement-side:
+a row-aware cost (a column hop at its wire cost) through spreading and
+legalisation, register-with-LUT packing as a pack-time cluster the way
+6b pairs LUTs, and net clustering into fewer rows. Design section 9.5.
+
+Two constraints found on the way. A checkpoint resumes only under the
+same common command-line options: `--router2-max-iter`,
+`--router2-heatmap`, and the `--router2-*` weights intern their settings
+key before the checkpoint replays its table and the restore rejects the
+mismatch, so router experiments from a checkpoint set router2's terms
+through the Mistral environment block (`MISTRAL_R2_*`, read after the
+netlist). And after `--router2-max-iter` gives up, the flow runs router1
+on the whole design, which on the core never finishes; the runs above
+were stopped there.
+
+Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
+`./build/nextpnr-mistral-test` 49/49, exec probe off byte-identical
+(0xbb18ede9 / 0xbc1365c6), `git diff --check` and `clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2520,6 +2658,7 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 | 2026-09-17 | 6d | Re-scoped before implementation: not a placement rule, since the count already implies line feasibility; the fix is a LAB input-line assignment bound as pre-routed arcs at routing preparation, arch-side, no crate | On paper: 42 pin uses cannot overflow a 12-line quadrant that needs two uses per net; the router's failure to find an existing matching is the problem |
 | 2026-09-17 | 6d | Pre-assigning LAB input lines at routing preparation is a negative result; landed for the record, then removed | 40 to 60% more wires and the router at its cap on the probe, in every variant; the line must be chosen with the fabric route |
 | 2026-09-17 | 6e | Close the placement-routing loop inside HeAP with a per-pass wire-density estimate behind `--spread-congestion`; k = 2, LAB cells only, not stacked on demand weighting | Best plateau on the core, 12,200 to 13,400 overused (35% below pairing alone), placement legal; k = 1.5, a thinner factor, or demand on top all leave the legaliser without room |
+| 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers do not pack with their LUTs (4% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -2533,4 +2672,4 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
-| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), and 6e (congestion-driven spreading) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; the full core places and routes to a 12,200-wire plateau, not to closure | `--alm-pairing`, `--spread-demand`, `--spread-congestion` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |
+| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), 6e (congestion-driven spreading), and 6f (the router's share measured; re-route and unit cost landed) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; the full core places and routes to a 12,200-wire plateau at 67% fabric use, and the next unit is the placement cost model | `--alm-pairing`, `--spread-demand`, `--spread-congestion`, `--router2-reroute`, `--router2-unit-cost` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

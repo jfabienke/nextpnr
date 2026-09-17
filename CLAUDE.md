@@ -190,8 +190,22 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   tiles above `MISTRAL_SPREAD_CONGESTION_K` times the mean. Best measured configuration on the full
   core with pairing (router plateau 35% below pairing alone), not convergent; off by default. Do not
   stack it on `--spread-demand`: the two inflations together leave the legaliser without room.
+- Stage 6 (6f): the router's share of the Quartus gap is measured, not assumed. On the identical
+  exec-probe netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower
+  wirelength: LAB input lines are fed by row wires (88% of their inputs), so a vertical hop is a
+  two- or three-wire stair, and registers are not packed with their LUTs (4% against 95%). The
+  full core sits at 67% fabric use against Quartus's 24%; six router2 negotiation variants from one
+  checkpoint move the plateau 13% either way, a unit wire cost halves it, and none converges. `--router2-reroute N` (every arc re-routed
+  every N iterations, `--router2-reroute-contested` limits it to nets on wires with history) and
+  `--router2-unit-cost` (one unit per wire instead of its delay) are landed opt-in; router2's
+  heatmap set gained `_utilisation_by_tile_<iter>.csv`. A checkpoint resumes only under the same
+  common command-line options (`--router2-max-iter` and the other `--router2-*` settings intern
+  before the table replays), so router experiments from a checkpoint use the `MISTRAL_R2_*`
+  environment block in `Arch::run_router_phase`. The next unit is the placement cost model
+  (design doc section 9.5).
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
+  the router2 experiment block `MISTRAL_R2_*` and the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
 
@@ -221,7 +235,8 @@ after every net's previous binding is ripped up, which removed every bind-time f
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
 reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
 (density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), 6c (`--spread-demand`), and 6e
-(`--spread-congestion`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
+(`--spread-congestion`), and 6f (the router's share measured; `--router2-reroute`,
+`--router2-unit-cost`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
 removed, its record and landing commit in the tracker. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against

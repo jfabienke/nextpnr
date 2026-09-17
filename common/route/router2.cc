@@ -172,8 +172,7 @@ struct Router2
                     if (dst_wire == WireId()) {
                         log_info("  [debug] cell '%s' port %s bel=%s\n", ctx->nameOf(usr.value.cell),
                                  ctx->nameOf(usr.value.port),
-                                 usr.value.cell->bel == BelId() ? "<unplaced>"
-                                                                : ctx->nameOfBel(usr.value.cell->bel));
+                                 usr.value.cell->bel == BelId() ? "<unplaced>" : ctx->nameOfBel(usr.value.cell->bel));
                         for (auto pin : ctx->getBelPinsForCellPin(usr.value.cell, usr.value.port))
                             log_info("    belpin '%s' wire=%s\n", pin.c_str(ctx),
                                      ctx->getBelPinWire(usr.value.cell->bel, pin) == WireId() ? "<none>" : "ok");
@@ -1165,7 +1164,7 @@ struct Router2
             for (size_t j = 0; j < ad.size(); j++) {
                 // Ripup failed arcs to start with
                 // Check if arc is already legally routed
-                if (!failed_slack && check_arc_routing(net, usr.index, j)) {
+                if (!failed_slack && !(force_reroute && !ad.at(j).pre_routed) && check_arc_routing(net, usr.index, j)) {
                     update_wire_by_loc(t, net, usr.index, j, true);
                     continue;
                 }
@@ -1228,6 +1227,8 @@ struct Router2
     int total_resource_overuse = 0;
     std::vector<int> route_queue;
     std::set<int> failed_nets;
+    // Router2Cfg::reroute_period: this iteration rips up every queued net's arcs
+    bool force_reroute = false;
 
     void update_congestion()
     {
@@ -1259,8 +1260,8 @@ struct Router2
                         // question is always WHICH wires -- a single resource class stuck is a very
                         // different bug from diffuse congestion.
                         if (getenv("NEXTPNR_ROUTER2_DUMP_OVERUSE"))
-                            log_info("      [overuse] %s cong=%d net '%s'\n", ctx->nameOfWire(w.first),
-                                     wd.curr_cong, ctx->nameOf(nets_by_udata.at(i)));
+                            log_info("      [overuse] %s cong=%d net '%s'\n", ctx->nameOfWire(w.first), wd.curr_cong,
+                                     ctx->nameOf(nets_by_udata.at(i)));
                     }
                     failed_nets.insert(i);
                 }
@@ -1474,6 +1475,32 @@ struct Router2
         // Write csv
         for (auto &u : util_by_type)
             out << u.first.c_str(ctx) << "," << u.second << std::endl;
+    }
+
+    // Per tile and wire type: wires in the graph, wires in use, and the overuse on them. The
+    // supply-versus-demand picture that the by-coordinate heatmap (overuse only) does not give.
+    void write_utilisation_by_tile(std::ostream &out)
+    {
+        struct Row
+        {
+            int total = 0, used = 0, over = 0;
+        };
+        // Keyed by the name's leading segment: arches without wire types (Mistral) name wires
+        // TYPE.x.y.index.
+        dict<std::tuple<int, int, std::string>, Row> rows;
+        for (auto &wd : flat_wires) {
+            std::string name = ctx->nameOfWire(wd.w);
+            auto &r = rows[std::make_tuple(wd.x, wd.y, name.substr(0, name.find('.')))];
+            ++r.total;
+            if (wd.curr_cong > 0)
+                ++r.used;
+            if (wd.curr_cong > 1)
+                r.over += wd.curr_cong - 1;
+        }
+        out << "x,y,type,total,used,over" << std::endl;
+        for (auto &r : rows)
+            out << std::get<0>(r.first) << "," << std::get<1>(r.first) << "," << std::get<2>(r.first) << ","
+                << r.second.total << "," << r.second.used << "," << r.second.over << std::endl;
     }
 
     void write_congestion_by_coordinate_heatmap(std::ostream &out)
@@ -1786,6 +1813,12 @@ struct Router2
                     log_info("        wrote congestion-by-coordinate heatmap to %s.\n", filename.c_str());
                 }
                 {
+                    std::string filename(cfg.heatmap + "_utilisation_by_tile_" + std::to_string(iter) + ".csv");
+                    auto cong_map = open_ofstream_and_log_error(filename, "utilisation-by-tile heatmap");
+                    write_utilisation_by_tile(cong_map);
+                    log_info("        wrote utilisation-by-tile heatmap to %s.\n", filename.c_str());
+                }
+                {
                     std::string filename(cfg.heatmap + "_congestion_by_net_" + std::to_string(iter) + ".csv");
                     auto cong_map = open_ofstream_and_log_error(filename, "congestion-by-net heatmap");
                     write_congestion_by_net_heatmap(cong_map);
@@ -1812,6 +1845,28 @@ struct Router2
             }
             for (auto cn : failed_nets)
                 route_queue.push_back(cn);
+            force_reroute = false;
+            if (cfg.reroute_period > 0 && !failed_nets.empty() && (iter % cfg.reroute_period) == 0) {
+                force_reroute = true;
+                int queued_before = int(route_queue.size());
+                for (size_t i = 0; i < nets_by_udata.size(); i++) {
+                    if (failed_nets.count(int(i)))
+                        continue;
+                    if (cfg.reroute_contested_only) {
+                        bool contested = false;
+                        for (auto &w : nets.at(i).wires)
+                            if (wire_data(w.first).hist_cong_cost > 1.0f) {
+                                contested = true;
+                                break;
+                            }
+                        if (!contested)
+                            continue;
+                    }
+                    route_queue.push_back(int(i));
+                }
+                log_info("    reroute: %d nets queued beyond the %d that failed\n",
+                         int(route_queue.size()) - queued_before, queued_before);
+            }
             std::string resource_str = total_resource_use == 0
                                                ? ""
                                                : stringf("resources=%d overused=%d overuse=%d ", total_resource_use,

@@ -935,3 +935,44 @@ rules revision the concluded crate reopens for, validated on the probe
 first (router1 should no longer be needed at level 1) and then on the
 full core's routing.
 
+### 9.5 Where the wires go: the fabric's entry structure and the demand it sets
+
+Unit 6f asked the router to close what spreading could not, and the
+measurement turned the question around. On the identical exec-probe
+netlist handed to Quartus as WYSIWYG primitives, nextpnr's routing uses
+2.8 times the fabric wires Quartus's does, while the routing graph's
+wire counts match Quartus's resource table within a few percent (the
+local and block interconnect counts exactly). The placement is not the
+cause: its half-perimeter wirelength per sink is below Quartus's. The
+cause is what one LAB entry costs. A LAB's 46 input lines are fed by row
+wires: at a central LAB, 88% of the line inputs are H3 or H6, 2.5% are
+column wires, and the LAB directly above drives 64 column wires of
+which one reaches a line of the LAB below. A connection to a vertical
+neighbour is therefore a stair of two or three wires (row, column, row)
+where a horizontal neighbour costs one, and a net whose sinks sit in
+several rows pays that stair per row. Quartus's placement knows it:
+7% of its sinks sit in the driver's column against nextpnr's 15%, it
+touches 1.52 rows per net against 1.80, it puts 95% of LUT-to-register
+pairs in one ALM against 4%, and so it enters a LAB with about one
+fabric wire where nextpnr spends 1.83. The delay-based base cost adds
+its share: it prefers long wires for short hops (13 times Quartus's use
+of the length-12 column wires) and a unit wire cost buys 18% fewer
+fabric wires for 4% of Fmax.
+
+On the full core this demand is 67% of the fabric device-wide at the
+router's best iteration, against Quartus's 24% average and 66% peak for
+the same core; the median tile is at 77% and the congested quarter of
+the device at 91%. No negotiation resolves that: six router2 variants
+from the same placement (criticality-independent legality pressure, no
+timing-driven routing, a periodic full re-route, a contested-only
+re-route, an admissible A* estimate) move the plateau by 13% either
+way; a unit wire cost halves it, because a router that counts wires
+stops paying for stairs and long wires it does not need, and still
+none converges. The re-route and the unit cost are landed as opt-in
+Mistral options because they are measured and cheap; the record's
+conclusion is that the remaining gap is a placement
+cost model, not a router: column hops must cost what they cost, the
+register must pack with its LUT the way pairing packs two LUTs, and a
+net's sinks must be drawn into fewer rows and LABs. The router's own
+lever after that is the base cost.
+

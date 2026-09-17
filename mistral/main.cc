@@ -88,6 +88,14 @@ po::options_description MistralCommandHandler::getArchOptions()
                                                 "rebuilt every spreading pass (off by default; experimental)");
     specific.add_options()("spread-demand", "spread comb cells by their unique input count instead of one per bel "
                                             "(routing-demand-aware placement; off by default; experimental)");
+    specific.add_options()("router2-reroute", po::value<int>(),
+                           "rip up and re-route every arc every N router2 iterations, not only the arcs on overused "
+                           "wires (off by default; experimental)");
+    specific.add_options()("router2-reroute-contested",
+                           "with --router2-reroute, queue only the nets that use a wire with accumulated history");
+    specific.add_options()("router2-unit-cost",
+                           "router2 costs every wire one unit instead of its delay (fewer wires, slower paths; "
+                           "off by default; experimental)");
     specific.add_options()("reuse-routes-history", po::value<float>(),
                            "seed router2's history cost on every preserved wire so the dirty nets route around "
                            "them from the first iteration (1.0 = off, default; experimental)");
@@ -200,6 +208,13 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     }
     chipArgs.spread_demand = vm.count("spread-demand") != 0;
     chipArgs.spread_congestion = vm.count("spread-congestion") != 0;
+    if (vm.count("router2-reroute")) {
+        chipArgs.router2_reroute = vm["router2-reroute"].as<int>();
+        if (chipArgs.router2_reroute < 0)
+            log_error("--router2-reroute must be 0 or a positive iteration count.\n");
+    }
+    chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
+    chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
     if (vm.count("reuse-routes-history")) {
         chipArgs.reuse_routes_history = vm["reuse-routes-history"].as<float>();
         if (chipArgs.reuse_routes_history < 1.0f)

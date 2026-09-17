@@ -1101,6 +1101,43 @@ bool Arch::route()
 
 bool Arch::run_router_phase()
 {
+    // Stage 6 (6f) diagnostic: MISTRAL_DUMP_LAB_LINES=x,y prints, for LAB (x,y), every input line's
+    // sources by wire type and every LAB output's destinations by type, with the column wires named.
+    if (const char *e = getenv("MISTRAL_DUMP_LAB_LINES")) {
+        int lx = 0, ly = 0;
+        sscanf(e, "%d,%d", &lx, &ly);
+        std::string td = stringf("TD.%d.%d.", lx, ly), gin = stringf("GIN.%d.%d.", lx, ly);
+        for (WireId w : getWires()) {
+            std::string n = nameOfWire(w);
+            if (n.compare(0, td.size(), td) == 0) {
+                std::map<std::string, int> by_type;
+                std::string cols;
+                for (PipId p : getPipsUphill(w)) {
+                    std::string sname = nameOfWire(getPipSrcWire(p));
+                    by_type[sname.substr(0, sname.find('.'))]++;
+                    if (sname[0] == 'V')
+                        cols += " " + sname;
+                }
+                std::string t;
+                for (auto &kv : by_type)
+                    t += stringf(" %s=%d", kv.first.c_str(), kv.second);
+                log_info("[lab-lines] %s sources:%s | columns:%s\n", n.c_str(), t.c_str(), cols.c_str());
+            } else if (n.compare(0, gin.size(), gin) == 0) {
+                std::map<std::string, int> by_type;
+                std::string cols;
+                for (PipId p : getPipsDownhill(w)) {
+                    std::string dname = nameOfWire(getPipDstWire(p));
+                    by_type[dname.substr(0, dname.find('.'))]++;
+                    if (dname[0] == 'V')
+                        cols += " " + dname;
+                }
+                std::string t;
+                for (auto &kv : by_type)
+                    t += stringf(" %s=%d", kv.first.c_str(), kv.second);
+                log_info("[lab-lines] %s drives:%s | columns:%s\n", n.c_str(), t.c_str(), cols.c_str());
+            }
+        }
+    }
     std::string router = str_or_default(settings, id_router, defaultRouter);
     bool result = false;
     auto run_router = [&]() {
@@ -1109,6 +1146,32 @@ bool Arch::run_router_phase()
         } else if (router == "router2") {
             Router2Cfg cfg(getCtx());
             cfg.prerouted_hist_cost = args.reuse_routes_history;
+            // Stage 6 (6f): the measured negotiation knobs travel in ArchArgs (resume-safe: nothing is
+            // interned before the netlist); the rest of router2's cost terms can be overridden from the
+            // environment for experiments from a checkpoint, where the common --router2-* options cannot
+            // be used because they intern their settings key before the checkpoint replays its table.
+            cfg.reroute_period = args.router2_reroute;
+            cfg.reroute_contested_only = args.router2_reroute_contested;
+            if (args.router2_unit_cost)
+                cfg.get_base_cost = [](Context *, WireId, PipId, float) { return 1.0f; };
+            if (const char *e = getenv("MISTRAL_R2_PRESENT_FLOOR"))
+                cfg.present_cong_floor = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_CRIT_FLOOR"))
+                cfg.crit_weight_floor = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_CONG_MULT"))
+                cfg.curr_cong_mult = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_INIT_CONG"))
+                cfg.init_curr_cong_weight = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_HIST"))
+                cfg.hist_cong_weight = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_ESTIMATE"))
+                cfg.estimate_weight = float(atof(e));
+            if (const char *e = getenv("MISTRAL_R2_MAX_ITER"))
+                cfg.max_iter = atoi(e);
+            if (const char *e = getenv("MISTRAL_R2_HEATMAP"))
+                cfg.heatmap = e;
+            if (getenv("MISTRAL_R2_NO_TMDRIV"))
+                getCtx()->settings[getCtx()->id("timing_driven")] = false;
             router2(getCtx(), cfg);
             result = true;
         } else {
