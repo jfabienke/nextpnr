@@ -50,6 +50,7 @@ set(SOURCES
     placement_reuse.cc
     route_reuse.h
     route_reuse.cc
+    alm_pairing.cc
     reuse_plan.h
     reuse_plan.cc
     build_state.h

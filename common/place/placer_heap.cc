@@ -1217,6 +1217,21 @@ class HeAPPlacer
             if (total_iters_noreset > std::max(5000, 8 * int(ctx->cells.size()))) {
                 log_error("Unable to find legal placement for all cells, design is probably at utilisation limit.\n");
             }
+            if (p->cfg.stall_rounds > 0 && ripup_radius >= std::max(p->max_x, p->max_y)) {
+                // The radius covers the device: every cell now searches everywhere. Measure the
+                // queue every few passes over it; no progress means no location exists.
+                if (!at_max_radius) {
+                    at_max_radius = true;
+                    stall_queue_ref = remaining.size() + 1;
+                    stall_calls = 0;
+                } else if (++stall_calls >= p->cfg.stall_rounds * int(stall_queue_ref)) {
+                    size_t now = remaining.size() + 1;
+                    if (float(now) >= float(stall_queue_ref) * (1.0f - p->cfg.stall_progress))
+                        report_stall(ci, now);
+                    stall_queue_ref = now;
+                    stall_calls = 0;
+                }
+            }
 
             if (p->cfg.ff_bel_bucket != BelBucketId() && !p->cfg.disableCtrlSet) {
                 // Try placing based on same control set in window first
@@ -1297,6 +1312,39 @@ class HeAPPlacer
 
         int ripup_radius, chain_ripup_radius, total_iters, total_iters_noreset;
         int legalised_count = 0;
+        bool at_max_radius = false;
+        int stall_calls = 0;
+        size_t stall_queue_ref = 0;
+
+        // The queue stopped shrinking with the rip-up radius covering the device: name what is
+        // left, let the architecture explain it, and stop.
+        void report_stall(CellInfo *current, size_t queued)
+        {
+            std::vector<CellInfo *> stuck;
+            stuck.push_back(current);
+            auto copy = remaining;
+            while (!copy.empty()) {
+                CellInfo *ci = ctx->cells.at(copy.top().second).get();
+                copy.pop();
+                if (ci->bel == BelId() && ci != current)
+                    stuck.push_back(ci);
+            }
+            dict<IdString, int> by_type;
+            for (CellInfo *ci : stuck)
+                by_type[ci->type]++;
+            log_info("Strict legalisation stalled with the rip-up radius covering the device: %zu cells have no "
+                     "legal location (queue %zu).\n",
+                     stuck.size(), queued);
+            for (auto &t : by_type)
+                log_info("    %6d x %s\n", t.second, t.first.c_str(ctx));
+            for (size_t i = 0; i < std::min<size_t>(10, stuck.size()); i++)
+                log_info("    e.g. '%s'\n", ctx->nameOf(stuck.at(i)));
+            if (p->cfg.report_infeasible)
+                p->cfg.report_infeasible(ctx, stuck);
+            log_error("Unable to find a legal placement for %zu cells; the design is over a resource limit that "
+                      "spreading does not see (PlacerHeapCfg::stall_rounds = 0 keeps searching).\n",
+                      stuck.size());
+        }
 
         FastBels::FastBelsData *fb;
 

@@ -172,6 +172,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   (`MISTRAL_PLACEMENT_REUSE_FORCE_FALLBACK=n` forces n failures). `mistral/build_state.*` is the
   typed phase machine: `Arch::place()`/`route()` and the bitstream writer adopt the context into the
   phase they need and run the typed transitions; `--rbf` on an unrouted design is now an error.
+- Stage 6 (6a): HeAP's strict legaliser stops with a report once the rip-up radius covers the
+  device and the queue stops shrinking (`PlacerHeapCfg::stall_rounds`, `report_infeasible`; the
+  Mistral report prints LAB input occupancy and ALM pairing density). It is on the default path
+  and never triggers on a design that fits.
+- Stage 6 (6b): `--alm-pairing 1|2|3` pairs plain LUTs into ALM clusters at pack time under the
+  checker's rule (`mistral/alm_pairing.*`, `Arch::getClusterPlacement` puts a pair on one ALM).
+  Level 1 (shared inputs) is the one to use; 1.37 to 1.74 cells per ALM on the probe, and the full
+  core places with it. Off by default. The remaining wall is the LAB input-line classes (A/C 25,
+  B/D 21, E 22, F 24 of 46), which the count of 42 cannot see; see the design doc section 9.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
@@ -201,8 +210,10 @@ refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route re
 (placement region expansion), 3a (reuse plan, typed build states), and 3c-2 (router2 binds only
 after every net's previous binding is ripped up, which removed every bind-time failure on the
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
-reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; the
-closing measurement's recommendations are exhausted. Every new capability
+reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
+(density) has 6a (legaliser stall exit) and 6b (`--alm-pairing`) done, with 6c (routing-demand-aware
+spreading) and 6d (per-class LAB input-line feasibility, a rules revision) proposed in that order.
+Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.

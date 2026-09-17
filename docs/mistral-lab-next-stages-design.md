@@ -855,3 +855,61 @@ Their safe fallback is already defined: bounded owned values, serial evaluation,
 coarse invalidation, cache eviction, and full recomputation. Whole-LAB query
 scope, validation, deterministic ordering, and complete mutation coverage are
 correctness contracts and are not tunable performance shortcuts.
+
+## 9. Stage 6 — density
+
+The first full-core attempt (tracker, 2026-09-17) measured why a 55k-cell
+design does not build: at 1.4 LUT cells per ALM the design needs 67% of
+the ALMs and the strict legaliser finds no legal home for the last
+cells; Quartus packs the same cells at 1.92 per ALM into 49%. The
+architecture asks for pairing: a Cyclone V ALM takes two LUTs only when
+they fit its shared-input structure, and a LAB feeds its ALMs from 46
+input lines.
+
+### 9.1 Pairing as clusters
+
+nextpnr packs lightly and legalises at placement time; on this family
+that leaves ALM pairing to whatever the legaliser's random search
+happens to find. Stage 6 keeps the philosophy and adds one pack-time
+decision: LUTs that share input nets are paired under the checker's own
+rule (64 LUT bits; eight unique inputs with only A and B shareable; a
+6-input LUT never pairs) and emitted as two-cell clusters, so the placer
+moves a pair as a unit and every legality check sees both cells. The
+cluster placement is overridden in the arch so a pair lands on the two
+halves of the ALM its root bel is in; the base cluster mechanism cannot
+express "any ALM, first half" because an absolute z pins the root to one
+ALM. Pairs survive checkpoints because they are ordinary cluster fields.
+The packer is opt-in (`--alm-pairing`) and stays unpromoted; its level
+selects how far from shared inputs it will look for a partner.
+
+### 9.2 Where the wall moves to
+
+With pairs, the full core places; its routing then plateaus at twice
+the overuse of the unpaired placement. The LAB input limit of 42 counts
+lines; the lines have structure. Measured from the routing graph: every
+LUT pin can be fed by 21 to 25 of the 46 lines, the A and C pins from
+one group of 25 and the B and D pins from a disjoint group of 21, the E
+pins from a group of 22 and the F pins from a disjoint group of 24, each
+line in one group of each pair. A net that reaches pins of two classes
+in one LAB needs two lines, or a LUT whose inputs are permuted so it
+does not. The count cannot see this, and no lower count fixes it: with
+pairs, limits of 36 and 30 never legalise at all.
+
+### 9.3 The next two units
+
+The overuse after pairing is 59% short and medium fabric wires around
+the packed LABs and 23% input lines, so spreading comes first. A uniform
+spread factor helps 28% and then saturates, because below the design's
+own occupancy every region is overused and the cut degenerates to one
+global spread; the spreader needs a per-region capacity that reflects
+the routing demand of what it packs, which is placement-side and
+changes no rule. Then per-class feasibility in the LAB checker: nets on
+A/C pins at most 25, on B/D at most 21, on E at most 22, on F at most
+24, a net that must reach two classes counted in each, using the pin
+assignment the legaliser already makes and permuting plain LUT inputs
+so a net keeps one class across the LAB. That is a change to the rules
+that V1, V2, and the Rust evaluator implement in parity, so it is the
+rules revision the concluded crate reopens for, validated on the probe
+first (router1 should no longer be needed at level 1) and then on the
+full core's routing.
+

@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
+#include "alm_pairing.h"
 #include "build_state.h"
 #include "checkpoint.h"
 #include "gtest/gtest.h"
@@ -2523,6 +2524,73 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ctx->io_attr.clear();
     ctx->pllclk_sel_map.clear();
     ctx->ports.clear();
+}
+
+TEST_F(LabControlCaptureTest, AlmPairingFormsOnlyPairsTheAlmRuleAllows)
+{
+    // Stage 6 (6b): the packer's pairing rule must be at least as strict as the ALM checker,
+    // the pair cluster must land on the two halves of one ALM, and levels widen the search.
+    std::vector<NetInfo *> nets;
+    for (int i = 0; i < 24; i++)
+        nets.push_back(ctx->createNet(ctx->idf("ap_n%d", i)));
+    const IdString ports[] = {id_A, id_B, id_C, id_D, id_E};
+    auto lut = [&](const char *name, IdString type, std::initializer_list<int> ins) {
+        CellInfo *c = ctx->createCell(ctx->id(name), type);
+        int i = 0;
+        for (int n : ins) {
+            c->addInput(ports[i]);
+            c->connectPort(ports[i], nets.at(n));
+            i++;
+        }
+        c->addOutput(id_Q);
+        return c;
+    };
+    CellInfo *p5a = lut("ap_p5a", id_MISTRAL_ALUT5, {0, 1, 2, 3, 4});
+    CellInfo *p5b = lut("ap_p5b", id_MISTRAL_ALUT5, {0, 1, 5, 6, 7});   // shares two with p5a
+    CellInfo *p5c = lut("ap_p5c", id_MISTRAL_ALUT5, {0, 8, 9, 10, 11}); // shares one with each
+    CellInfo *q4a = lut("ap_q4a", id_MISTRAL_ALUT4, {12, 13, 14, 15});
+    CellInfo *q4b = lut("ap_q4b", id_MISTRAL_ALUT4, {16, 17, 18, 19}); // shares nothing
+    EXPECT_TRUE(alm_pair_compatible(p5a, p5b));
+    EXPECT_FALSE(alm_pair_compatible(p5a, p5c));
+    EXPECT_TRUE(alm_pair_compatible(q4a, q4b));
+    EXPECT_FALSE(alm_pair_compatible(p5c, q4a));
+
+    auto r1 = pair_alm_luts(*ctx, 1);
+    EXPECT_EQ(r1.pairs, 1u);
+    EXPECT_EQ(r1.by_shared, 1u);
+    EXPECT_TRUE(is_alm_pair_root(p5a));
+    EXPECT_EQ(p5b->cluster, p5a->name);
+    EXPECT_EQ(p5b->constr_z, 1);
+
+    auto &lab0 = ctx->labs.at(0);
+    std::vector<std::pair<CellInfo *, BelId>> placement;
+    EXPECT_TRUE(ctx->getClusterPlacement(p5a->cluster, lab0.alms[1].lut_bels[0], placement));
+    ASSERT_EQ(placement.size(), 2u);
+    EXPECT_EQ(placement[0].second, lab0.alms[1].lut_bels[0]);
+    EXPECT_EQ(placement[1].second, lab0.alms[1].lut_bels[1]);
+    EXPECT_FALSE(ctx->getClusterPlacement(p5a->cluster, lab0.alms[1].lut_bels[1], placement));
+
+    // The checker agrees: the pair is legal in one ALM, the rejected one is not.
+    ctx->assignArchInfo();
+    ctx->bindBel(lab0.alms[1].lut_bels[0], p5a, STRENGTH_STRONG);
+    ctx->bindBel(lab0.alms[1].lut_bels[1], p5b, STRENGTH_STRONG);
+    EXPECT_TRUE(ctx->isBelLocationValid(lab0.alms[1].lut_bels[0]));
+    EXPECT_TRUE(ctx->isBelLocationValid(lab0.alms[1].lut_bels[1]));
+    ctx->unbindBel(lab0.alms[1].lut_bels[0]);
+    ctx->unbindBel(lab0.alms[1].lut_bels[1]);
+    ctx->bindBel(lab0.alms[2].lut_bels[0], p5c, STRENGTH_STRONG);
+    ctx->bindBel(lab0.alms[2].lut_bels[1], q4a, STRENGTH_STRONG);
+    EXPECT_FALSE(ctx->isBelLocationValid(lab0.alms[2].lut_bels[0]) &&
+                 ctx->isBelLocationValid(lab0.alms[2].lut_bels[1]));
+    ctx->unbindBel(lab0.alms[2].lut_bels[0]);
+    ctx->unbindBel(lab0.alms[2].lut_bels[1]);
+
+    // Level 3 pairs the unrelated 4-LUTs; the lone 5-LUT stays single.
+    auto r3 = pair_alm_luts(*ctx, 3);
+    EXPECT_EQ(r3.pairs, 1u);
+    EXPECT_EQ(r3.by_any, 1u);
+    EXPECT_TRUE(is_alm_pair_root(q4a));
+    EXPECT_EQ(p5c->cluster, ClusterId());
 }
 
 TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllows)

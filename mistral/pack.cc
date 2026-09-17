@@ -17,6 +17,7 @@
  *
  */
 
+#include "alm_pairing.h"
 #include "design_utils.h"
 #include "log.h"
 #include "nextpnr.h"
@@ -1229,6 +1230,8 @@ struct MistralPacker
         pack_io_registers();
         constrain_carries();
         constrain_lutram();
+        if (ctx->args.alm_pairing > 0)
+            report_alm_pairing(pair_alm_luts(*ctx, ctx->args.alm_pairing)); // Stage 6 (6b)
         setup_m10ks();
         setup_dsps();
         setup_fplls();

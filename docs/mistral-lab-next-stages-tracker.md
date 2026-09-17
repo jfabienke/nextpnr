@@ -2103,6 +2103,138 @@ Artifacts: `build/stage6-fullcore/` (sv2v output, both JSONs, the
 generated wrapper, the logs of all three runs, `core_probe_dump.log`
 with the 296,493 overuse lines) and `core_probe_20260917` on the NAS.
 
+### 2026-09-17: Stage 6, units 6a and 6b: legaliser stall exit and ALM pairing
+
+Closing the density gap the full-core attempt measured, in the order the
+analysis set: an infeasibility exit first, then a pairing packer.
+
+**6a, stall exit (`common/place/placer_heap.cc`).** The strict legaliser
+had an exit only at eight times the cell count of outer iterations, which
+on 55k cells is hours at the maximum rip-up radius, and a per-cell
+attempt cap the stall never reached because every cell was retried in
+turn. Once the rip-up radius covers the device, the queue is now
+measured every `stall_rounds` (4) passes over it; if it shrank by less
+than `stall_progress` (1%) the placer names the stuck cells by type,
+calls an arch report (`PlacerHeapCfg::report_infeasible`), and stops.
+Mistral's report prints the LAB input occupancy and the ALM pairing
+density behind the failure. No settings key, so nothing is interned.
+
+Full core, reference configuration, before and after:
+
+| | Before | After |
+| --- | --- | --- |
+| Outcome | killed by hand after 25 min at 110,000 attempts, 1,323 queued | exits at 944 s after 104,000 attempts |
+| Report | none | 1,333 stuck cells, all `MISTRAL_FF`, 3.2 input nets each; 3,543 of 4,191 LABs at the input limit of 42, 38.9 inputs per LAB on average; 14,257 ALMs holding two LUTs and 10,934 one (1.57 per used ALM) |
+
+The report changes the reading of the first attempt: at this density the
+legaliser had already paired LUTs to 1.57 per ALM, 85% of the LABs sat
+exactly at the input limit, and the cells with nowhere to go were
+registers whose data input comes from a LUT in another ALM, each of
+which costs a LAB input line the device no longer had. Fabi386 clean
+gate: 0xbb18ede9 / 0xbc1365c6, unchanged; the exit never triggers on a
+design that fits.
+
+**6b, ALM pairing (`mistral/alm_pairing.{h,cc}`, `--alm-pairing N`, off
+by default).** The packer pairs plain LUTs before placement under the
+ALM rule the checker enforces (64 LUT bits; eight unique inputs with
+only the A and B lines shareable, so two 5-input LUTs need two shared
+nets, a 5- and a 4-input LUT one, anything of three inputs or fewer
+pairs freely; 6-input LUTs never pair; carry cells are already two per
+ALM through their chains). Level 1 pairs LUTs that share an input net,
+greedily, most shared first; level 2 also pairs a LUT with one it drives
+or is driven by; level 3 pairs whatever is left and compatible. A pair
+is a two-cell cluster whose placement the arch overrides
+(`Arch::getClusterPlacement`) onto the two LUT halves of the ALM its
+root bel is in, so HeAP and the annealer move it as a unit and the
+legality checks see both cells. Pairs survive a checkpoint because the
+cluster fields are what the checkpoint already carries. The unit test
+checks the rule against the checker on a real ALM (a compatible pair is
+legal in one ALM, an incompatible one is rejected by both), the cluster
+placement, and the levels.
+
+Exec probe (`--seed 1 --threads 1 --freq 12`), sequential and alone:
+
+| Level | Pairs of 8,574 pairable | Cells per ALM (ALMs) | HeAP | Annealer | Router2 | Fmax | Wall |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 0 (off) | | 1.37 (8,177) | 5.2 s | 9.2 s | 8.1 s, 20 iterations | 35.87 MHz | 28.1 s |
+| 1 | 4,108 sharing inputs, 358 single | 1.74 (6,492) | 5.6 s | 5.0 s | gave up at 100 on one wire, router1 70 s | 37.73 MHz | 92.4 s |
+| 2 | +27 linked | 1.75 (6,460) | 6.4 s | 6.0 s | 8.6 s, 74 iterations | 32.13 MHz | 24.6 s |
+| 3 | +152 unrelated, 0 single | 1.77 (6,369) | 6.0 s | 4.1 s | 7.4 s, 17 iterations | 32.45 MHz | 21.1 s |
+
+Level 0 is byte-identical to the reference. The single wire level 1
+could not clear is one high-fanout net (`u_exec.fpu_done...`) around a
+dense cluster at columns 50 to 53, on `V2`, `H6`, and `TD` wires: the
+count-only input limit's "which line" conflict (G2 mechanism 2),
+resolved by router1. Fmax moves both ways within the seed spread.
+
+Full core, level 1, default input limit of 42: 15,181 pairs from 31,988
+pairable LUTs, 32,395 input nets shared inside pairs, 1,626 left single.
+**Placement completes**: HeAP 573 s (511 s legalisation), no stall.
+Router2 then plateaus twice as high as the unpaired control: 73,005
+overused wires at iteration 1, 39,288, 26,584, 22,500, 21,130, 20,454,
+20,508 at 7, two minutes per iteration; stopped there. Pairing moved
+the wall from placement into routing: the LABs are legal by count and
+full, and the router cannot find the specific input lines.
+
+A lower placement-time limit does not rescue this. With pairing at
+limits 36 and 30 (the gaps file's routable point for the 32k design was
+34) the legaliser did not reach its first 2,000-cell heartbeat in 55
+minutes: pairs find almost no LAB with input room, every failed
+candidate costs a full evaluation, and the maximum-radius exit is never
+reached. Both killed. The overuse dump on the paired placement at
+router iteration 10 (21,455 overused wires, 308,340 lines) splits 23%
+`TD` input lines (46% unpaired), then `V2` 19%, `H3` 17%, `H6` 14%, `V4`
+9%, `WM` 8%, `V12` 6%, `H14` 4%: pairing halved the input-line share,
+and what remains is mostly the short and medium fabric wires around
+LABs packed at 1.74 cells per ALM. Spreading them thinner helps and
+saturates: `MISTRAL_HEAP_BETA` at 0.35 and at 0.25 give one identical
+placement (below the design's own occupancy every region counts as
+overused and the cut degenerates to one global spread), HeAP 425 s,
+annealer 115 s, and router2 plateaus at 14,600 to 15,900 overused wires
+over 15 iterations against 20,500 at the default 0.5: 28% better, not
+convergent.
+
+What the lines actually are (measured from the routing graph on LAB 0,
+every ALM identical; the temporary test that printed it was removed
+before the commit): a LAB has 46 `TD` input lines; each LUT pin can be
+fed by 21 to 25 of them; the A and C pins draw on one group of 25 lines
+and the B and D pins on a disjoint group of 21, while E pins draw on a
+group of 22 and F pins on a disjoint group of 24, each line sitting in
+one A/C-or-B/D group and one E-or-F group (12, 13, 10, and 11 lines in
+the four quadrants). A net feeding an A pin in one ALM and a B pin in
+another therefore needs two lines unless one LUT's inputs are permuted,
+and the count of 42 sees none of it: it is exactly the "which TD wire"
+conflict G2 mechanism 2 describes, now with its geometry.
+
+Reading. 6a is complete and default-path safe. 6b is complete as an
+opt-in and delivers the density it was meant to: 1.37 to 1.74 cells per
+ALM on the probe, and the full core placed in 9.6 minutes where it never
+placed before; Fmax on the probe moves inside the seed spread; level 1
+is the level to use and it stays off by default. The wall moved into
+routing and the dump splits it: 59% short and medium fabric wires
+around the packed LABs, 23% input lines. Two units follow, in that
+order. 6c, routing-demand-aware spreading: a uniform spread factor
+helps 28% and then saturates, so the spreader needs a per-region
+capacity that reflects the routing demand of what it packs (the code
+comment at the knob already names "a routing-demand-aware inflator"),
+placement-side, no rules change. 6d, per-class input-line feasibility
+in the LAB checker: replace the total of 42 with nets on A/C pins at
+most 25, on B/D at most 21, on E at most 22, on F at most 24, a net
+that must reach two classes counted in each, using the pin assignment
+`reassign_alm_inputs` already makes and permuting plain LUT inputs so a
+net keeps one class across the LAB. That is a change to the rules the
+V1 and V2 evaluators and the concluded Rust crate all implement, so it
+reopens the crate under its own terms (a rules revision), validated on
+the probe at level 1 first (the one wire router1 had to clear) and then
+on the full core. Neither is started here; they are the decisions the
+record now supports.
+
+Validation of 6a and 6b as landed: `./build/rust-enabled/nextpnr-mistral-test`
+59/59 (adds `AlmPairingFormsOnlyPairsTheAlmRuleAllows`),
+`./build/nextpnr-mistral-test` 49/49, Fabi386 clean gate 0xbb18ede9 /
+0xbc1365c6 with both options absent, exec probe level 0 byte-identical,
+`git diff --check` and `clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2186,6 +2318,10 @@ with the 296,493 overuse lines) and `core_probe_20260917` on the NAS.
 | 2026-09-16 | measurement | Compare with Quartus only on the identical netlist handed over as WYSIWYG primitives; the recorded full-core runs are a different design | Behavioural hand-over doubled ALMs and tripled the critical path (11 MHz); WYSIWYG: Quartus 64.7 to 69.5 MHz and 5,067 ALMs in 3 min 15 s of fitter against our 35.9 MHz and 8,179 ALMs in 26 s |
 | 2026-09-17 | model | Attribute the timing model before placement work; the cell constants are the -7 table already, the path gap on the cell side is input assignment, the routing bound is upstream's | fmaxtest element by element: constants match Quartus's I7 maxima arc for arc; Quartus enters carry cells through C (0.83 ns) where we enter through A or B (1.06 to 1.16); routing 1.26x from libmistral's correction factors; grade and edge speed ruled out, temperature and the interval bound sized |
 | 2026-09-17 | full core | The first full-core attempt fails on LAB input capacity from both sides; ALM pairing density is the next unit, ahead of input permutation | 55k cells: legaliser stalls at 1,323 cells under the limit; without it placement takes 5 min and router2 plateaus at 8,500 to 10,800 overused wires, 46% on LAB input lines; Quartus fits the same cells into 20,576 ALMs (1.92 per ALM against our 1.4) in 27 min at 25.2 MHz |
+| 2026-09-17 | 6a | Stop the strict legaliser when the queue stops shrinking at the maximum rip-up radius, with an arch report | 944 s exit with 1,333 stuck registers named, 85% of LABs at the input limit, against a 25-minute hand kill and an hours-long budget; clean gate byte-identical |
+| 2026-09-17 | 6b | Pair plain LUTs into ALM clusters at pack time behind `--alm-pairing`, placement overridden onto one ALM | Probe 1.37 to 1.74 cells per ALM, level 0 byte-identical; full core places in 9.6 min where it never placed; router2 then plateaus at 20,500 overused wires |
+| 2026-09-17 | 6c | Next unit is routing-demand-aware spreading, placement-side | After pairing 59% of the overuse is short and medium fabric wires around packed LABs; a uniform spread factor helps 28% and saturates below the design's occupancy |
+| 2026-09-17 | 6d | After 6c, per-class input-line feasibility with pin permutation in the LAB checker, a rules revision that reopens the Rust crate under its own terms | Structure measured from the routing graph (A/C 25, B/D 21, E 22, F 24 of 46 lines); 23% of the overuse after pairing is input lines; the count of 42 cannot see a net needing two classes; lower limits with pairing never legalise |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -2199,3 +2335,4 @@ with the 296,493 overuse lines) and `core_probe_20260917` on the NAS.
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
+| Stage 6: density | 6a (legaliser stall exit) and 6b (ALM pairing) complete; 6c (routing-demand-aware spreading) and 6d (per-class input-line feasibility) proposed in that order, not started | `--alm-pairing` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

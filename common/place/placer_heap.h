@@ -100,6 +100,16 @@ struct PlacerHeapCfg
     // this is an optional callback to prioritise certain cells/clusters for legalisation
     std::function<float(Context *, CellInfo *)> get_cell_legalisation_weight = [](Context *, CellInfo *) { return 1; };
 
+    // Strict legalisation stall exit. Once the rip-up radius covers the whole device, the queue of
+    // unplaced cells is measured every `stall_rounds` passes over it; if it shrank by less than
+    // `stall_progress`, no location exists for what is left and the placer stops with a report
+    // instead of retrying until the attempt budget (eight times the cell count) runs out, which on
+    // a 55k-cell design is hours. 0 rounds disables the check.
+    int stall_rounds = 4;
+    float stall_progress = 0.01f;
+    // Optional architecture report on the cells that could not be legalised, printed before the error.
+    std::function<void(Context *, const std::vector<CellInfo *> &)> report_infeasible;
+
     // Optional architecture-owned frozen transaction. Unsupported candidates
     // use HeAP's original bind/check/revert path.
     std::function<HeAPClusterTransactionOutcome(Context *, const std::vector<std::pair<CellInfo *, BelId>> &,

@@ -20,6 +20,7 @@
 #include <array>
 #include <cinttypes>
 
+#include "alm_pairing.h"
 #include "log.h"
 #include "nextpnr.h"
 
@@ -716,6 +717,75 @@ bool Arch::place()
     return true;
 }
 
+bool Arch::getClusterPlacement(ClusterId cluster, BelId root_bel,
+                               std::vector<std::pair<CellInfo *, BelId>> &placement) const
+{
+    CellInfo *root = getCtx()->cells.at(cluster).get();
+    if (!is_alm_pair_root(root))
+        return BaseArch::getClusterPlacement(cluster, root_bel, placement);
+    placement.clear();
+    Loc loc = getBelLocation(root_bel);
+    if (loc.z % 6 != 0) // only the first LUT half of an ALM seeds a pair candidate
+        return false;
+    BelId child_bel = getBelByLocation(Loc(loc.x, loc.y, loc.z + 1));
+    CellInfo *child = root->constr_children.front();
+    if (child_bel == BelId() || !isValidBelForCellType(root->type, root_bel) ||
+        !isValidBelForCellType(child->type, child_bel))
+        return false;
+    placement.emplace_back(root, root_bel);
+    placement.emplace_back(child, child_bel);
+    return true;
+}
+
+// Stage 6 (6a): what the strict legaliser ran into. LAB input lines and ALM pairing are the
+// capacities HeAP's spreading does not see; this names how full they are when it stalls.
+void Arch::report_legalisation_stall(const std::vector<CellInfo *> &stuck) const
+{
+    const int limit = resolved_lab_input_limit();
+    int labs_total = 0, labs_near_limit = 0, labs_at_limit = 0, alms_total = 0, alms_paired = 0, alms_single = 0;
+    long inputs_total = 0;
+    for (uint32_t lab = 0; lab < labs.size(); lab++) {
+        const auto &ld = labs.at(lab);
+        int inputs = 0;
+        for (int i = 0; i < 10; i++) {
+            const auto &alm = ld.alms.at(i);
+            inputs += alm.unique_input_count;
+            const CellInfo *l0 = getBoundBelCell(alm.lut_bels[0]);
+            const CellInfo *l1 = getBoundBelCell(alm.lut_bels[1]);
+            alms_total++;
+            if (l0 != nullptr && l1 != nullptr)
+                alms_paired++;
+            else if (l0 != nullptr || l1 != nullptr)
+                alms_single++;
+        }
+        labs_total++;
+        inputs_total += inputs;
+        if (inputs >= limit)
+            labs_at_limit++;
+        else if (inputs >= limit - 4)
+            labs_near_limit++;
+    }
+    dict<IdString, std::pair<int, long>> stuck_inputs; // type -> (count, unique input nets)
+    for (const CellInfo *ci : stuck) {
+        std::unordered_set<const NetInfo *> nets;
+        for (auto &port : ci->ports)
+            if (port.second.type == PORT_IN && port.second.net != nullptr)
+                nets.insert(port.second.net);
+        auto &e = stuck_inputs[ci->type];
+        e.first++;
+        e.second += long(nets.size());
+    }
+    log_info("LAB input lines (limit %d per LAB): %d of %d LABs at the limit, %d within 4 of it, %.1f inputs "
+             "per LAB on average.\n",
+             limit, labs_at_limit, labs_total, labs_near_limit, labs_total ? double(inputs_total) / labs_total : 0.0);
+    log_info("ALM occupancy: %d of %d ALMs hold two LUTs, %d hold one (%.2f LUTs per used ALM).\n", alms_paired,
+             alms_total, alms_single,
+             (alms_paired + alms_single) ? double(2 * alms_paired + alms_single) / (alms_paired + alms_single) : 0.0);
+    for (auto &e : stuck_inputs)
+        log_info("Stuck %s: %d cells, %.1f unique input nets each.\n", e.first.c_str(getCtx()), e.second.first,
+                 e.second.first ? double(e.second.second) / e.second.first : 0.0);
+}
+
 bool Arch::run_placement()
 {
     std::string placer = str_or_default(settings, id_placer, defaultPlacer);
@@ -750,6 +820,9 @@ bool Arch::run_placement()
             // horizontally.
             cfg.hpwl_scale_x = 1;
             cfg.hpwl_scale_y = 2;
+            cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
+                report_legalisation_stall(stuck);
+            };
 
             cfg.beta = 0.5; // TODO: find a good value of beta for sensible ALM spreading
             // EXPERIMENTAL (routing-congestion mitigation): beta caps the ALM-slot
