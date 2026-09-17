@@ -16,6 +16,8 @@
  *  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <cstring>
+
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -346,8 +348,19 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
     mistral::AnalogSim::time_interval output_delays[2];
     mistral::AnalogSim::time_interval output_delay_sum[2];
     std::vector<std::pair<mistral::CycloneV::rnode_t, int>> outputs;
+    // Signoff corner: 100 C, slow input edges, maximum delays (Quartus's "slow 1100mV 100C"
+    // model). MISTRAL_SIGNOFF_TEMP=0|85|100 and MISTRAL_SIGNOFF_EST=fast|slow are experiment
+    // switches for attributing the model against Quartus and silicon; they change the report only.
     auto temp = mistral::CycloneV::T_100;
     auto est = mistral::CycloneV::EST_SLOW;
+    if (const char *t = getenv("MISTRAL_SIGNOFF_TEMP")) {
+        if (!strcmp(t, "0"))
+            temp = mistral::CycloneV::T_0;
+        else if (!strcmp(t, "85"))
+            temp = mistral::CycloneV::T_85;
+    }
+    if (const char *e = getenv("MISTRAL_SIGNOFF_EST"); e != nullptr && !strcmp(e, "fast"))
+        est = mistral::CycloneV::EST_FAST;
 
     output_delay_sum[0].mi = 0;
     output_delay_sum[0].mx = 0;
@@ -464,6 +477,14 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
             inverted = !inverted;
     }
 
+    // MISTRAL_SIGNOFF_BOUND=min: report the sum of the per-stage lower bounds in the maximum slots
+    // too (experiment switch, sizes how much the per-stage upper bounds compound along a path).
+    static const bool lower_bound_only =
+            getenv("MISTRAL_SIGNOFF_BOUND") && !strcmp(getenv("MISTRAL_SIGNOFF_BOUND"), "min");
+    if (lower_bound_only) {
+        output_delay_sum[0].mx = output_delay_sum[0].mi;
+        output_delay_sum[1].mx = output_delay_sum[1].mi;
+    }
     delay = DelayQuad{delay_t(output_delay_sum[0].mi * 1e12), delay_t(output_delay_sum[0].mx * 1e12),
                       delay_t(output_delay_sum[1].mi * 1e12), delay_t(output_delay_sum[1].mx * 1e12)};
 

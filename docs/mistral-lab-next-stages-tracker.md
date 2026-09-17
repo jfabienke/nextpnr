@@ -1922,6 +1922,77 @@ agree here, 35.71 against 35.87 MHz). Nothing in this branch's Stage 5
 work touches any of the three; they are the next quality work if
 timing is the goal, in the order model, placement, then rewrite.
 
+### 2026-09-17: Timing model attribution against Quartus on the fmaxtest chain
+
+The first recommendation after the closing measurement: attribute the
+1.22x model gap before any placement work. Vehicle: `fmaxtest` (502
+LUT cells, 51 registers, one carry chain, silicon between 45 and 52 MHz
+per the gaps file's calibration), the same WYSIWYG netlist through
+Quartus 17.0.2 without physical synthesis (`fmaxtest_20260916` on the
+NAS, 41.64 MHz, `report_timing -detail full_path`) and through
+nextpnr's signoff (`--rbf`, 34.47 MHz; the router's constant table says
+34.07). Both critical paths have the same eight-stage structure:
+register, carry entry through a data input, three or four carry hops,
+sum out, one LUT on its fast input, general routing, next stage.
+
+Element by element, same grade and corner (1.1 V, 100 C, maximum
+delays):
+
+| Element | Quartus | nextpnr signoff | nextpnr / Quartus |
+| --- | ---: | ---: | ---: |
+| Carry entry, data input to carry out (8 per path) | 0.830 ns | 1.157 ns | 1.39 |
+| Carry in to sum out | 0.314 ns | 0.370 ns | 1.18 |
+| Carry in to carry out | 0.013 ns | 0.078 ns | small either way |
+| LUT on its fast input | 0.084 ns | 0.100 ns | 1.19 |
+| Logic total on the path | 10.2 ns | 11.8 ns | 1.16 |
+| General routing hop (16 and 17 per path) | 0.85 ns | 1.01 ns | 1.19 |
+| Routing total on the path | 13.6 ns | 17.2 ns | 1.26 |
+| Path | 24.0 ns | 29.0 ns | 1.21 |
+
+What each half is. The cell numbers are the hard-coded constants in
+`mistral/delay.cc` ("1.1V 100C corner of sx120f"); they have no speed
+grade at all. The routing numbers are libmistral's analog simulation of
+the routed pip chain. Sweeps on the routing half, placement and routing
+identical throughout (checksums 0x5c9de842 / 0xfda10b63):
+
+| Switch | Routing on the path | Signoff Fmax |
+| --- | ---: | ---: |
+| Device name `5CSEBA6U23I7`, `C7`, `A7` (grade 7) | 17.19 ns | 34.47 MHz |
+| `5CSEBA6U23C6` | 15.56 ns | 36.52 MHz |
+| `5CSEBA6U23C8` | 19.32 ns | 32.12 MHz |
+| `MISTRAL_SIGNOFF_TEMP=85` / `0` (grade 7) | 16.92 / 15.87 ns | 34.79 / 36.11 MHz |
+| `MISTRAL_SIGNOFF_EST=fast` | 17.19 ns (no change) | 34.47 MHz |
+| `MISTRAL_SIGNOFF_BOUND=min` (sum of per-stage lower bounds) | 15.20 ns | 37.02 MHz |
+
+So libmistral applies the speed grade and the -7 grade is what the I7
+device gets; the input edge-speed setting changes nothing; temperature
+is worth 8% at 0 C, which is not a legitimate setting; and the interval
+the simulator returns per stage (`delay x timing_scale x cor_factor`,
+upper and lower) is worth 12% end to end, with even the lower bound
+12% above Quartus. The routing model's pessimism is therefore in
+libmistral's reverse-engineered correction factors or in chaining one
+simulation per pip, and that is an upstream question, not a branch
+change. The cell constants are ours: 16% on this path and 39% on the
+carry-entry arc, the arc the multiplier rows of the Fabi386 probe are
+built from.
+
+Against silicon (45 to 52 MHz, room temperature), Quartus's 100 C
+model is 8 to 20% pessimistic and nextpnr's 30 to 45%. The three new
+`getenv` switches (`MISTRAL_SIGNOFF_TEMP`, `MISTRAL_SIGNOFF_EST`,
+`MISTRAL_SIGNOFF_BOUND`) change the report only, never placement or
+routing, and are off unless set; the Fabi386 clean gate with `--rbf`
+reproduces its checksums.
+
+Recommended unit from this: re-derive the cell constants per arc for
+the -7 grade from Quartus's CELL rows (three path reports at I7 are on
+the NAS, and libmistral's `p2p_info` tables should be checked for the
+same arcs first), which is a data change with a measurable target:
+fmaxtest logic from 11.8 to about 10.2 ns and the probe's carry-entry
+arcs from 1.16 to 0.83 ns. It changes criticalities and therefore
+routing, so it is validated on Fmax against Quartus and silicon rather
+than by byte identity. The routing bound stays as it is until silicon
+says otherwise.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2003,6 +2074,7 @@ timing is the goal, in the order model, placement, then rewrite.
 | 2026-09-16 | 3c-3 | Report survival next to applied, and rewrite the plan after routing rather than keep a second record | Same numbers as the external script: 100% on the unchanged design, 82.0% and 81.3% on the edits |
 | 2026-09-16 | 3c-4 | Seed router2's history on preserved wires behind `--reuse-routes-history`; record 8 as the measured value and keep it off by default | 99% survival, 6 to 8 iterations, router2 3.0 to 4.1 s against 7.3 to 7.6 s unseeded; Fmax inside the seed spread; clean gate byte-identical |
 | 2026-09-16 | measurement | Compare with Quartus only on the identical netlist handed over as WYSIWYG primitives; the recorded full-core runs are a different design | Behavioural hand-over doubled ALMs and tripled the critical path (11 MHz); WYSIWYG: Quartus 64.7 to 69.5 MHz and 5,067 ALMs in 3 min 15 s of fitter against our 35.9 MHz and 8,179 ALMs in 26 s |
+| 2026-09-17 | model | Attribute the timing model before placement work; the cell constants are the branch's share, the routing bound is upstream's | fmaxtest element by element: cells 1.16x (carry entry 1.39x) from grade-less constants, routing 1.26x from libmistral's correction factors; grade and edge speed ruled out, temperature and the interval bound sized |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

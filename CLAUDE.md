@@ -173,7 +173,8 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   typed phase machine: `Arch::place()`/`route()` and the bitstream writer adopt the context into the
   phase they need and run the typed transitions; `--rbf` on an unrouted design is now an error.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
-  `NEXTPNR_ROUTER2_DUMP_OVERUSE`, and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
+  `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
+  and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
 
 ## Current work and its documents
