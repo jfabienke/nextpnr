@@ -2010,6 +2010,99 @@ and it stays opt-in like every Stage 5 capability. The cell constants
 stay as they are; the routing bound stays as it is until silicon says
 otherwise.
 
+### 2026-09-17: First full-core Fabi386 attempt through nextpnr
+
+The second item of the post-closing plan. Design: the CPU core top
+(`f386_ooo_core_top`, the Fabi386 repo's `yosys-full` file list and
+defines, sv2v then `synth_intel_alm -family cyclonev`) wrapped the way the
+exec probe was: every input driven from a 414-bit register bank stepped
+as an LFSR, every output XOR-reduced onto one registered pin, two pins
+total (`build/stage6-fullcore/f386_core_probe.v`, generated from the
+core's port list). `-nodsp`, because Yosys mapped 27x27 and 9x9
+multipliers the branch does not support; the plain core has 1,175 ports
+against 472 IO bels, and the packer refuses a top port without an IO
+cell, which is why the wrapper is needed at all. Synthesis: 9 min for
+the core, 37 min for the probe (ABC on the XOR tree). Result: 39,425 LUT
+cells (3,276 arithmetic), 15,647 registers, one M10K, 83 MB of JSON;
+47% of the comb bels, about 28,000 ALMs at our 1.4 cells per ALM (67%).
+
+Run 1, reference configuration (`--seed 1 --threads 1 --freq 33
+--router2-max-iter 100 --timing-allow-fail --ignore-loops`; the core's
+RTL has combinational loops between the store-index stall and the
+renamer's busy bits, which Quartus only warns about). HeAP's strict
+legaliser never finished its first main iteration: the queue went from
+5,194 cells at rip-up radius 16 to 1,583 at radius 64 and then flattened
+at 1,339, 1,334, 1,333, 1,332, 1,323 over 30,000 attempts at radius 89,
+the whole device. Killed after 25 minutes. This reproduces the gaps
+file's 2026-08-10 record on the same design at 39,090 ALUTs, where the
+limit at 34 never completed the pass and the control without the limit
+legalised in one second: mechanism 2 of G2, carry chains plus the LAB
+input limit as a genuine resource conflict, and a legaliser with no
+infeasibility exit. Five stages of LAB legality work since then did not
+touch it, because none of them was meant to: they made the check faster
+and reusable, not the spreading aware of it.
+
+Run 2, control, `MISTRAL_LAB_INPUT_LIMIT=999`, everything else equal:
+
+| Phase | Time |
+| --- | ---: |
+| HeAP (of which strict legalisation) | 253 s (203 s) |
+| Annealer | 58 s |
+| Router2 (100 iterations, gave up) | 2,751 s |
+| Router1 legalisation of 197,622 arcs | stalled: 176196 arcs still unrouted after 91000 iterations and 525 s, rip-ups outpacing routes (176,166 remaining at 250 s, 176,196 at 525 s); killed |
+
+Router2 never converged: 61,742 overused wires after iteration 1,
+18,295 after 3, then a plateau between 9,000 and 10,800 from iteration
+11 to the cap at 100 (8,467 at the end). A rerun with
+`NEXTPNR_ROUTER2_DUMP_OVERUSE=20` names the wires at iteration 20
+(10,238 overused): 46% of the overuse is on the LABs' own input lines
+(`TD`), 39% of the contending nets are on arithmetic cells, and the
+rest is general fabric (`V2` 12%, `H3` 11%, `WM` 9%, `H6` 9%, `V12`
+5%, `V4` 5%, `H14` 4%), spread over the whole array rather than one
+tile. So the limit is not a placement artefact: with it, placement
+cannot finish; without it, the LABs are oversubscribed on inputs and
+the router cannot finish either. G2 mechanism 2, at full scale, from
+both sides.
+
+Quartus 17.0.2 on the identical netlist (WYSIWYG hand-over as before,
+the block RAM as a memory-array model since Quartus rejects Yosys's
+variable part-selects; `core_probe_20260917` on the NAS, production
+settings, 33 MHz constraint): synthesis 10 min 3 s, fitter 26 min 37 s
+(placement 6 min 10 s), timing 2 min 30 s, assembler 19 s. It fits the
+same 39,425 LUT cells as 35,153 ALUTs into 20,576 ALMs, 49% of the
+device, at 1.92 cells per ALM against our 1.4, keeps 14,590 of the
+15,647 registers, absorbs the block RAM into logic, and reaches
+25.2 MHz against the 33 MHz constraint under the slow 1100 mV 100 C
+model. For scale: the recorded full MiSTer builds of the same core
+with DSPs, memories, and the framework need 33.5k to 36k ALMs and one
+to two and a half hours of fitter.
+
+Reading. The full core does not build through this branch, and the
+reason is now quantified from both sides. At our packing density the
+design needs about 28,000 ALMs of 41,910 and the strict legaliser
+cannot find legal homes for the last 1,323 cells under the LAB input
+limit; with the limit lifted, placement takes five minutes and the
+router stalls on the input lines the limit exists to protect, plus
+general congestion at that density. Quartus needs 20,576 ALMs for the
+same cells because it packs 1.92 per ALM, which leaves it 51% of the
+device free and a fitter that finishes in 27 minutes. The lever is
+therefore density, not the legaliser's search: a LAB-aware clustering
+that pairs LUTs by shared inputs before or during spreading (Quartus's
+packing step, which nextpnr's light packing philosophy has no
+counterpart for on this family), with the input limit as its
+constraint rather than a post-hoc check, and an infeasibility exit in
+the legaliser so a design that cannot fit fails in seconds instead of
+never. That is unit 3's second bullet, ALM pairing density, promoted
+to first; input permutation for timing comes after it, because it
+only matters once the design places. Speed at this scale, for the
+record: placement 5.2 min and 100 router iterations in 46 min on the
+M1 Ultra against Quartus's 6 min placement and 20 min routing on the
+NAS, on a placement that does not route.
+
+Artifacts: `build/stage6-fullcore/` (sv2v output, both JSONs, the
+generated wrapper, the logs of all three runs, `core_probe_dump.log`
+with the 296,493 overuse lines) and `core_probe_20260917` on the NAS.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2092,6 +2185,7 @@ otherwise.
 | 2026-09-16 | 3c-4 | Seed router2's history on preserved wires behind `--reuse-routes-history`; record 8 as the measured value and keep it off by default | 99% survival, 6 to 8 iterations, router2 3.0 to 4.1 s against 7.3 to 7.6 s unseeded; Fmax inside the seed spread; clean gate byte-identical |
 | 2026-09-16 | measurement | Compare with Quartus only on the identical netlist handed over as WYSIWYG primitives; the recorded full-core runs are a different design | Behavioural hand-over doubled ALMs and tripled the critical path (11 MHz); WYSIWYG: Quartus 64.7 to 69.5 MHz and 5,067 ALMs in 3 min 15 s of fitter against our 35.9 MHz and 8,179 ALMs in 26 s |
 | 2026-09-17 | model | Attribute the timing model before placement work; the cell constants are the -7 table already, the path gap on the cell side is input assignment, the routing bound is upstream's | fmaxtest element by element: constants match Quartus's I7 maxima arc for arc; Quartus enters carry cells through C (0.83 ns) where we enter through A or B (1.06 to 1.16); routing 1.26x from libmistral's correction factors; grade and edge speed ruled out, temperature and the interval bound sized |
+| 2026-09-17 | full core | The first full-core attempt fails on LAB input capacity from both sides; ALM pairing density is the next unit, ahead of input permutation | 55k cells: legaliser stalls at 1,323 cells under the limit; without it placement takes 5 min and router2 plateaus at 8,500 to 10,800 overused wires, 46% on LAB input lines; Quartus fits the same cells into 20,576 ALMs (1.92 per ALM against our 1.4) in 27 min at 25.2 MHz |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
