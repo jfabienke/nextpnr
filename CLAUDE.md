@@ -184,6 +184,12 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
 - Stage 6 (6c): `--spread-demand` makes HeAP's cut spreader weigh comb cells by unique inputs
   (`PlacerHeapCfg::get_cell_spread_units`, four units per bel). Off by default; it clears the paired
   probe's stubborn wire and trims the full core's routing plateau by 10% without converging it.
+- Stage 6 (6e): `--spread-congestion` closes a placement-routing loop inside HeAP: every spreading
+  pass rebuilds a bounding-box wire-density estimate from the current positions
+  (`PlacerHeapCfg::on_spread_begin`, `Arch::rebuild_spread_inflation`) and inflates LAB cells in
+  tiles above `MISTRAL_SPREAD_CONGESTION_K` times the mean. Best measured configuration on the full
+  core with pairing (router plateau 35% below pairing alone), not convergent; off by default. Do not
+  stack it on `--spread-demand`: the two inflations together leave the legaliser without room.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
@@ -214,8 +220,9 @@ refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route re
 after every net's previous binding is ripped up, which removed every bind-time failure on the
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
 reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
-(density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), and 6c (`--spread-demand`) done, with
-6d (per-class LAB input-line feasibility, a rules revision) proposed. Every new capability
+(density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), 6c (`--spread-demand`), and 6e
+(`--spread-congestion`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
+removed, its record and landing commit in the tracker. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.

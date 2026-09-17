@@ -2361,6 +2361,75 @@ the record and removed in the next; the design and numbers stay here.
 Router1's assertion on placer-strength partial bindings is noted as a
 second reason the mechanism cannot ship as built.
 
+### 2026-09-17: Stage 6, unit 6e: congestion-driven spreading
+
+The placement-routing loop, in the cheapest form that closes it inside
+HeAP. `--spread-congestion` (off by default) adds a pass-begin hook to
+the cut spreader (`PlacerHeapCfg::on_spread_begin`): at the start of
+every spreading pass the arch receives the pass's own cell positions and
+rebuilds a wire-density estimate over the tiles (RUDY: every net with two
+or more placed endpoints spreads width plus height over area across its
+bounding box), and the per-cell unit hook from 6c multiplies a LAB
+cell's units by its tile's density over a threshold of `k` times the
+mean of the used tiles (`MISTRAL_SPREAD_CONGESTION_K`, default 2), capped
+at three. Only comb and register cells inflate: the first version
+inflated the design's one clock-enable cell past its two-bel bucket and
+the spreader could not expand; and only tiles above the threshold count:
+inflating everything above the mean pulled the 12%-utilised probe apart
+for a quarter of its Fmax. Both are recorded as the two defects the
+probe caught before the core saw the unit.
+
+Exec probe (`--seed 1 --threads 1 --freq 12`):
+
+| Configuration | Cells per ALM | Router2 | Fmax | Wall |
+| --- | ---: | ---: | ---: | ---: |
+| Off | 1.37 | 20 iterations | 35.87 MHz | 30.6 s |
+| `--spread-congestion` | 1.33 | cap at 100 on six wires, router1 116 s | 35.03 MHz | 149 s |
+| `--alm-pairing 1 --spread-congestion` | 1.73 | 62 iterations, no router1 | 33.55 MHz | 27.5 s |
+| `--alm-pairing 1 --spread-demand --spread-congestion` | 1.73 | 16 iterations | 29.22 MHz | 22.0 s |
+
+Off is byte-identical (0xbb18ede9 / 0xbc1365c6). The probe is not
+congested, so the estimator only perturbs it: mixed, as expected.
+
+Full core, `--alm-pairing 1`, default input limit, router2 capped at 15
+(overused wires by iteration; the record's other plateaus for scale):
+
+| Spreading | Placement | Router2 overused by iteration |
+| --- | ---: | --- |
+| none (pairing alone) | 573 s | 73,005, 39,288, 26,584, 22,500, 21,130, 20,454, 20,508 |
+| `--spread-demand` | 722 s | 73,586, 40,143, 25,423, 20,858, 19,298, 18,532, 18,333, 18,496, 19,182, 19,478, 19,847 |
+| uniform factor 0.35 | 425 s | 69,745, 34,524, 20,884, 16,871, 15,176, 14,612, 14,861, 15,092, 15,065, 14,839, 14,990, ... 15,877 at 15 |
+| `--spread-congestion` (k = 2) | 602 s | 70,023, 34,315, 20,337, 15,726, 13,950, 12,910, 12,590, 12,182, 12,312, 12,497, 12,936, 13,153, 13,035, 13,175, 13,419 |
+| `--spread-demand --spread-congestion` | stall exit at 2,031 s | 1,032 registers with no legal location; 1,401 LABs at the limit, 1.75 LUTs per used ALM: the two inflations together exceed what the device absorbs |
+| `--spread-congestion` with k = 1.5 | stall exit at 1,670 s | 731 cells with no legal location: the sharper threshold inflates more than the device absorbs |
+| `--spread-congestion` (k = 2) with the uniform factor at 0.35 | stall exit at 1,402 s | 483 cells with no legal location: the same, from the other side |
+
+Overuse split of the k = 2 placement at iteration 10 (282,560 lines):
+`TD` 22%, `V2` 19%, `H3` 16%, `H6` 13%, `WM` 10%, `V4` 8%: the same
+shape as every paired placement, at the lowest level so far.
+
+Reading. Congestion-driven spreading is the best configuration measured
+on the full core: with pairing, at the default threshold and factor, the
+router's plateau drops to 12,200 to 13,400 overused wires, 35% below
+pairing alone and below the uniform thinner factor's 14,600, and the
+placement stays legal. It does not converge, and every attempt to
+spread further (a sharper threshold, a thinner factor, demand weighting
+on top) leaves the legaliser without room: at 54% ALM occupancy under
+the input limit of 42 the paired core has that little slack. So the
+loop is closed as far as an estimate can close it; the estimate is a
+proxy for the fabric, and the fabric at this density is short of the
+real router. What the record now says about the remaining gap: the
+placement side has delivered density (6b), a stall exit (6a), and two
+spreading modes (6c, 6e) that trim the plateau by a third; the routing
+side has been measured from both ends (a matching exists for every LAB
+the count admits, pre-assigning it costs 40 to 60% more wires); and the
+next lever is the router itself, a negotiation that handles the
+structured line conflicts and the local fabric together, which is a
+router2 change with the Mistral graph in view and beyond a single unit.
+Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
+`./build/nextpnr-mistral-test` 49/49, exec probe off byte-identical,
+`git diff --check` and `clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2450,6 +2519,7 @@ second reason the mechanism cannot ship as built.
 | 2026-09-17 | 6d | After 6c, per-class input-line feasibility with pin permutation in the LAB checker, a rules revision that reopens the Rust crate under its own terms | Structure measured from the routing graph (A/C 25, B/D 21, E 22, F 24 of 46 lines); 23% of the overuse after pairing is input lines; the count of 42 cannot see a net needing two classes; lower limits with pairing never legalise |
 | 2026-09-17 | 6d | Re-scoped before implementation: not a placement rule, since the count already implies line feasibility; the fix is a LAB input-line assignment bound as pre-routed arcs at routing preparation, arch-side, no crate | On paper: 42 pin uses cannot overflow a 12-line quadrant that needs two uses per net; the router's failure to find an existing matching is the problem |
 | 2026-09-17 | 6d | Pre-assigning LAB input lines at routing preparation is a negative result; landed for the record, then removed | 40 to 60% more wires and the router at its cap on the probe, in every variant; the line must be chosen with the fabric route |
+| 2026-09-17 | 6e | Close the placement-routing loop inside HeAP with a per-pass wire-density estimate behind `--spread-congestion`; k = 2, LAB cells only, not stacked on demand weighting | Best plateau on the core, 12,200 to 13,400 overused (35% below pairing alone), placement legal; k = 1.5, a thinner factor, or demand on top all leave the legaliser without room |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -2463,4 +2533,4 @@ second reason the mechanism cannot ship as built.
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
-| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), and 6c (demand-weighted spreading) complete; 6d (line pre-assignment) built, measured negative, removed; 6e (congestion-driven spreading) next; the crate stays concluded | `--alm-pairing` and `--spread-demand` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |
+| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), and 6e (congestion-driven spreading) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; the full core places and routes to a 12,200-wire plateau, not to closure | `--alm-pairing`, `--spread-demand`, `--spread-congestion` available, off by default, unpromoted | `--alm-pairing` and `--spread-demand` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

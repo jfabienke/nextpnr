@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cinttypes>
+#include <cmath>
 
 #include "alm_pairing.h"
 #include "log.h"
@@ -737,6 +738,69 @@ bool Arch::getClusterPlacement(ClusterId cluster, BelId root_bel,
     return true;
 }
 
+// Stage 6 (6e): RUDY over the current placement. Every net with two or more placed endpoints
+// spreads (width + height) / area of its bounding box over the tiles it covers; a tile above
+// the mean of the used tiles inflates the units of the cells in it by that ratio, up to four.
+void Arch::rebuild_spread_inflation(const std::function<Loc(const CellInfo *)> &loc_of)
+{
+    const int w = getGridDimX() + 1, h = getGridDimY() + 1;
+    spread_inflation_w = w;
+    spread_inflation_h = h;
+    std::vector<float> density(size_t(w) * h, 0.0f);
+    for (auto &net_pair : getCtx()->nets) {
+        const NetInfo *net = net_pair.second.get();
+        int x0 = w, y0 = h, x1 = -1, y1 = -1, endpoints = 0;
+        auto extend = [&](const CellInfo *cell) {
+            if (cell == nullptr)
+                return;
+            Loc l = loc_of(cell);
+            if (l.x < 0 || l.y < 0)
+                return;
+            x0 = std::min(x0, l.x);
+            y0 = std::min(y0, l.y);
+            x1 = std::max(x1, l.x);
+            y1 = std::max(y1, l.y);
+            endpoints++;
+        };
+        extend(net->driver.cell);
+        for (auto &usr : net->users)
+            extend(usr.cell);
+        if (endpoints < 2 || x1 < 0)
+            continue;
+        x1 = std::min(x1, w - 1);
+        y1 = std::min(y1, h - 1);
+        const float bw = float(x1 - x0 + 1), bh = float(y1 - y0 + 1);
+        const float per_tile = (bw + bh) / (bw * bh);
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+                density[size_t(y) * w + x] += per_tile;
+    }
+    double sum = 0;
+    size_t used = 0;
+    for (float d : density)
+        if (d > 0) {
+            sum += d;
+            used++;
+        }
+    // Only tiles well above the mean count as congested: at low utilisation everything is
+    // "above average" somewhere and inflating it only pulls a placement apart. The multiple is
+    // sweepable (MISTRAL_SPREAD_CONGESTION_K, default 2) so the threshold is measured, not guessed.
+    static const float k =
+            getenv("MISTRAL_SPREAD_CONGESTION_K") ? float(atof(getenv("MISTRAL_SPREAD_CONGESTION_K"))) : 2.0f;
+    const float mean = used ? float(sum / used) : 1.0f;
+    const float threshold = std::max(1e-6f, k * mean);
+    spread_inflation.assign(density.size(), 1.0f);
+    for (size_t i = 0; i < density.size(); i++)
+        spread_inflation[i] = std::max(1.0f, std::min(3.0f, density[i] / threshold));
+}
+
+float Arch::spread_inflation_at(int x, int y) const
+{
+    if (spread_inflation.empty() || x < 0 || y < 0 || x >= spread_inflation_w || y >= spread_inflation_h)
+        return 1.0f;
+    return spread_inflation[size_t(y) * spread_inflation_w + x];
+}
+
 // Stage 6 (6a): what the strict legaliser ran into. LAB input lines and ALM pairing are the
 // capacities HeAP's spreading does not see; this names how full they are when it stalls.
 void Arch::report_legalisation_stall(const std::vector<CellInfo *> &stuck) const
@@ -823,19 +887,32 @@ bool Arch::run_placement()
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };
-            if (args.spread_demand > 0) {
+            if (args.spread_demand > 0 || args.spread_congestion) {
                 // Stage 6 (6c): a comb cell occupies as many units as it has unique input nets, a bel
                 // offers four, so a region of 5-input LUTs and pairs spreads thinner than one of
-                // 2-input LUTs; everything else keeps one bel's worth.
+                // 2-input LUTs; everything else keeps one bel's worth. Stage 6 (6e): the units are
+                // then inflated by the wire-density estimate of the tile the cell currently sits in.
                 cfg.spread_units_per_bel = 4;
-                cfg.get_cell_spread_units = [this](Context *, const CellInfo *ci) {
-                    if (!is_comb_cell(ci->type))
-                        return 4;
-                    std::unordered_set<const NetInfo *> nets;
-                    for (auto &port : ci->ports)
-                        if (port.second.type == PORT_IN && port.second.net != nullptr && port.first != id_CI)
-                            nets.insert(port.second.net);
-                    return std::max(1, std::min(8, int(nets.size())));
+                const bool by_inputs = args.spread_demand > 0, by_congestion = args.spread_congestion;
+                if (by_congestion)
+                    cfg.on_spread_begin = [this](Context *, const std::function<Loc(const CellInfo *)> &loc_of) {
+                        rebuild_spread_inflation(loc_of);
+                    };
+                cfg.get_cell_spread_units = [this, by_inputs, by_congestion](Context *, const CellInfo *ci, int x,
+                                                                             int y) {
+                    int base = 4;
+                    if (by_inputs && is_comb_cell(ci->type)) {
+                        std::unordered_set<const NetInfo *> nets;
+                        for (auto &port : ci->ports)
+                            if (port.second.type == PORT_IN && port.second.net != nullptr && port.first != id_CI)
+                                nets.insert(port.second.net);
+                        base = std::max(1, std::min(8, int(nets.size())));
+                    }
+                    // Inflation only for LAB cells: the other buckets are a handful of bels each and
+                    // cannot absorb an inflated demand at all.
+                    if (by_congestion && (is_comb_cell(ci->type) || ci->type == id_MISTRAL_FF))
+                        base = int(std::lround(base * spread_inflation_at(x, y)));
+                    return std::max(1, base);
                 };
             }
 

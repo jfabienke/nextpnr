@@ -1951,9 +1951,16 @@ class HeAPPlacer
             cell_units.clear();
             chain_units.clear();
             if (p->cfg.get_cell_spread_units) {
+                auto loc_of = [&](const CellInfo *cell) {
+                    const auto &l = p->cell_locs.at(cell->name);
+                    return Loc(l.x, l.y, 0);
+                };
+                if (p->cfg.on_spread_begin)
+                    p->cfg.on_spread_begin(ctx, loc_of);
                 for (auto &cell_loc : p->cell_locs) {
                     const CellInfo &cell = *ctx->cells.at(cell_loc.first);
-                    cell_units[cell.name] = std::max(1, p->cfg.get_cell_spread_units(ctx, &cell));
+                    cell_units[cell.name] =
+                            std::max(1, p->cfg.get_cell_spread_units(ctx, &cell, cell_loc.second.x, cell_loc.second.y));
                 }
                 for (auto &cs : p->chain_size) {
                     // chain_size is keyed by root name; a root with no cluster entry is a single cell.

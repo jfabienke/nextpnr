@@ -54,12 +54,13 @@ struct ArchArgs
     int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
-    std::string reuse_routes_path;            // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
-    std::string reuse_plan_path;              // Stage 5 (3a): write the reuse plan (cells and nets, with reasons) here
-    bool reuse_dry_run = false;               // Stage 5 (3a): plan reuse but apply nothing
-    float reuse_routes_history = 1.0f;        // Stage 5 (3c-4): router2 history seeded on preserved wires; 1.0 = off
-    int alm_pairing = 0;                      // Stage 6 (6b): pair plain LUTs into ALMs before placement; 0 = off
-    int spread_demand = 0;                    // Stage 6 (6c): HeAP spreads comb cells by unique inputs; 0 = off
+    std::string reuse_routes_path;     // Stage 5 (3c): previous routed output or checkpoint to reuse routes from
+    std::string reuse_plan_path;       // Stage 5 (3a): write the reuse plan (cells and nets, with reasons) here
+    bool reuse_dry_run = false;        // Stage 5 (3a): plan reuse but apply nothing
+    float reuse_routes_history = 1.0f; // Stage 5 (3c-4): router2 history seeded on preserved wires; 1.0 = off
+    int alm_pairing = 0;               // Stage 6 (6b): pair plain LUTs into ALMs before placement; 0 = off
+    int spread_demand = 0;             // Stage 6 (6c): HeAP spreads comb cells by unique inputs; 0 = off
+    bool spread_congestion = false;    // Stage 6 (6e): HeAP spreads by a wire-density estimate of the current placement
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router
@@ -641,6 +642,12 @@ struct Arch : BaseArch<ArchRanges>
     // place() and route() adopt the context and go through them.
     bool run_placement();
     void report_legalisation_stall(const std::vector<CellInfo *> &stuck) const; // Stage 6 (6a)
+    // Stage 6 (6e): per-tile inflation from a bounding-box wire-density estimate (RUDY) of the
+    // current placement, rebuilt at the start of every spreading pass.
+    std::vector<float> spread_inflation;
+    int spread_inflation_w = 0, spread_inflation_h = 0;
+    void rebuild_spread_inflation(const std::function<Loc(const CellInfo *)> &loc_of);
+    float spread_inflation_at(int x, int y) const;
     // Stage 6 (6b): an ALM pair cluster lands on the two LUT halves of the ALM its root bel is in.
     bool getClusterPlacement(ClusterId cluster, BelId root_bel,
                              std::vector<std::pair<CellInfo *, BelId>> &placement) const override;

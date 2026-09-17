@@ -909,7 +909,7 @@ that choice belongs with the fabric route. The negotiation has to be
 fixed inside the router with the fabric in view; the tracker holds the
 numbers and the design.
 
-### 9.4 Spreading by demand, and what is left
+### 9.4 Spreading by demand, by congestion, and what is left
 
 The overuse after pairing is 59% short and medium fabric wires around
 the packed LABs and 23% input lines. `--spread-demand` gives the cut
@@ -917,10 +917,15 @@ spreader an arch hook: a comb cell weighs its unique input count and a
 bel offers four units, so input-heavy regions spread thinner. Measured,
 it redistributes without thinning: the paired probe's stubborn wire goes
 away, the core's plateau drops 10%, and a uniform thinner factor still
-does better and saturates at the design's own occupancy. Convergence at
-this density needs placement to hear from routing, a congestion feedback
-loop, which is a later stage. Before that, per-class feasibility in the
-LAB checker: nets on
+does better and saturates at the design's own occupancy. The loop that
+lets placement hear from routing is closed inside HeAP by
+`--spread-congestion`: every spreading pass rebuilds a bounding-box
+wire-density estimate over the current positions and inflates the units
+of LAB cells in tiles above a threshold, so the spreader thins where the
+router would fail; it is the best configuration measured on the core and
+it still does not converge, because the estimate is a proxy and the
+fabric at this density is short of the real thing. Per-class feasibility
+in the LAB checker was analysed and not built: nets on
 A/C pins at most 25, on B/D at most 21, on E at most 22, on F at most
 24, a net that must reach two classes counted in each, using the pin
 assignment the legaliser already makes and permuting plain LUT inputs

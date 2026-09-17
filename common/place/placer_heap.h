@@ -114,8 +114,12 @@ struct PlacerHeapCfg
     // its bel bucket and every bel offers `spread_units_per_bel`, so the cut spreader treats a
     // region of input-heavy cells as fuller than one of small cells. Both sides of every
     // comparison scale together, and with the hook unset the arithmetic is the reference's.
-    std::function<int(Context *, const CellInfo *)> get_cell_spread_units;
+    std::function<int(Context *, const CellInfo *, int x, int y)> get_cell_spread_units;
     int spread_units_per_bel = 1;
+    // Called at the start of every spreading pass with the pass's own view of where each cell
+    // currently sits (solver positions, not bels), so the architecture can rebuild whatever its
+    // unit function needs, such as a congestion estimate over the current placement.
+    std::function<void(Context *, const std::function<Loc(const CellInfo *)> &)> on_spread_begin;
 
     // Optional architecture-owned frozen transaction. Unsupported candidates
     // use HeAP's original bind/check/revert path.
