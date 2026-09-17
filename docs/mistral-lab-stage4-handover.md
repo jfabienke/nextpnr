@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `9b648dcb` (Stage 6, 6a to 6e; the next lever is the router)
+- Commit: `18841bf3` (Stage 6, 6a to 6f; the next unit is the placement cost model)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -36,8 +36,13 @@ Handover point:
   (`--spread-congestion`) by 35%, neither to convergence; 6d, the line
   pre-assignment, was built, measured negative, and removed, and the
   per-class rule was shown unable to bind under the count, so the crate
-  stays concluded. The next lever is router2's negotiation of the LAB
-  input lines together with the local fabric.
+  stays concluded. 6f measured the router's share instead of assuming
+  it: on the identical netlist nextpnr uses 2.8 times Quartus's fabric
+  wires because LAB lines are fed by row wires (a vertical hop is a
+  stair) and registers do not pack with their LUTs; negotiation variants
+  move the core's plateau 13%, a unit wire cost halves it
+  (`--router2-unit-cost`, `--router2-reroute`, both opt-in). The next
+  unit is the placement cost model (design doc section 9.5).
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -340,6 +345,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `b5dc749d` | First full-core attempt: legaliser stall under the LAB input limit, router plateau without it, Quartus at 1.92 cells per ALM; ALM pairing density is next |
 | `8f31b9af` | Stage 6 units 6a and 6b: legaliser stall exit with a LAB occupancy report; ALM pairing packer, full core places; input-line structure measured |
 | `9b648dcb` | Stage 6 units 6c, 6d (negative, removed), 6e: demand-weighted and congestion-driven spreading; the core's router plateau at 12,200 |
+| `18841bf3` | Stage 6 unit 6f: the router's share measured on the identical netlist (2.8 times Quartus's fabric wires, row-fed LAB lines, unpacked registers); `--router2-reroute`, `--router2-unit-cost`, per-tile utilisation dump |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
