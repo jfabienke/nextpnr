@@ -895,7 +895,21 @@ in one LAB needs two lines, or a LUT whose inputs are permuted so it
 does not. The count cannot see this, and no lower count fixes it: with
 pairs, limits of 36 and 30 never legalise at all.
 
-### 9.3 Spreading by demand, and what is left
+### 9.3 Input lines cannot be assigned ahead of the router
+
+The per-class rule was never written: under the input count of 42, a
+line is never more than one pin use and the tightest quadrant needs two
+per net, so the rule cannot bind. The count already implies that a line
+assignment exists for every LAB it admits; what fails is router2 finding
+it. Assigning the lines ahead of the router (matching from the routing
+graph, pins bound through their line's pip at placer strength) was built
+and measured: it finds a perfect matching in every LAB and costs 40 to
+60% more wires, because a line decides which fabric muxes feed it and
+that choice belongs with the fabric route. The negotiation has to be
+fixed inside the router with the fabric in view; the tracker holds the
+numbers and the design.
+
+### 9.4 Spreading by demand, and what is left
 
 The overuse after pairing is 59% short and medium fabric wires around
 the packed LABs and 23% input lines. `--spread-demand` gives the cut

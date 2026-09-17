@@ -51,6 +51,7 @@ set(SOURCES
     route_reuse.h
     route_reuse.cc
     alm_pairing.cc
+    lab_lines.cc
     reuse_plan.h
     reuse_plan.cc
     build_state.h

@@ -21,6 +21,7 @@
 #include <cinttypes>
 
 #include "alm_pairing.h"
+#include "lab_lines.h"
 #include "log.h"
 #include "nextpnr.h"
 
@@ -94,6 +95,7 @@ Arch::Arch(ArchArgs args)
 {
     this->args = args;
     this->cyclonev = mistral::CycloneV::get_model(args.device);
+    lab_input_lines = args.lab_input_lines;
     NPNR_ASSERT(this->cyclonev != nullptr);
 
     // Setup fast identifier maps
@@ -1030,6 +1032,8 @@ bool Arch::run_router_phase()
         if (router == "router1") {
             result = router1(getCtx(), Router1Cfg(getCtx()));
         } else if (router == "router2") {
+            if (args.lab_input_lines)
+                report_lab_input_lines(assign_lab_input_lines(*getCtx())); // Stage 6 (6d), idempotent
             Router2Cfg cfg(getCtx());
             cfg.prerouted_hist_cost = args.reuse_routes_history;
             router2(getCtx(), cfg);

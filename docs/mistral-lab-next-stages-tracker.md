@@ -2325,6 +2325,42 @@ legaliser makes no progress under a stricter count even at 12%
 utilisation, the same pathology as the full core at 36 and 30, which
 is itself a finding about pair candidates under a tight count.
 
+### 2026-09-17: Stage 6, unit 6d as built: LAB input-line pre-assignment, measured negative
+
+Built as re-scoped: `--lab-input-lines` runs at routing preparation, after
+the pins are fixed and after route reuse has applied what it can. For
+every LAB it gathers each externally driven net's LAB-input pins (nets
+driven inside the LAB stay on the local feedback lines), takes each net's
+allowed lines from the routing graph (the `TD` wires that can drive all
+its pins, splitting a net whose pins share none), matches nets to lines
+with augmenting paths over at most 46 lines, and binds every pin through
+its line's pip at `STRENGTH_PLACER`; the line itself stays unbound because
+router2 cannot drive a wire that arrives bound without a pip, and
+`Arch::checkPipAvailForNet` admits only the reserved pip into a reserved
+pin. Unit test on a real LAB: three nets, three lines, every other pip
+refused, a second pass binds nothing. The matching found a perfect
+assignment in every LAB of the probe (1,068 LABs, 20,782 nets on 22,549
+lines, 1,767 split). The router then lost badly:
+
+| Exec probe | Wires at iteration 1 | Overused at 1 | End |
+| --- | ---: | ---: | --- |
+| Default | 133,430 | 9,323 | converged at 20 |
+| `--alm-pairing 1` | 133,430 | 9,323 | one wire to the cap, router1 70 s |
+| `--lab-input-lines` | 212,653 at the cap | | 493 overused at 100; router1 asserts on the partial bindings |
+| `--alm-pairing 1 --lab-input-lines` | 217,455 at the cap | | 468 overused at 100 |
+| same, lines spread over the 46 by a per-group offset | 187,786 | 22,032 | 626 overused at 40 |
+
+Reading. A net's line decides which fabric muxes feed it, and the
+router's freedom to pick the line together with the fabric route is
+worth more than any LAB-internal matching: fixed lines cost 40 to 60%
+more wires in detours and moved the conflict from the LAB's lines to the
+wires that feed them. The 23% of the core's overuse on input lines is a
+router negotiation problem to be solved inside the router, with the
+fabric in view, not ahead of it. The code is landed in this commit for
+the record and removed in the next; the design and numbers stay here.
+Router1's assertion on placer-strength partial bindings is noted as a
+second reason the mechanism cannot ship as built.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2413,6 +2449,7 @@ is itself a finding about pair candidates under a tight count.
 | 2026-09-17 | 6c | Routing-demand-aware spreading behind `--spread-demand`: comb cells weigh their unique inputs, four units per bel | Removes the paired probe's stubborn wire (21 iterations, no router1); the core's plateau drops 10% (18,300 to 19,500) and does not converge; a uniform thinner factor reaches 14,600 and saturates; off by default |
 | 2026-09-17 | 6d | After 6c, per-class input-line feasibility with pin permutation in the LAB checker, a rules revision that reopens the Rust crate under its own terms | Structure measured from the routing graph (A/C 25, B/D 21, E 22, F 24 of 46 lines); 23% of the overuse after pairing is input lines; the count of 42 cannot see a net needing two classes; lower limits with pairing never legalise |
 | 2026-09-17 | 6d | Re-scoped before implementation: not a placement rule, since the count already implies line feasibility; the fix is a LAB input-line assignment bound as pre-routed arcs at routing preparation, arch-side, no crate | On paper: 42 pin uses cannot overflow a 12-line quadrant that needs two uses per net; the router's failure to find an existing matching is the problem |
+| 2026-09-17 | 6d | Pre-assigning LAB input lines at routing preparation is a negative result; landed for the record, then removed | 40 to 60% more wires and the router at its cap on the probe, in every variant; the line must be chosen with the fabric route |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -2426,4 +2463,4 @@ is itself a finding about pair candidates under a tight count.
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
-| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), and 6c (demand-weighted spreading) complete; 6d re-scoped to a routing-preparation line assignment, not started; the crate stays concluded | `--alm-pairing` and `--spread-demand` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |
+| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), and 6c (demand-weighted spreading) complete; 6d (line pre-assignment) built, measured negative, removed; 6e (congestion-driven spreading) next; the crate stays concluded | `--alm-pairing` and `--spread-demand` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

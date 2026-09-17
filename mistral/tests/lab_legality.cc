@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include "alm_pairing.h"
+#include "lab_lines.h"
 #include "build_state.h"
 #include "checkpoint.h"
 #include "gtest/gtest.h"
@@ -2524,6 +2525,98 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     ctx->io_attr.clear();
     ctx->pllclk_sel_map.clear();
     ctx->ports.clear();
+}
+
+TEST_F(LabControlCaptureTest, LabInputLinesReserveOneLinePerNetAndAdmitOnlyItsPip)
+{
+    // Stage 6 (6d): two LUTs in LAB 0 fed by three external nets get three distinct lines, every
+    // pin is bound through its line at placer strength, and only that pip is admitted into the pin.
+    ctx->lab_input_lines = true;
+    auto &lab0 = ctx->labs.at(0);
+    auto &lab1 = ctx->labs.at(1);
+    std::vector<NetInfo *> nets;
+    std::vector<CellInfo *> drivers;
+    for (int i = 0; i < 3; i++) {
+        nets.push_back(ctx->createNet(ctx->idf("ll_n%d", i)));
+        CellInfo *ff = ctx->createCell(ctx->idf("ll_ff%d", i), id_MISTRAL_FF);
+        ff->addOutput(id_Q);
+        ff->connectPort(id_Q, nets.back());
+        ctx->bindBel(lab1.alms[i].ff_bels[0], ff, STRENGTH_STRONG);
+        drivers.push_back(ff);
+    }
+    CellInfo *top = ctx->createCell(ctx->id("ll_top"), id_MISTRAL_ALUT2);
+    top->addInput(id_A);
+    top->addInput(id_B);
+    top->addOutput(id_Q);
+    top->connectPort(id_A, nets[0]);
+    top->connectPort(id_B, nets[1]);
+    CellInfo *bottom = ctx->createCell(ctx->id("ll_bottom"), id_MISTRAL_ALUT2);
+    bottom->addInput(id_A);
+    bottom->addInput(id_B);
+    bottom->addOutput(id_Q);
+    bottom->connectPort(id_A, nets[1]);
+    bottom->connectPort(id_B, nets[2]);
+    ctx->assignArchInfo();
+    ctx->bindBel(lab0.alms[0].lut_bels[0], top, STRENGTH_STRONG);
+    ctx->bindBel(lab0.alms[1].lut_bels[1], bottom, STRENGTH_STRONG);
+    ctx->lab_pre_route();
+
+    auto report = assign_lab_input_lines(*ctx);
+    EXPECT_GE(report.labs, 1u);
+    EXPECT_EQ(report.pins, 4u);
+    EXPECT_GE(report.lines, 3u);
+    pool<WireId> lines_seen;
+    for (CellInfo *lut : {top, bottom}) {
+        for (IdString port : {id_A, id_B}) {
+            NetInfo *net = lut->getPort(port);
+            const PortRef &usr = net->users.at(lut->ports.at(port).user_idx);
+            WireId pin = ctx->getNetinfoSinkWire(net, usr, 0);
+            ASSERT_NE(pin, WireId());
+            EXPECT_EQ(ctx->getBoundWireNet(pin), net);
+            const auto &w = net->wires.at(pin);
+            EXPECT_EQ(w.strength, STRENGTH_PLACER);
+            ASSERT_NE(w.pip, PipId());
+            WireId line = ctx->getPipSrcWire(w.pip);
+            EXPECT_EQ(ctx->getBoundWireNet(line), nullptr); // the line stays unbound; its pips reserve it
+            lines_seen.insert(line);
+            // Only the reserved pip may enter the pin; every other line's pip is refused.
+            EXPECT_TRUE(ctx->checkPipAvailForNet(w.pip, net));
+            int refused = 0, others = 0;
+            for (PipId pip : ctx->getPipsUphill(pin))
+                if (pip != w.pip) {
+                    others++;
+                    refused += ctx->checkPipAvailForNet(pip, net) ? 0 : 1;
+                }
+            EXPECT_EQ(refused, others);
+        }
+    }
+    EXPECT_GE(lines_seen.size(), 3u);
+    // Idempotent: a second pass binds nothing more.
+    auto again = assign_lab_input_lines(*ctx);
+    EXPECT_EQ(again.pins, 0u);
+    EXPECT_EQ(again.already_bound, 4u);
+    ctx->lab_input_lines = false;
+    // The fixture is shared with the tests that follow: leave LAB 0 and LAB 1 as found.
+    for (NetInfo *net : nets) {
+        std::vector<std::pair<WireId, PipId>> bound;
+        for (auto &w : net->wires)
+            bound.emplace_back(w.first, w.second.pip);
+        for (auto &b : bound)
+            b.second == PipId() ? ctx->unbindWire(b.first) : ctx->unbindPip(b.second);
+    }
+    for (CellInfo *lut : {top, bottom}) {
+        ctx->unbindBel(lut->bel);
+        lut->disconnectPort(id_A);
+        lut->disconnectPort(id_B);
+    }
+    for (CellInfo *ff : drivers) {
+        ctx->unbindBel(ff->bel);
+        ff->disconnectPort(id_Q);
+    }
+    for (CellInfo *cell : {top, bottom, drivers[0], drivers[1], drivers[2]})
+        ctx->cells.erase(cell->name);
+    for (NetInfo *net : nets)
+        ctx->nets.erase(net->name);
 }
 
 TEST_F(LabControlCaptureTest, AlmPairingFormsOnlyPairsTheAlmRuleAllows)
