@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `af6c01b3` (timing-model attribution; next unit is the -7 grade cell constants)
+- Commit: `af6c01b3` (timing-model attribution; next unit is input permutation for timing)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -26,8 +26,8 @@ Handover point:
   closing measurement's recommendations are exhausted. The Quartus
   comparison on the identical netlist (1.8x on Fmax: rewrite 1.12x, model
   1.22x, placement 1.32x) and the model attribution on fmaxtest are in
-  the tracker; the next unit is re-deriving the cell delay constants for
-  the -7 grade.
+  the tracker; the cell constants turned out to be the -7 table already,
+  and the next placement-side unit is input permutation for timing.
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.

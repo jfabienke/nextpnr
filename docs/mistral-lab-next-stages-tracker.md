@@ -1950,10 +1950,23 @@ delays):
 | Path | 24.0 ns | 29.0 ns | 1.21 |
 
 What each half is. The cell numbers are the hard-coded constants in
-`mistral/delay.cc` ("1.1V 100C corner of sx120f"); they have no speed
-grade at all. The routing numbers are libmistral's analog simulation of
-the routed pip chain. Sweeps on the routing half, placement and routing
-identical throughout (checksums 0x5c9de842 / 0xfda10b63):
+`mistral/delay.cc` ("1.1V 100C corner of sx120f"). Aggregating the cell
+rows of 3,000 Quartus paths from each job (`report_timing -npaths 3000
+-detail full_path`, 357k and 517k rows, `quartus_cell_arcs.json` in the
+staging directory) shows those constants are the -7 table already,
+arc for arc: LUT inputs A to F 0.605 / 0.583 / 0.510 / 0.512 / 0.400 /
+0.097 ns in nextpnr against Quartus maxima 0.603 / 0.582 / 0.512 /
+0.514 / 0.341 / 0.101; carry entry through C 0.813 against 0.880; A to
+sum out 1.342 against 1.304; carry in to sum out 0.368 against a
+Quartus median of 0.355 (maximum 0.527); carry in to carry out 0.036
+against a median under 0.046. The 16% on the path is not the table:
+Quartus enters every carry cell through its C input (0.83 ns) where
+our netlist enters through A or B (1.06 to 1.16 ns, the same constants
+for those inputs), and it rides the LUTs on their F input. That is
+input assignment, a placement decision Quartus makes and we do not.
+The routing numbers are libmistral's analog simulation of the routed
+pip chain. Sweeps on the routing half, placement and routing identical
+throughout (checksums 0x5c9de842 / 0xfda10b63):
 
 | Switch | Routing on the path | Signoff Fmax |
 | --- | ---: | ---: |
@@ -1972,9 +1985,10 @@ upper and lower) is worth 12% end to end, with even the lower bound
 12% above Quartus. The routing model's pessimism is therefore in
 libmistral's reverse-engineered correction factors or in chaining one
 simulation per pip, and that is an upstream question, not a branch
-change. The cell constants are ours: 16% on this path and 39% on the
-carry-entry arc, the arc the multiplier rows of the Fabi386 probe are
-built from.
+change. The cell side is ours, but as placement, not as data: the
+multiplier rows of the Fabi386 probe enter their carry cells through
+A and B at 1.06 to 1.32 ns per stage where the C and D inputs cost
+0.81 to 0.87 ns with the same table.
 
 Against silicon (45 to 52 MHz, room temperature), Quartus's 100 C
 model is 8 to 20% pessimistic and nextpnr's 30 to 45%. The three new
@@ -1983,15 +1997,18 @@ model is 8 to 20% pessimistic and nextpnr's 30 to 45%. The three new
 routing, and are off unless set; the Fabi386 clean gate with `--rbf`
 reproduces its checksums.
 
-Recommended unit from this: re-derive the cell constants per arc for
-the -7 grade from Quartus's CELL rows (three path reports at I7 are on
-the NAS, and libmistral's `p2p_info` tables should be checked for the
-same arcs first), which is a data change with a measurable target:
-fmaxtest logic from 11.8 to about 10.2 ns and the probe's carry-entry
-arcs from 1.16 to 0.83 ns. It changes criticalities and therefore
-routing, so it is validated on Fmax against Quartus and silicon rather
-than by byte identity. The routing bound stays as it is until silicon
-says otherwise.
+Recommended unit from this: input permutation for timing, on the
+placement side. The per-input constants are right and unused: assign
+each cell's critical signal to its fastest permutable input (C or D on
+a carry cell, F then E on a LUT) with the LUT mask permuted to match,
+during or after placement, driven by the criticality the placer
+already computes. Measurable targets: fmaxtest logic from 11.8 to
+about 10.2 ns, the probe's nine carry entries from 1.06 to 1.32 down
+to 0.81 to 0.87 ns. It changes sink wires and therefore routing, so it
+is validated on Fmax against Quartus and silicon, not by byte identity,
+and it stays opt-in like every Stage 5 capability. The cell constants
+stay as they are; the routing bound stays as it is until silicon says
+otherwise.
 
 ## Decision log
 
@@ -2074,7 +2091,7 @@ says otherwise.
 | 2026-09-16 | 3c-3 | Report survival next to applied, and rewrite the plan after routing rather than keep a second record | Same numbers as the external script: 100% on the unchanged design, 82.0% and 81.3% on the edits |
 | 2026-09-16 | 3c-4 | Seed router2's history on preserved wires behind `--reuse-routes-history`; record 8 as the measured value and keep it off by default | 99% survival, 6 to 8 iterations, router2 3.0 to 4.1 s against 7.3 to 7.6 s unseeded; Fmax inside the seed spread; clean gate byte-identical |
 | 2026-09-16 | measurement | Compare with Quartus only on the identical netlist handed over as WYSIWYG primitives; the recorded full-core runs are a different design | Behavioural hand-over doubled ALMs and tripled the critical path (11 MHz); WYSIWYG: Quartus 64.7 to 69.5 MHz and 5,067 ALMs in 3 min 15 s of fitter against our 35.9 MHz and 8,179 ALMs in 26 s |
-| 2026-09-17 | model | Attribute the timing model before placement work; the cell constants are the branch's share, the routing bound is upstream's | fmaxtest element by element: cells 1.16x (carry entry 1.39x) from grade-less constants, routing 1.26x from libmistral's correction factors; grade and edge speed ruled out, temperature and the interval bound sized |
+| 2026-09-17 | model | Attribute the timing model before placement work; the cell constants are the -7 table already, the path gap on the cell side is input assignment, the routing bound is upstream's | fmaxtest element by element: constants match Quartus's I7 maxima arc for arc; Quartus enters carry cells through C (0.83 ns) where we enter through A or B (1.06 to 1.16); routing 1.26x from libmistral's correction factors; grade and edge speed ruled out, temperature and the interval bound sized |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
