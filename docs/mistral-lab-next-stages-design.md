@@ -895,15 +895,18 @@ in one LAB needs two lines, or a LUT whose inputs are permuted so it
 does not. The count cannot see this, and no lower count fixes it: with
 pairs, limits of 36 and 30 never legalise at all.
 
-### 9.3 The next two units
+### 9.3 Spreading by demand, and what is left
 
 The overuse after pairing is 59% short and medium fabric wires around
-the packed LABs and 23% input lines, so spreading comes first. A uniform
-spread factor helps 28% and then saturates, because below the design's
-own occupancy every region is overused and the cut degenerates to one
-global spread; the spreader needs a per-region capacity that reflects
-the routing demand of what it packs, which is placement-side and
-changes no rule. Then per-class feasibility in the LAB checker: nets on
+the packed LABs and 23% input lines. `--spread-demand` gives the cut
+spreader an arch hook: a comb cell weighs its unique input count and a
+bel offers four units, so input-heavy regions spread thinner. Measured,
+it redistributes without thinning: the paired probe's stubborn wire goes
+away, the core's plateau drops 10%, and a uniform thinner factor still
+does better and saturates at the design's own occupancy. Convergence at
+this density needs placement to hear from routing, a congestion feedback
+loop, which is a later stage. Before that, per-class feasibility in the
+LAB checker: nets on
 A/C pins at most 25, on B/D at most 21, on E at most 22, on F at most
 24, a net that must reach two classes counted in each, using the pin
 assignment the legaliser already makes and permuting plain LUT inputs

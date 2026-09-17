@@ -59,6 +59,7 @@ struct ArchArgs
     bool reuse_dry_run = false;               // Stage 5 (3a): plan reuse but apply nothing
     float reuse_routes_history = 1.0f;        // Stage 5 (3c-4): router2 history seeded on preserved wires; 1.0 = off
     int alm_pairing = 0;                      // Stage 6 (6b): pair plain LUTs into ALMs before placement; 0 = off
+    int spread_demand = 0;                    // Stage 6 (6c): HeAP spreads comb cells by unique inputs; 0 = off
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router

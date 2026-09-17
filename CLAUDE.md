@@ -181,6 +181,9 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   Level 1 (shared inputs) is the one to use; 1.37 to 1.74 cells per ALM on the probe, and the full
   core places with it. Off by default. The remaining wall is the LAB input-line classes (A/C 25,
   B/D 21, E 22, F 24 of 46), which the count of 42 cannot see; see the design doc section 9.
+- Stage 6 (6c): `--spread-demand` makes HeAP's cut spreader weigh comb cells by unique inputs
+  (`PlacerHeapCfg::get_cell_spread_units`, four units per bel). Off by default; it clears the paired
+  probe's stubborn wire and trims the full core's routing plateau by 10% without converging it.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
@@ -211,9 +214,8 @@ refinement), 4b (retired), 2a/2b (checkpoints for all four phases), 3c (route re
 after every net's previous binding is ripped up, which removed every bind-time failure on the
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
 reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
-(density) has 6a (legaliser stall exit) and 6b (`--alm-pairing`) done, with 6c (routing-demand-aware
-spreading) and 6d (per-class LAB input-line feasibility, a rules revision) proposed in that order.
-Every new capability
+(density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), and 6c (`--spread-demand`) done, with
+6d (per-class LAB input-line feasibility, a rules revision) proposed. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.

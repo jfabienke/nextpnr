@@ -1120,10 +1120,10 @@ class HeAPPlacer
         int id;
         int x0, y0, x1, y1;
         std::vector<int> cells, bels;
-        bool overused(float beta) const
+        bool overused(float beta, int units_per_bel = 1) const
         {
             for (size_t t = 0; t < cells.size(); t++) {
-                if (bels.at(t) < 4) {
+                if (bels.at(t) < 4 * units_per_bel) {
                     if (cells.at(t) > bels.at(t))
                         return true;
                 } else {
@@ -1894,7 +1894,21 @@ class HeAPPlacer
         {
             if (x >= int(fb.at(type)->size()) || y >= int(fb.at(type)->at(x).size()))
                 return 0;
-            return std::max(0, int(fb.at(type)->at(x).at(y).size()) - fixed_occupancy.at(x).at(y).at(type));
+            return std::max(0, int(fb.at(type)->at(x).at(y).size()) * units_per_bel -
+                                       fixed_occupancy.at(x).at(y).at(type));
+        }
+
+        // Stage 6 (6c): what a cell occupies. Without the hook every cell is one unit and every bel
+        // one unit, the reference arithmetic; with it the architecture sizes cells by demand.
+        int units_per_bel = 1;
+        dict<IdString, int> cell_units;  // every cell, own units
+        dict<IdString, int> chain_units; // cluster root -> units of all its members
+        int units_of(const CellInfo &cell) const { return cell_units.count(cell.name) ? cell_units.at(cell.name) : 1; }
+        int size_of(const CellInfo *cell) const
+        {
+            if (chain_units.count(cell->name))
+                return chain_units.at(cell->name);
+            return units_of(*cell);
         }
 
         bool is_cell_fixed(const CellInfo &cell) const
@@ -1933,6 +1947,29 @@ class HeAPPlacer
                 }
             };
 
+            units_per_bel = p->cfg.get_cell_spread_units ? std::max(1, p->cfg.spread_units_per_bel) : 1;
+            cell_units.clear();
+            chain_units.clear();
+            if (p->cfg.get_cell_spread_units) {
+                for (auto &cell_loc : p->cell_locs) {
+                    const CellInfo &cell = *ctx->cells.at(cell_loc.first);
+                    cell_units[cell.name] = std::max(1, p->cfg.get_cell_spread_units(ctx, &cell));
+                }
+                for (auto &cs : p->chain_size) {
+                    // chain_size is keyed by root name; a root with no cluster entry is a single cell.
+                    auto members = p->cluster2cells.find(cs.first);
+                    if (members == p->cluster2cells.end()) {
+                        chain_units[cs.first] = units_of(*ctx->cells.at(cs.first));
+                        continue;
+                    }
+                    int total = 0;
+                    for (const CellInfo *member : members->second)
+                        total += units_of(*member);
+                    chain_units[cs.first] = total;
+                }
+            } else {
+                chain_units = p->chain_size;
+            }
             for (auto &cell_loc : p->cell_locs) {
                 IdString cell_name = cell_loc.first;
                 const CellInfo &cell = *ctx->cells.at(cell_name);
@@ -1945,9 +1982,9 @@ class HeAPPlacer
                     continue;
                 }
                 if (cell.cluster != ClusterId() && is_cell_fixed(*ctx->getClusterRootCell(cell.cluster))) {
-                    fixed_occupancy.at(cell_loc.second.x).at(cell_loc.second.y).at(cell_index(cell))++;
+                    fixed_occupancy.at(cell_loc.second.x).at(cell_loc.second.y).at(cell_index(cell)) += units_of(cell);
                 } else {
-                    occupancy.at(cell_loc.second.x).at(cell_loc.second.y).at(cell_index(cell))++;
+                    occupancy.at(cell_loc.second.x).at(cell_loc.second.y).at(cell_index(cell)) += units_of(cell);
                 }
 
                 // Compute ultimate extent of each chain root
@@ -2131,7 +2168,7 @@ class HeAPPlacer
             std::queue<int> overu_regions;
             float beta = p->cfg.beta;
             for (auto &r : regions) {
-                if (!merged_regions.count(r.id) && r.overused(beta))
+                if (!merged_regions.count(r.id) && r.overused(beta, units_per_bel))
                     overu_regions.push(r.id);
             }
             while (!overu_regions.empty()) {
@@ -2140,19 +2177,19 @@ class HeAPPlacer
                 if (merged_regions.count(rid))
                     continue;
                 auto &reg = regions.at(rid);
-                while (reg.overused(beta)) {
+                while (reg.overused(beta, units_per_bel)) {
                     bool changed = false;
                     for (int j = 0; j < p->cfg.spread_scale_x; j++) {
                         if (reg.x0 > 0) {
                             grow_region(reg, reg.x0 - 1, reg.y0, reg.x1, reg.y1);
                             changed = true;
-                            if (!reg.overused(beta))
+                            if (!reg.overused(beta, units_per_bel))
                                 break;
                         }
                         if (reg.x1 < p->max_x) {
                             grow_region(reg, reg.x0, reg.y0, reg.x1 + 1, reg.y1);
                             changed = true;
-                            if (!reg.overused(beta))
+                            if (!reg.overused(beta, units_per_bel))
                                 break;
                         }
                     }
@@ -2160,13 +2197,13 @@ class HeAPPlacer
                         if (reg.y0 > 0) {
                             grow_region(reg, reg.x0, reg.y0 - 1, reg.x1, reg.y1);
                             changed = true;
-                            if (!reg.overused(beta))
+                            if (!reg.overused(beta, units_per_bel))
                                 break;
                         }
                         if (reg.y1 < p->max_y) {
                             grow_region(reg, reg.x0, reg.y0, reg.x1, reg.y1 + 1);
                             changed = true;
-                            if (!reg.overused(beta))
+                            if (!reg.overused(beta, units_per_bel))
                                 break;
                         }
                     }
@@ -2200,7 +2237,7 @@ class HeAPPlacer
                 }
             }
             for (auto &cell : cut_cells) {
-                total_cells += p->chain_size.count(cell->name) ? p->chain_size.at(cell->name) : 1;
+                total_cells += size_of(cell);
             }
             std::sort(cut_cells.begin(), cut_cells.end(), [&](const CellInfo *a, const CellInfo *b) {
                 return dir ? (p->cell_locs.at(a->name).rawy < p->cell_locs.at(b->name).rawy)
@@ -2213,7 +2250,7 @@ class HeAPPlacer
             int pivot_cells = 0;
             int pivot = 0;
             for (auto &cell : cut_cells) {
-                pivot_cells += p->chain_size.count(cell->name) ? p->chain_size.at(cell->name) : 1;
+                pivot_cells += size_of(cell);
                 if (pivot_cells >= total_cells / 2)
                     break;
                 pivot++;
@@ -2285,11 +2322,9 @@ class HeAPPlacer
             std::vector<int> left_cells_v(buckets.size(), 0), right_cells_v(buckets.size(), 0);
             std::vector<int> left_bels_v(buckets.size(), 0), right_bels_v(r.bels);
             for (int i = 0; i <= pivot; i++)
-                left_cells_v.at(cell_index(*cut_cells.at(i))) +=
-                        p->chain_size.count(cut_cells.at(i)->name) ? p->chain_size.at(cut_cells.at(i)->name) : 1;
+                left_cells_v.at(cell_index(*cut_cells.at(i))) += size_of(cut_cells.at(i));
             for (int i = pivot + 1; i < int(cut_cells.size()); i++)
-                right_cells_v.at(cell_index(*cut_cells.at(i))) +=
-                        p->chain_size.count(cut_cells.at(i)->name) ? p->chain_size.at(cut_cells.at(i)->name) : 1;
+                right_cells_v.at(cell_index(*cut_cells.at(i))) += size_of(cut_cells.at(i));
 
             int best_tgt_cut = -1;
             double best_deltaU = std::numeric_limits<double>::max();
@@ -2355,14 +2390,14 @@ class HeAPPlacer
             };
             while (pivot > 0 && is_part_overutil(false)) {
                 auto &move_cell = cut_cells.at(pivot);
-                int size = p->chain_size.count(move_cell->name) ? p->chain_size.at(move_cell->name) : 1;
+                int size = size_of(move_cell);
                 left_cells_v.at(cell_index(*cut_cells.at(pivot))) -= size;
                 right_cells_v.at(cell_index(*cut_cells.at(pivot))) += size;
                 pivot--;
             }
             while (pivot < int(cut_cells.size()) - 1 && is_part_overutil(true)) {
                 auto &move_cell = cut_cells.at(pivot + 1);
-                int size = p->chain_size.count(move_cell->name) ? p->chain_size.at(move_cell->name) : 1;
+                int size = size_of(move_cell);
                 left_cells_v.at(cell_index(*cut_cells.at(pivot))) += size;
                 right_cells_v.at(cell_index(*cut_cells.at(pivot))) -= size;
                 pivot++;

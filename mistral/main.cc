@@ -84,6 +84,8 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "pair plain LUTs into ALMs before placement: 1 pairs LUTs sharing an input net, 2 also "
                            "pairs a LUT with one it drives, 3 pairs whatever is compatible (0 = off, default; "
                            "experimental)");
+    specific.add_options()("spread-demand", "spread comb cells by their unique input count instead of one per bel "
+                                            "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("reuse-routes-history", po::value<float>(),
                            "seed router2's history cost on every preserved wire so the dirty nets route around "
                            "them from the first iteration (1.0 = off, default; experimental)");
@@ -194,6 +196,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         if (chipArgs.alm_pairing < 0 || chipArgs.alm_pairing > 3)
             log_error("--alm-pairing must be 0, 1, 2, or 3.\n");
     }
+    chipArgs.spread_demand = vm.count("spread-demand") != 0;
     if (vm.count("reuse-routes-history")) {
         chipArgs.reuse_routes_history = vm["reuse-routes-history"].as<float>();
         if (chipArgs.reuse_routes_history < 1.0f)

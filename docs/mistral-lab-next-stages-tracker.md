@@ -2235,6 +2235,57 @@ Validation of 6a and 6b as landed: `./build/rust-enabled/nextpnr-mistral-test`
 0xbc1365c6 with both options absent, exec probe level 0 byte-identical,
 `git diff --check` and `clang-format` clean.
 
+### 2026-09-17: Stage 6, unit 6c: routing-demand-aware spreading
+
+HeAP's cut spreader counted one unit per cell against one per bel, with
+one global factor (`beta`) to thin every region alike; the previous entry
+showed that factor helping 28% and then saturating. `--spread-demand`
+(off by default) gives the spreader an arch hook
+(`PlacerHeapCfg::get_cell_spread_units`, `spread_units_per_bel`): a comb
+cell occupies as many units as it has unique input nets (one to eight, the
+carry input excluded) and a bel offers four, everything else keeps a
+bel's worth, and cluster roots carry the sum of their members. Both
+sides of every comparison scale together, so with the hook unset the
+arithmetic is the reference's; occupancy, capacity, the region test, and
+the cut balancing all go through the same unit lookup now.
+
+Exec probe (`--seed 1 --threads 1 --freq 12`), sequential and alone:
+
+| Configuration | Cells per ALM | HeAP | Annealer | Router2 | Fmax | Wall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 1.37 | 5.2 s | 9.2 s | 8.1 s, 20 iterations | 35.87 MHz | 28.1 s |
+| `--spread-demand` | 1.39 | 6.3 s | 6.8 s | 8.9 s, 20 iterations | 33.58 MHz | 28.0 s |
+| `--alm-pairing 1` | 1.74 | 5.6 s | 5.0 s | cap at 100 on one wire, router1 70 s | 37.73 MHz | 92.4 s |
+| `--alm-pairing 1 --spread-demand` | 1.74 | 7.1 s | 4.0 s | 8.1 s, 21 iterations | 33.95 MHz | 22.8 s |
+
+Off is byte-identical to the reference (0xbb18ede9 / 0xbc1365c6). With
+pairing, demand spreading removes the wire router1 had to clear: the
+paired probe routes in 21 iterations at the same density. Fmax stays
+inside the seed spread.
+
+Full core, `--alm-pairing 1 --spread-demand`, default input limit: places
+(HeAP 722 s, 667 s legalisation, annealer 107 s, against 573 s
+with pairing alone; the weighting adds HeAP iterations). Router2's
+overuse by iteration: 73586, 40143, 25423, 20858, 19298, 18532, 18333, 18496, 19182, 19478, 19847; stopped at 10 once it turned
+back up. Against the record: pairing alone 20,454 to 20,508 at the same
+point, the uniform spread factor at 0.35 or 0.25 14,612 to 15,877.
+
+Reading. Demand weighting does what its design says and not more: it
+redistributes, so the probe's one stubborn wire disappears and the
+core's plateau drops 10%, but at four units per bel the average cell
+still weighs about one bel, so the total spread is the reference's and
+the LABs stay as packed as before. The uniform factor thins more and
+saturates. Neither converges, and the split from the previous entry
+stands: what the router cannot find at this density is mostly the short
+fabric around packed LABs and the specific input lines. 6c stays as an
+opt-in knob with the measured effect. The next unit is 6d, per-class
+input-line feasibility with pin permutation, and the placement-routing
+gap after it is a congestion feedback loop (placement re-spread from a
+routing estimate), which is beyond a single unit and is noted rather
+than planned. Validation as landed: `./build/rust-enabled/nextpnr-mistral-test`
+59/59, `./build/nextpnr-mistral-test` 49/49, exec probe off
+byte-identical, `git diff --check` and `clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2320,7 +2371,7 @@ Validation of 6a and 6b as landed: `./build/rust-enabled/nextpnr-mistral-test`
 | 2026-09-17 | full core | The first full-core attempt fails on LAB input capacity from both sides; ALM pairing density is the next unit, ahead of input permutation | 55k cells: legaliser stalls at 1,323 cells under the limit; without it placement takes 5 min and router2 plateaus at 8,500 to 10,800 overused wires, 46% on LAB input lines; Quartus fits the same cells into 20,576 ALMs (1.92 per ALM against our 1.4) in 27 min at 25.2 MHz |
 | 2026-09-17 | 6a | Stop the strict legaliser when the queue stops shrinking at the maximum rip-up radius, with an arch report | 944 s exit with 1,333 stuck registers named, 85% of LABs at the input limit, against a 25-minute hand kill and an hours-long budget; clean gate byte-identical |
 | 2026-09-17 | 6b | Pair plain LUTs into ALM clusters at pack time behind `--alm-pairing`, placement overridden onto one ALM | Probe 1.37 to 1.74 cells per ALM, level 0 byte-identical; full core places in 9.6 min where it never placed; router2 then plateaus at 20,500 overused wires |
-| 2026-09-17 | 6c | Next unit is routing-demand-aware spreading, placement-side | After pairing 59% of the overuse is short and medium fabric wires around packed LABs; a uniform spread factor helps 28% and saturates below the design's occupancy |
+| 2026-09-17 | 6c | Routing-demand-aware spreading behind `--spread-demand`: comb cells weigh their unique inputs, four units per bel | Removes the paired probe's stubborn wire (21 iterations, no router1); the core's plateau drops 10% (18,300 to 19,500) and does not converge; a uniform thinner factor reaches 14,600 and saturates; off by default |
 | 2026-09-17 | 6d | After 6c, per-class input-line feasibility with pin permutation in the LAB checker, a rules revision that reopens the Rust crate under its own terms | Structure measured from the routing graph (A/C 25, B/D 21, E 22, F 24 of 46 lines); 23% of the overuse after pairing is input lines; the count of 42 cannot see a net needing two classes; lower limits with pairing never legalise |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
@@ -2335,4 +2386,4 @@ Validation of 6a and 6b as landed: `./build/rust-enabled/nextpnr-mistral-test`
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
-| Stage 6: density | 6a (legaliser stall exit) and 6b (ALM pairing) complete; 6c (routing-demand-aware spreading) and 6d (per-class input-line feasibility) proposed in that order, not started | `--alm-pairing` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |
+| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), and 6c (demand-weighted spreading) complete; 6d (per-class input-line feasibility, a rules revision) proposed, not started | `--alm-pairing` and `--spread-demand` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

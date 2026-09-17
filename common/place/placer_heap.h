@@ -110,6 +110,13 @@ struct PlacerHeapCfg
     // Optional architecture report on the cells that could not be legalised, printed before the error.
     std::function<void(Context *, const std::vector<CellInfo *> &)> report_infeasible;
 
+    // Routing-demand-aware spreading (Stage 6, 6c). When set, a cell occupies this many units of
+    // its bel bucket and every bel offers `spread_units_per_bel`, so the cut spreader treats a
+    // region of input-heavy cells as fuller than one of small cells. Both sides of every
+    // comparison scale together, and with the hook unset the arithmetic is the reference's.
+    std::function<int(Context *, const CellInfo *)> get_cell_spread_units;
+    int spread_units_per_bel = 1;
+
     // Optional architecture-owned frozen transaction. Unsupported candidates
     // use HeAP's original bind/check/revert path.
     std::function<HeAPClusterTransactionOutcome(Context *, const std::vector<std::pair<CellInfo *, BelId>> &,

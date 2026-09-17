@@ -823,6 +823,21 @@ bool Arch::run_placement()
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };
+            if (args.spread_demand > 0) {
+                // Stage 6 (6c): a comb cell occupies as many units as it has unique input nets, a bel
+                // offers four, so a region of 5-input LUTs and pairs spreads thinner than one of
+                // 2-input LUTs; everything else keeps one bel's worth.
+                cfg.spread_units_per_bel = 4;
+                cfg.get_cell_spread_units = [this](Context *, const CellInfo *ci) {
+                    if (!is_comb_cell(ci->type))
+                        return 4;
+                    std::unordered_set<const NetInfo *> nets;
+                    for (auto &port : ci->ports)
+                        if (port.second.type == PORT_IN && port.second.net != nullptr && port.first != id_CI)
+                            nets.insert(port.second.net);
+                    return std::max(1, std::min(8, int(nets.size())));
+                };
+            }
 
             cfg.beta = 0.5; // TODO: find a good value of beta for sensible ALM spreading
             // EXPERIMENTAL (routing-congestion mitigation): beta caps the ALM-slot
