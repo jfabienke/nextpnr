@@ -120,6 +120,11 @@ struct PlacerHeapCfg
     // spreads (a LUT-plus-register cluster weighs one LUT in the LUT pass and one register in the
     // register pass) instead of every member. Off keeps the reference accounting.
     bool cluster_units_by_bucket = false;
+    // The cut spreader and the strict legaliser weigh distance by hpwl_scale_x and hpwl_scale_y
+    // like the solver does: a region is cut along the axis that is longer in cost units, the
+    // legaliser searches a box wider along the cheaper axis and scores candidates by weighted
+    // distance. Off keeps the reference's isotropic spreading and legalisation.
+    bool anisotropic = false;
     // Called at the start of every spreading pass with the pass's own view of where each cell
     // currently sits (solver positions, not bels), so the architecture can rebuild whatever its
     // unit function needs, such as a congestion estimate over the current placement.

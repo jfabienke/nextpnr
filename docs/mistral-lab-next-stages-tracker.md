@@ -2648,6 +2648,94 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
 `./build/nextpnr-mistral-test` 50/50, exec probe off byte-identical,
 `git diff --check` and `clang-format` clean.
 
+### 2026-09-18: Stage 6, unit 6h: the row-aware placement cost
+
+`--row-cost W` (off by default) weighs a vertical tile W horizontal
+tiles in HeAP's solver, cut spreader, and strict legaliser
+(`PlacerHeapCfg::anisotropic`; design section 9.7). The measured ratio
+on the routed probe: a one-tile vertical hop costs 2.30 fabric wires, a
+horizontal one 0.93, and the 2.5 ratio holds out to four tiles (vertical
+4.22, horizontal 1.69).
+
+Exec probe (`--seed 1 --threads 1 --freq 12`, four runs in parallel):
+
+| Configuration | Same column | Same row | Rows per net | Fabric wires | Column wires (V2, V4, V12) | Router2 | Fmax |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 15.3% | 14.4% | 1.80 | 52,952 | 13,420 / 5,236 / 811 | 20 iterations | 35.87 MHz |
+| `--row-cost 2.5` | 11.8% | 19.2% | 1.65 | 48,696 | 11,589 / 4,313 / 660 | 47 | 33.48 MHz |
+| `--row-cost 4` | 8.9% | 23.3% | 1.55 | 48,100 | 10,551 / 3,797 / 409 | 63 | 33.21 MHz |
+| `--alm-pairing 1 --register-packing --row-cost 2.5` | 10.9% | 19.6% | 1.79 | 53,589 (57,218 without the row cost) | 12,725 / 4,836 / 684 | 27 (16 without) | 35.41 MHz (34.66 without) |
+| Quartus (6f) | 7.0% | 18.8% | 1.52 | 18,676 | | | |
+
+Off is byte-identical (0xbb18ede9 / 0xbc1365c6). The placement's shape
+moves to Quartus's and the column wires fall by a fifth to a half; the
+routed total falls 9%, the router takes two to three times the
+iterations to settle the busier rows, and the probe's Fmax falls 7%.
+
+Full core, pairing with congestion-driven spreading and register
+packing (6g: plateau 13,992 under the delay cost, 1,964 under the unit
+cost):
+
+| Configuration | Placement | Router2 overused by iteration |
+| --- | ---: | --- |
+| `--row-cost 2.5 --router2-unit-cost`, capped at 15 | 739 s | 37,499, 6,368, 1,358, 628, 389, 292, 252, 218, 193, 172, 153, 142, 142, 131, 119: falling at every iteration |
+| `--row-cost 2.5` (delay cost), capped at 15 | 737 s | 63,277, 26,668, 12,644, 8,009, 5,870, 4,664, 3,878, 3,318, 2,828, 2,511, 2,235, 2,084, 1,981, 1,822, 1,630: falling at every iteration |
+| `--row-cost 2.5 --router2-unit-cost`, cap 80 | 754 s | 37,499 to 119 at 15 as above, 34 at 60, 29 at 80; router2 73 s; the last thirty are LAB input lines in 26 tiles, churning (3 persist from 60 to 80); router1's fallback then thrashes (its remaining-arc count does not fall in twenty minutes) and was stopped |
+| `--row-cost 4 --router2-unit-cost`, cap 80 | | 24 at 65, 20 at 80; router2 88 s; router1 the same, stopped |
+| `--row-cost 2.5` (delay cost), cap 80 | 737 s | 1,281 at 20, 905 at 30, then back up to 1,256 at 80: a plateau at a tenth of the delay cost's plateau without the row cost |
+| `--row-cost 2.5 --router2-unit-cost --router2-reroute 20 --router2-reroute-contested`, cap 80 | 760 s | 37,499, 6,368, 1,358, 628, ... 119 at 15, 98, 88, 75, 74, 65, then the first re-route (18,373 nets queued beyond the 109 that failed): 44, 17, 17, 15, 15, 9, 7, 8, 10, 10, 10, 9, 17, 13, 15, 11, 9, 6, 6, 2, the second re-route (17,064 beyond 4): 18, 1, 1, 1, **0 at iteration 45**; router2 107 s, archfail 0, router1's check passed, `Routing complete`, JSON and report written; signoff 11.39 MHz at the 33 MHz target (Quartus 25.18 MHz for this core) |
+
+**The full core routed to completion for the first time** (2026-09-18,
+09:44, `build/stage6-fullcore/6h/core_rc25_unit80_rr.{log,json,report.json}`,
+placement checksum 0xe0b15557, routing 0x681553a4): pairing, congestion
+spreading, register packing, the row cost, the unit wire cost, and 6f's
+periodic contested re-route every 20 iterations. What the last wires
+were: LAB input lines in LABs at 40 to 45 distinct external input nets
+(the device's median is 29, its 90th percentile 38; 286 LABs sit at 40 or
+more), where the entry-wire-to-line matching is tight enough that
+negotiation churns; a re-route of every net on a wire with history
+resolves it in two rounds where router1's fallback does not finish.
+
+Router-only experiments from a placed checkpoint of the same
+configuration (`--no-route --checkpoint`, 320 MB; resumed with the
+options that travel in `ArchArgs` and `MISTRAL_R2_MAX_ITER`):
+
+| Router configuration | Result |
+| --- | --- |
+| unit cost, no re-route, cap 300 | 0 at iteration 244 (172 at 20, 34 at 100, 16 at 200); router2 127 s; 10.67 MHz |
+| unit cost, `--router2-reroute 10 --router2-reroute-contested` | 0 at 45, four re-routes; 163 s; 11.28 MHz |
+| unit cost, `--router2-reroute 10` (every net) | 0 at 40, three re-routes; 159 s; 11.86 MHz |
+| unit cost, present-congestion floor 1.0, cap 120 | 28 at 120: no help |
+| unit cost, no timing-driven routing, cap 120 | 825 at 120: worse |
+| delay cost, `--router2-reroute 20 --router2-reroute-contested`, cap 200 | 0 at iteration 125 (2,511 at 10, 608 at 30, 86 at 90, 12 at 110), six re-routes of about 31,000 nets; router2 395 s, 842,300 wires in use against the unit cost's 745,000 to 767,000; **9.76 MHz**, below every unit-cost result |
+| full run with `MISTRAL_LAB_INPUT_LIMIT=40` (placement slack under the lines), unit cost, no re-route, cap 80 | still in the legaliser at this commit; recorded in a follow-up |
+
+Reading. The row cost is the lever that turns the core from a plateau
+into a descent: with it, the same placement recipe that sat at 12,000
+overused wires under the delay cost and 1,964 under the unit cost falls
+at every iteration, to 119 at 15 under the unit cost, and the last few
+dozen wires are the structured LAB-input-line conflicts of 6d in LABs at
+the top of the input distribution. Those the periodic contested re-route
+of 6f resolves in two rounds; plain negotiation also resolves them given
+244 iterations; router1's fallback does not. The full core therefore
+routes to completion under four router configurations, all with the row
+cost, at 10.7 to 11.9 MHz signoff under the unit wire cost and 9.76 MHz
+under the delay cost, which uses 10 to 13% more wires and settles later.
+Quartus's fit of the same core is 25.18 MHz, and nextpnr's timing model
+reads about 18% below Quartus's on the same path (6f), so the remaining
+Fmax gap is placement and routing quality, not the model alone. The
+unit's recipe, as landed in `build/stage6-fullcore/core_probe_flow.sh`
+(outside git): `--alm-pairing 1 --spread-congestion --register-packing
+--row-cost 2.5 --router2-unit-cost --router2-reroute 20
+--router2-reroute-contested`, about 15 minutes wall. Everything stays
+opt-in; the next unit is the delay-aware base cost that keeps the unit
+cost's wire count (a hybrid), then the LAB-level assignment of 9.5, and
+timing-driven placement quality, which the core now makes measurable.
+
+Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
+`./build/nextpnr-mistral-test` 50/50, exec probe off byte-identical,
+`git diff --check` and `clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2740,6 +2828,7 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
 | 2026-09-17 | 6e | Close the placement-routing loop inside HeAP with a per-pass wire-density estimate behind `--spread-congestion`; k = 2, LAB cells only, not stacked on demand weighting | Best plateau on the core, 12,200 to 13,400 overused (35% below pairing alone), placement legal; k = 1.5, a thinner factor, or demand on top all leave the legaliser without room |
 | 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers seldom pack with their LUTs (16% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
 | 2026-09-18 | 6g | Pack a register into its LUT's ALM half as a cluster child behind `--register-packing`; one per LUT; the cluster's registers must pass the LAB control model | Probe: 99% of LUT-driven registers packed, Fmax down a few percent, pairing routes in a third of the time; core: 5,360 registers packed, plateau 13,992 under the delay cost (worse than 12,182) and 1,964 under the unit cost (a third of 5,694) |
+| 2026-09-18 | 6h | Make the spreader and the legaliser weigh a vertical tile like the solver does, behind `--row-cost W` | Probe: sink classes move to Quartus's, fabric wires 9% fewer, router slower to settle, Fmax a few percent down; **core: routes to completion for the first time** (0 overused at iteration 45 with the unit cost and periodic re-routes, at 125 with the delay cost), signoff 9.8 to 11.9 MHz against Quartus's 25.2 |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -2753,4 +2842,4 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
 | Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
 | Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
-| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), 6e (congestion-driven spreading), and 6f (the router's share measured; re-route and unit cost landed) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; the full core places and routes to a 12,200-wire plateau at 67% fabric use, and the next unit is the placement cost model | `--alm-pairing`, `--spread-demand`, `--spread-congestion`, `--router2-reroute`, `--router2-unit-cost` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |
+| Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), 6e (congestion-driven spreading), 6f (the router's share measured; re-route and unit cost), 6g (register packing), and 6h (the row cost) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; **the full core places and routes to completion** (2026-09-18, 15 minutes wall, 9.8 to 11.9 MHz signoff against Quartus's 25.2), and the next units are a hybrid base cost, the LAB-level assignment, and timing-driven placement quality | `--alm-pairing`, `--spread-demand`, `--spread-congestion`, `--router2-reroute`, `--router2-unit-cost`, `--register-packing`, `--row-cost` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

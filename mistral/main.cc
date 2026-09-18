@@ -90,6 +90,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                                             "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
+    specific.add_options()("row-cost", po::value<float>(),
+                           "weight of a vertical tile against a horizontal one in placement (solver, spreader, "
+                           "legaliser); the fabric enters LABs through row wires (off by default; experimental)");
     specific.add_options()("router2-reroute", po::value<int>(),
                            "rip up and re-route every arc every N router2 iterations, not only the arcs on overused "
                            "wires (off by default; experimental)");
@@ -218,6 +221,11 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
     chipArgs.register_packing = vm.count("register-packing") != 0;
+    if (vm.count("row-cost")) {
+        chipArgs.row_cost = vm["row-cost"].as<float>();
+        if (chipArgs.row_cost <= 0.0f)
+            log_error("--row-cost must be positive.\n");
+    }
     if (vm.count("reuse-routes-history")) {
         chipArgs.reuse_routes_history = vm["reuse-routes-history"].as<float>();
         if (chipArgs.reuse_routes_history < 1.0f)

@@ -37,6 +37,7 @@
 #include <boost/optional.hpp>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <deque>
 #include <fstream>
 #include <mutex>
@@ -1529,9 +1530,12 @@ class HeAPPlacer
         {
             // Determine a search radius around the solver location (which increases over time) that is clamped to
             // the region constraint for the cell (if applicable)
-            int x0 = std::max(p->cell_locs.at(ci->name).x - radius, 0);
+            int radius_x = radius;
+            if (p->cfg.anisotropic && p->cfg.hpwl_scale_y > p->cfg.hpwl_scale_x)
+                radius_x = int(std::ceil(radius * p->cfg.hpwl_scale_y / p->cfg.hpwl_scale_x));
+            int x0 = std::max(p->cell_locs.at(ci->name).x - radius_x, 0);
             int y0 = std::max(p->cell_locs.at(ci->name).y - radius, 0);
-            int x1 = p->cell_locs.at(ci->name).x + radius;
+            int x1 = p->cell_locs.at(ci->name).x + radius_x;
             int y1 = p->cell_locs.at(ci->name).y + radius;
 
             if (ci->region != nullptr) {
@@ -1602,7 +1606,11 @@ class HeAPPlacer
                                 continue;
                             if (drv_loc->second.global)
                                 continue;
-                            input_len += std::abs(drv_loc->second.x - nx) + std::abs(drv_loc->second.y - ny);
+                            if (p->cfg.anisotropic)
+                                input_len += int(p->cfg.hpwl_scale_x * std::abs(drv_loc->second.x - nx) +
+                                                 p->cfg.hpwl_scale_y * std::abs(drv_loc->second.y - ny));
+                            else
+                                input_len += std::abs(drv_loc->second.x - nx) + std::abs(drv_loc->second.y - ny);
                         }
                         if (input_len < best_inp_len) {
                             best_inp_len = input_len;
@@ -1833,6 +1841,13 @@ class HeAPPlacer
                 auto &r = regions.at(front.first);
                 if (std::all_of(r.cells.begin(), r.cells.end(), [](int x) { return x == 0; }))
                     continue;
+                if (p->cfg.anisotropic) {
+                    // Cut along the axis that is longer in cost units, so cells move along the
+                    // cheaper one until the region's shape matches the cost ratio.
+                    const float w = (r.x1 - r.x0 + 1) * p->cfg.hpwl_scale_x,
+                                h = (r.y1 - r.y0 + 1) * p->cfg.hpwl_scale_y;
+                    front.second = h > w;
+                }
                 auto res = cut_region(r, front.second);
                 if (res) {
                     workqueue.emplace(res->first, !front.second);

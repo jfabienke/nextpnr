@@ -212,6 +212,17 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   spreader weigh a cluster by the members of the pass's bucket only. Off by default. On the core it packs 5,360 of 9,632 LUT-driven registers; the router plateau is 15% worse
   under the delay cost and a third of 6f's unit-cost plateau (1,964 against 5,694) under
   `--router2-unit-cost`.
+- Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
+  spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
+  tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric
+  enters LABs through row wires and a vertical hop costs 2.5 times a horizontal one. On the probe
+  the placement's shape moves to Quartus's and column wires fall by a fifth to a half, at more
+  router iterations and a few percent of Fmax. Off by default. On the full core it is the lever that
+  turns the router's plateau into a descent: with pairing, congestion spreading, register packing, the
+  unit wire cost, and `--router2-reroute 20 --router2-reroute-contested`, **the core routes to
+  completion** (0 overused wires at iteration 45; first time, 2026-09-18), 15 minutes wall, signoff
+  9.8 to 11.9 MHz against Quartus's 25.2; the recipe is `build/stage6-fullcore/core_probe_flow.sh`
+  (outside git). router1's fallback never finishes on the core; the periodic re-route is the finisher.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   the router2 experiment block `MISTRAL_R2_*`, the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`, the
@@ -246,7 +257,7 @@ reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival me
 reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
 (density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), 6c (`--spread-demand`), and 6e
 (`--spread-congestion`), 6f (the router's share measured; `--router2-reroute`,
-`--router2-unit-cost`), and 6g (`--register-packing`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
+`--router2-unit-cost`), 6g (`--register-packing`), and 6h (`--row-cost`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
 removed, its record and landing commit in the tracker. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against

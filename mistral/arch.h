@@ -62,9 +62,10 @@ struct ArchArgs
     int spread_demand = 0;             // Stage 6 (6c): HeAP spreads comb cells by unique inputs; 0 = off
     bool spread_congestion = false;    // Stage 6 (6e): HeAP spreads by a wire-density estimate of the current placement
     int router2_reroute = 0; // Stage 6 (6f): router2 rips up and re-routes every arc every N iterations; 0 = off
-    bool router2_reroute_contested = false;   // Stage 6 (6f): that re-route queues only nets on wires with history
-    bool router2_unit_cost = false;           // Stage 6 (6f): router2 costs every wire one unit instead of its delay
-    bool register_packing = false;            // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
+    bool router2_reroute_contested = false; // Stage 6 (6f): that re-route queues only nets on wires with history
+    bool router2_unit_cost = false;         // Stage 6 (6f): router2 costs every wire one unit instead of its delay
+    bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
+    float row_cost = 0.0f; // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router

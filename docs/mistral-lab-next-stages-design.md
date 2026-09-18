@@ -1003,3 +1003,40 @@ timeout. The packer therefore asks the LAB control model
 (`registers_share_a_lab`) whether the cluster's own registers fit an
 empty LAB before attaching one, and reports the conflicts it kept apart.
 
+### 9.7 The row is the cheap direction
+
+Section 9.5 measured the fabric's asymmetry: a LAB's input lines are fed
+by row wires, so a connection to a vertical neighbour costs 2.3 fabric
+wires where a horizontal one costs 0.9, and the ratio holds at every
+distance (2.5 to one). HeAP's solver knew half of it (`hpwl_scale_y` is
+2 for Mistral, and the annealer's delay estimate weighs a vertical tile
+2.7 times), but the two stages that move cells after the solve did not:
+the cut spreader alternates its cut axis regardless of cost, and the
+strict legaliser searches a square box and picks among legal candidates
+by unweighted Manhattan distance to the drivers. `--row-cost W` makes
+the three consistent: the solver's vertical scale becomes W, the
+spreader cuts a region along the axis that is longer in cost units (so
+cells move along rows until the region's shape matches the ratio), and
+the legaliser's box is W times wider than tall with candidates scored
+by weighted distance (`PlacerHeapCfg::anisotropic`). On the probe the
+placement's sink classes move to Quartus's (same column 15% to 9%, rows
+per net 1.80 to 1.55 at W = 4) and the fabric wires fall 9%, most of it
+column wires; the router takes more iterations to settle the busier
+rows, and a few percent of Fmax go with the longer horizontal paths.
+The weight is a knob, not a model: the true cost of a connection
+depends on where the LAB input lines are reached from, which is the
+LAB-level assignment of the next unit.
+
+With the row cost the full core's routing changed character: instead of
+a plateau of thousands of diffuse, churning wires it falls at every
+iteration to a few dozen, and those are the structured conflicts 6d
+diagnosed, LAB input lines in LABs at the top of the input distribution,
+which negotiated congestion keeps swapping and router1's fallback cannot
+finish. 6f's periodic re-route of the nets on wires with history is the
+finisher: every twenty iterations it re-routes the contested nets
+together under the accumulated costs, and two rounds took the core from
+65 overused wires to none. That is the first complete routing of the
+core, under the unit wire cost. The delay cost with the same recipe is
+the next measurement, because the unit cost's routes are delay-blind and
+the signoff Fmax it produces is a lower bound.
+

@@ -875,6 +875,10 @@ bool Arch::run_placement()
             cfg.hpwl_scale_x = 1;
             cfg.hpwl_scale_y = 2;
             cfg.cluster_units_by_bucket = args.register_packing; // Stage 6 (6g): LUT+register clusters
+            if (args.row_cost > 0) { // Stage 6 (6h): the fabric enters LABs through row wires
+                cfg.hpwl_scale_y = args.row_cost;
+                cfg.anisotropic = true;
+            }
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };
