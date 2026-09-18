@@ -2778,6 +2778,25 @@ the FFI). Eight workers with the lookahead change nothing in either mode
 because the capture runs on the owner and the annealer, where most of
 the Rust mode's extra time sits, is serial.
 
+What the record's earlier speed figures were, since they read as
+faster. The Stage 4C benchmark (390 ns per record on one worker, 12.85
+times that on sixteen) timed the evaluation of records already captured,
+and its speedup column is against the one-worker frozen path, not the
+live C++ check; it never included the capture. The "about 1.3% of P&R
+time" of the concluded entry is the control-set authority
+(`--lab-controls rust`), re-measured today at 28.3 s against 29.3 s
+legacy on the probe (1,513,411 evaluations, zero mismatches): still
+true. The legality authority (`--lab-legality rust`) was validated in
+Stage 3 for parity, 14,621,350 evaluations with zero mismatches and
+byte-identical artefacts, and its wall time was not recorded then; today
+it makes the same fourteen and a half million evaluations and costs 24 s
+more than legacy. No file on the capture path (`lab_v2.cc`,
+`lab_snapshot.*`, `lab_legality.cc`, the ABI, the crates) has changed
+since the crate was concluded on 2026-09-15, and the per-capture cost
+(1.6 µs) is below the 5 µs Stage 1c measured before Stage 2's capture
+work. Nothing regressed; the legality mode was never faster end to end,
+and the evaluator's own speed was and is at parity with C++.
+
 Reading. Threads buy nothing on the C++ path: router2's partitioned
 threading does not engage on this design and the placement is serial,
 so eight threads reproduce one thread to the checksum. The lookahead
