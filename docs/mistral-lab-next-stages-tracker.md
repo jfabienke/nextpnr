@@ -2739,6 +2739,36 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
 `./build/nextpnr-mistral-test` 50/50, exec probe off byte-identical,
 `git diff --check` and `clang-format` clean.
 
+### 2026-09-18: Benchmark: the concurrent Rust mode on the full core
+
+The milestone recipe (6h) on the core, `--router2-max-iter 100`, each
+run alone or alongside one other, M1 Ultra. The serial C++ path is the
+reference; the question was whether the Stage 4D lookahead, the Rust
+legality evaluator, and the batched annealer buy wall time on a design
+where nearly every cell is a cluster.
+
+| Configuration | HeAP | Refine | Router2 | Wall | CPU | Placement checksum |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `--threads 1`, legacy evaluators | 724 s | 70 s | 94 s | 904 s | 960 s | 0xe0b15557 |
+| `--threads 8`, legacy | 722 s | 70 s | 96 s | 904 s | 960 s | 0xe0b15557 (router2 did not engage its workers; routing 0x681553a4 in both) |
+| `--threads 8 --placer-lookahead 8`, legacy | 798 s | 62 s | 87 s | 959 s | 1,685 s | 0xe0b15557: byte-identical, 10% slower, 1.8 times the CPU |
+| `--threads 8 --lab-legality rust` | HeAP iteration 2 of 21 after 61 min | | | stopped | | an order of magnitude slower |
+| `--threads 8 --placer-lookahead 8 --lab-legality rust --sa-seam on --sa-batch 32` | HeAP iteration 6 of 21 after 92 min, about one core busy | | | stopped | | five to ten times slower |
+| Quartus 17.0.2 on NAS01 (Ryzen 7 2700, `--parallel=2`) | fit 26:35 | | | 39.5 min (map 10:03, fit 26:35, sta 2:30, asm 0:20) | | 20,576 ALMs, 25.18 MHz |
+
+Reading. Threads buy nothing on the C++ path: router2's partitioned
+threading does not engage on this design and the placement is serial,
+so eight threads reproduce one thread to the checksum. The lookahead
+does what it was built to do, a byte-identical placement, and costs 10%
+of wall for it, because most speculated candidates are rejected. The
+Rust legality path is the large cost: freezing and evaluating a
+detached record per candidate is an order of magnitude more than the
+live check at this scale, and the lookahead's workers cannot recover
+it. The single-threaded C++ recipe, 15 minutes, is the one to use;
+against Quartus it is 2.6 times faster in wall time on newer hardware,
+at 0.45 times the Fmax and 1.39 times the ALMs (28,652, of which 8,627
+are route-through LUTs for registers that did not pack).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
