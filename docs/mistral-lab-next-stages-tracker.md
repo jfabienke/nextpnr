@@ -2518,7 +2518,7 @@ matched):
 | sinks in the driver's row, another LAB | 14.4% | 18.8% |
 | sinks in the driver's column | 15.3% | 7.0% |
 | rows touched per net | 1.80 | 1.52 |
-| register in the same ALM as its LUT | 4% (14 of 341) | 95% (536 of 562) |
+| register in the same ALM as its LUT | 16% (55 of 341) | 95% (536 of 562) |
 | LABs used | 1,069 | 655 |
 | fabric wires per LAB entered | 1.83 | 0.82 to 1.06 |
 
@@ -2563,6 +2563,13 @@ through the Mistral environment block (`MISTRAL_R2_*`, read after the
 netlist). And after `--router2-max-iter` gives up, the flow runs router1
 on the whole design, which on the core never finishes; the runs above
 were stopped there.
+
+Correction (2026-09-18). The register-with-LUT figures were first
+computed with the wrong bel numbering (an ALM's four register bels sit
+at z modulo 6 of 2 to 5, its two LUT halves at 0 and 1, so the ALM is z
+divided by 6 for both). Corrected: on the probe 16% of registers driven
+by a LUT share its ALM (55 of 341), on the core 7% (671 of 9,790);
+Quartus's 95% stands. The reading does not change.
 
 Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 `./build/nextpnr-mistral-test` 49/49, exec probe off byte-identical
@@ -2658,7 +2665,7 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 | 2026-09-17 | 6d | Re-scoped before implementation: not a placement rule, since the count already implies line feasibility; the fix is a LAB input-line assignment bound as pre-routed arcs at routing preparation, arch-side, no crate | On paper: 42 pin uses cannot overflow a 12-line quadrant that needs two uses per net; the router's failure to find an existing matching is the problem |
 | 2026-09-17 | 6d | Pre-assigning LAB input lines at routing preparation is a negative result; landed for the record, then removed | 40 to 60% more wires and the router at its cap on the probe, in every variant; the line must be chosen with the fabric route |
 | 2026-09-17 | 6e | Close the placement-routing loop inside HeAP with a per-pass wire-density estimate behind `--spread-congestion`; k = 2, LAB cells only, not stacked on demand weighting | Best plateau on the core, 12,200 to 13,400 overused (35% below pairing alone), placement legal; k = 1.5, a thinner factor, or demand on top all leave the legaliser without room |
-| 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers do not pack with their LUTs (4% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
+| 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers seldom pack with their LUTs (16% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

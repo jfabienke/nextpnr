@@ -193,7 +193,7 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
 - Stage 6 (6f): the router's share of the Quartus gap is measured, not assumed. On the identical
   exec-probe netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower
   wirelength: LAB input lines are fed by row wires (88% of their inputs), so a vertical hop is a
-  two- or three-wire stair, and registers are not packed with their LUTs (4% against 95%). The
+  two- or three-wire stair, and registers seldom pack with their LUTs (16% against 95%). The
   full core sits at 67% fabric use against Quartus's 24%; six router2 negotiation variants from one
   checkpoint move the plateau 13% either way, a unit wire cost halves it, and none converges. `--router2-reroute N` (every arc re-routed
   every N iterations, `--router2-reroute-contested` limits it to nets on wires with history) and

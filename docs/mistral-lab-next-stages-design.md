@@ -953,7 +953,7 @@ where a horizontal neighbour costs one, and a net whose sinks sit in
 several rows pays that stair per row. Quartus's placement knows it:
 7% of its sinks sit in the driver's column against nextpnr's 15%, it
 touches 1.52 rows per net against 1.80, it puts 95% of LUT-to-register
-pairs in one ALM against 4%, and so it enters a LAB with about one
+pairs in one ALM against 16%, and so it enters a LAB with about one
 fabric wire where nextpnr spends 1.83. The delay-based base cost adds
 its share: it prefers long wires for short hops (13 times Quartus's use
 of the length-12 column wires) and a unit wire cost buys 18% fewer

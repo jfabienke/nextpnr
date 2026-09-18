@@ -39,7 +39,7 @@ Handover point:
   stays concluded. 6f measured the router's share instead of assuming
   it: on the identical netlist nextpnr uses 2.8 times Quartus's fabric
   wires because LAB lines are fed by row wires (a vertical hop is a
-  stair) and registers do not pack with their LUTs; negotiation variants
+  stair) and registers seldom pack with their LUTs (16% against 95%); negotiation variants
   move the core's plateau 13%, a unit wire cost halves it
   (`--router2-unit-cost`, `--router2-reroute`, both opt-in). The next
   unit is the placement cost model (design doc section 9.5).
