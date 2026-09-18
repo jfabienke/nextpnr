@@ -2797,6 +2797,23 @@ since the crate was concluded on 2026-09-15, and the per-capture cost
 work. Nothing regressed; the legality mode was never faster end to end,
 and the evaluator's own speed was and is at parity with C++.
 
+Where the legality mode's microsecond goes (probe, `sample` over eight
+seconds of the annealer, 3,737 samples inside `dispatch_lab_legality`):
+the whole-LAB capture 62% (`capture_lab_v2_impl`: a linear first-
+encounter search for every net id, about a hundred lookups over up to
+46 nets per call, plus zeroing and copying the 3.8 KB record), the Rust
+call 34% (validation `try_from` 19%, the evaluation proper 9%,
+conversion 7%), the live check the mode runs and never reads 3%
+(skipping it: HeAP 12.0 s against 12.3 s over two runs each). Two
+levers measured or sized from that: `--sa-seam on` moves the annealer
+to the overlay rules (Stage 1c) and takes the mode from 53.3 s to
+36.0 s wall (evaluations 14.6 million to 5.6 million, byte-identical);
+an O(1) net-id map and a caller-owned record would take the capture
+from about 0.75 µs to about 0.2 µs, leaving the Rust call's 0.4 µs,
+of which the evaluation is 0.1 µs and the rest is the validation the
+contract requires. Parity beyond that needs validated LAB snapshots
+that accept an ALM patch, a crate extension.
+
 Reading. Threads buy nothing on the C++ path: router2's partitioned
 threading does not engage on this design and the placement is serial,
 so eight threads reproduce one thread to the checksum. The lookahead
