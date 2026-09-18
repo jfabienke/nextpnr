@@ -2708,7 +2708,7 @@ options that travel in `ArchArgs` and `MISTRAL_R2_MAX_ITER`):
 | unit cost, present-congestion floor 1.0, cap 120 | 28 at 120: no help |
 | unit cost, no timing-driven routing, cap 120 | 825 at 120: worse |
 | delay cost, `--router2-reroute 20 --router2-reroute-contested`, cap 200 | 0 at iteration 125 (2,511 at 10, 608 at 30, 86 at 90, 12 at 110), six re-routes of about 31,000 nets; router2 395 s, 842,300 wires in use against the unit cost's 745,000 to 767,000; **9.76 MHz**, below every unit-cost result |
-| full run with `MISTRAL_LAB_INPUT_LIMIT=40` (placement slack under the lines), unit cost, no re-route, cap 80 | still in the legaliser at this commit; recorded in a follow-up |
+| full run with `MISTRAL_LAB_INPUT_LIMIT=40` (placement slack under the lines), unit cost, no re-route, cap 80 | placement 1,001 s (754 s at the default limit); **0 at iteration 73 with plain negotiation** (38,046 at 1; the last wires no longer churn: two nets fewer per LAB at the top of the distribution is the slack the line matching needed); router2 113 s; 9.49 MHz |
 
 Reading. The row cost is the lever that turns the core from a plateau
 into a descent: with it, the same placement recipe that sat at 12,000
@@ -2724,6 +2724,9 @@ under the delay cost, which uses 10 to 13% more wires and settles later.
 Quartus's fit of the same core is 25.18 MHz, and nextpnr's timing model
 reads about 18% below Quartus's on the same path (6f), so the remaining
 Fmax gap is placement and routing quality, not the model alone. The
+input limit at 40 instead of 42 is the placement-side finisher: with two
+nets of slack per LAB the line matching stops churning and plain
+negotiation closes in 73 iterations, at a third more placement time. The
 unit's recipe, as landed in `build/stage6-fullcore/core_probe_flow.sh`
 (outside git): `--alm-pairing 1 --spread-congestion --register-packing
 --row-cost 2.5 --router2-unit-cost --router2-reroute 20
