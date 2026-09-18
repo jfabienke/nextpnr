@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `0f9abd87` (Stage 6, 6a to 6g; next: row-aware placement cost and LAB-level assignment)
+- Commit: `d0689a6f` (Stage 6, 6a to 6h; the full core routes to completion)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -43,8 +43,14 @@ Handover point:
   move the core's plateau 13%, a unit wire cost halves it
   (`--router2-unit-cost`, `--router2-reroute`, both opt-in). 6g packs a
   register into its LUT's ALM half (`--register-packing`, opt-in):
-  5,360 of the core's 9,632 LUT-driven registers pack; the core's router plateau is a third of 6f's under the unit wire cost and 15% worse under the delay cost. The next units are the row-aware placement cost and a
-  LAB-level assignment (design doc sections 9.5 and 9.6).
+  5,360 of the core's 9,632 LUT-driven registers pack; the core's router plateau is a third of 6f's under the unit wire cost and 15% worse under the delay cost. 6h makes HeAP's spreader and legaliser weigh a vertical
+  tile like the solver does (`--row-cost W`, opt-in), and with it the
+  full core routes to completion for the first time (2026-09-18: pairing,
+  congestion spreading, register packing, row cost 2.5, unit wire cost,
+  periodic contested re-routes; 15 minutes wall; signoff 9.8 to 11.9 MHz
+  against Quartus's 25.2; recipe in `build/stage6-fullcore/core_probe_flow.sh`,
+  outside git). The next units are a hybrid base cost, the LAB-level
+  assignment, and timing-driven placement quality (design doc 9.5 to 9.7).
 - Legacy LAB legality remains the default. Rust authority is opt-in.
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
@@ -349,6 +355,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `9b648dcb` | Stage 6 units 6c, 6d (negative, removed), 6e: demand-weighted and congestion-driven spreading; the core's router plateau at 12,200 |
 | `18841bf3` | Stage 6 unit 6f: the router's share measured on the identical netlist (2.8 times Quartus's fabric wires, row-fed LAB lines, unpacked registers); `--router2-reroute`, `--router2-unit-cost`, per-tile utilisation dump |
 | `0f9abd87` | Stage 6 unit 6g: register packing (`--register-packing`), the spreader's per-bucket cluster weight, the packer's control-set check |
+| `d0689a6f` | Stage 6 unit 6h: the row-aware placement cost (`--row-cost`); the full core routes to completion |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
