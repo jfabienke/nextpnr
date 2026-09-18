@@ -128,8 +128,9 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   commits strictly in proposal order. Workers may read the live design only because the owner is
   blocked during the parallel section and the capture path writes no shared state. Results are byte-identical to the
   serial search. On the full core (2026-09-18) the lookahead is byte-identical and 10% slower,
-  and `--lab-legality rust` is an order of magnitude slower than the serial C++ path, which is the
-  recipe to use. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
+  and `--lab-legality rust` is an order of magnitude slower than the serial C++ path (byte-identical;
+  the cost is the whole-LAB value capture per check, about 1.6 µs, not Rust), which is the recipe to
+  use. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.
 - Stage 5 (1c-A): `--sa-seam off|shadow|on` routes `placer1` refinement swaps through a detached

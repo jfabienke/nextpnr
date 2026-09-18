@@ -2756,15 +2756,41 @@ where nearly every cell is a cluster.
 | `--threads 8 --placer-lookahead 8 --lab-legality rust --sa-seam on --sa-batch 32` | HeAP iteration 6 of 21 after 92 min, about one core busy | | | stopped | | five to ten times slower |
 | Quartus 17.0.2 on NAS01 (Ryzen 7 2700, `--parallel=2`) | fit 26:35 | | | 39.5 min (map 10:03, fit 26:35, sta 2:30, asm 0:20) | | 20,576 ALMs, 25.18 MHz |
 
+Attribution on the exec probe (single thread, four runs, all
+byte-identical to the reference 0xbb18ede9 / 0xbc1365c6):
+
+| Configuration | HeAP | Refine (SA) | Router2 | Wall |
+| --- | ---: | ---: | ---: | ---: |
+| legacy | 5.38 s | 8.87 s | 8.42 s | 29.3 s |
+| `--lab-legality rust` | 12.23 s | 25.66 s | 8.57 s | 53.3 s |
+| legacy, `--threads 8 --placer-lookahead 8` | 5.55 s | 8.88 s | 8.43 s | 29.5 s |
+| rust, `--threads 8 --placer-lookahead 8` | 12.27 s | 25.51 s | 8.23 s | 52.9 s |
+| rust with the unused live check skipped (experiment, not landed) | 11.95 s | 28.54 s | 8.75 s | 55.3 s |
+
+The Rust mode made 14,585,426 evaluations (7,368,890 legal, 7,216,536
+illegal, zero mismatches, zero errors), so the extra 24 s is about
+1.6 µs per evaluation: the cost of capturing the whole LAB into a value
+record for every check, not of Rust (the warm dispatch is 350 ns, unit
+2C) and not of the live check the mode still runs alongside (skipping it
+changes nothing). The legacy path checks the live structures in place,
+which the evaluator's contract forbids by design (no live pointer across
+the FFI). Eight workers with the lookahead change nothing in either mode
+because the capture runs on the owner and the annealer, where most of
+the Rust mode's extra time sits, is serial.
+
 Reading. Threads buy nothing on the C++ path: router2's partitioned
 threading does not engage on this design and the placement is serial,
 so eight threads reproduce one thread to the checksum. The lookahead
 does what it was built to do, a byte-identical placement, and costs 10%
 of wall for it, because most speculated candidates are rejected. The
-Rust legality path is the large cost: freezing and evaluating a
-detached record per candidate is an order of magnitude more than the
-live check at this scale, and the lookahead's workers cannot recover
-it. The single-threaded C++ recipe, 15 minutes, is the one to use;
+Rust legality path is the large cost by construction: a whole-LAB
+capture per check, 1.8 times the probe's wall and an order of magnitude
+on the core, where the legaliser makes far more checks on fuller LABs;
+the lookahead's workers cannot recover it. The Rust mode is correct
+(identical checksums, zero mismatches); it was built and concluded as a
+parity harness, and a same-speed Rust authority would need an evaluator
+over the live structures, which is the contract the crate was built not
+to have. The single-threaded C++ recipe, 15 minutes, is the one to use;
 against Quartus it is 2.6 times faster in wall time on newer hardware,
 at 0.45 times the Fmax and 1.39 times the ALMs (28,652, of which 8,627
 are route-through LUTs for registers that did not pack).
