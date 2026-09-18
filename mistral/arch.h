@@ -64,6 +64,7 @@ struct ArchArgs
     int router2_reroute = 0; // Stage 6 (6f): router2 rips up and re-routes every arc every N iterations; 0 = off
     bool router2_reroute_contested = false;   // Stage 6 (6f): that re-route queues only nets on wires with history
     bool router2_unit_cost = false;           // Stage 6 (6f): router2 costs every wire one unit instead of its delay
+    bool register_packing = false;            // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router

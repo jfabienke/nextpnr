@@ -2567,13 +2567,86 @@ were stopped there.
 Correction (2026-09-18). The register-with-LUT figures were first
 computed with the wrong bel numbering (an ALM's four register bels sit
 at z modulo 6 of 2 to 5, its two LUT halves at 0 and 1, so the ALM is z
-divided by 6 for both). Corrected: on the probe 16% of registers driven
-by a LUT share its ALM (55 of 341), on the core 7% (671 of 9,790);
-Quartus's 95% stands. The reading does not change.
+divided by 6 for both), and the probe's denominator missed the registers
+whose data had been rewired through a route-through LUT after placement
+(the routed JSON shows those driven by the route-through). Corrected: on
+the probe 7% of the 827 LUT-driven registers share the LUT's ALM (55),
+on the core 7% (671 of 9,790); Quartus's 95% stands. The reading does
+not change.
 
 Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 `./build/nextpnr-mistral-test` 49/49, exec probe off byte-identical
 (0xbb18ede9 / 0xbc1365c6), `git diff --check` and `clang-format` clean.
+
+### 2026-09-18: Stage 6, unit 6g: register packing
+
+`--register-packing` (off by default) packs a register into the ALM half
+of the LUT that drives it, as a cluster child placed by the same arch
+override that places 6b's pairs (`mistral/register_packing.*`, design
+section 9.6). One register per LUT, since the arch admits one per half
+(`lab.cc` marks the second slot unusable); plain LUTs only, so carry
+chains and MLAB groups are untouched.
+
+Two defects found on the way and fixed before the measurements. The cut
+spreader weighed a LUT-plus-register cluster as two LUTs in the LUT pass
+(`PlacerHeapCfg::cluster_units_by_bucket`, on with the option, keeps the
+reference accounting off). And a pair whose two registers could not
+share a LAB's control lines was rejected by the detached transaction at
+every ALM until HeAP's cell placement timeout (a non-global clock, two
+enables and a synchronous clear exceed the DATAIN lines; reason 21,
+`NPNR_CONTROL_DATAIN_CONFLICT`, found with the new
+`MISTRAL_DEBUG_CLUSTER_REJECT` switch); the packer now asks the control
+model whether a cluster's own registers fit an empty LAB
+(`registers_share_a_lab`). The packing therefore runs after
+`assignArchInfo`, which fills the control sets.
+
+Exec probe (`--seed 1 --threads 1 --freq 12`; four runs in parallel, so
+the times are contended):
+
+| Configuration | Registers packed | Wires | Fabric wires | Fmax | Router2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Off | 55 of 827 by chance | 149,576 | 52,952 | 35.87 MHz | 20 iterations |
+| `--register-packing` | 820 of 827 (7 LUTs drive two) | 145,104 | 51,494 | 33.83 MHz | 18 iterations |
+| `--alm-pairing 1` | 45 of 827 by chance | | 56,099 | 37.73 MHz | 62 iterations, 58.7 s |
+| `--alm-pairing 1 --register-packing` | 817 of 827 (3 control conflicts kept apart) | 143,796 | 57,218 | 34.66 MHz | 16 iterations, 17.7 s |
+
+Off is byte-identical (0xbb18ede9 / 0xbc1365c6). On the probe the
+packing costs a few percent of Fmax and does not reduce the fabric
+wires; with pairing it makes the paired placement route in a third of
+the time. The probe is 12% utilised and was never the target.
+
+Full core, pairing with congestion-driven spreading (the 6e
+configuration, plateau 12,182 at iteration 8, 13,419 at 15):
+
+| Configuration | Placement | Router2 overused by iteration |
+| --- | ---: | --- |
+| `--register-packing` (5,360 of 9,632 LUT-driven registers packed; 3,980 share a LUT with another, 292 kept apart by the control model) | 1,214 s | 68,894, 34,649, 20,934, 16,777, 15,098, 14,198, 14,114, 13,992, 14,387, 14,899, 15,408, 15,547, 16,339, 16,745, 17,069 |
+| `--register-packing --router2-unit-cost` | 1,212 s | 40,993, 9,869, 3,962, 2,678, 2,326, 2,158, 2,001, 1,967, 1,964, 2,045, 2,028, 2,121, 2,155, 2,278, 2,377 |
+
+For scale: without packing the same placement configuration plateaus
+at 12,182 under the delay cost and 5,694 under the unit cost (6f).
+
+Reading. Under the delay-based cost the packing does not help the core:
+the plateau is 15% higher (13,992 against 12,182), the placement takes
+twice as long (the clusters give the legaliser less room, as pairing
+did), and the delay cost keeps spending long wires and stairs on the
+connections that remain. Under the unit wire cost the packing takes the
+plateau from 5,694 to 1,964, a third, and the remaining overuse is what
+the record has seen before: diffuse (1,183 tiles, the top 50 hold 12%),
+two nets per wire, and churning without a stubborn set (6 wires of the
+2,377 at iteration 15 were overused at iteration 9). The two placement-side facts behind
+it: 5,360 register data inputs left the fabric, and 3,980 more could
+not because their LUT drives several registers and the arch admits one
+per half. The unit is closed with the option opt-in and the reading
+that the placement side has now delivered the register, and that the
+router's base cost decides whether the placement's savings reach the
+fabric; the next units are the row-aware cost and a LAB-level
+assignment (design 9.5), and a look at why the delay cost defeats the
+packing.
+
+Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 60/60,
+`./build/nextpnr-mistral-test` 50/50, exec probe off byte-identical,
+`git diff --check` and `clang-format` clean.
 
 ## Decision log
 
@@ -2666,6 +2739,7 @@ Validation as landed: `./build/rust-enabled/nextpnr-mistral-test` 59/59,
 | 2026-09-17 | 6d | Pre-assigning LAB input lines at routing preparation is a negative result; landed for the record, then removed | 40 to 60% more wires and the router at its cap on the probe, in every variant; the line must be chosen with the fabric route |
 | 2026-09-17 | 6e | Close the placement-routing loop inside HeAP with a per-pass wire-density estimate behind `--spread-congestion`; k = 2, LAB cells only, not stacked on demand weighting | Best plateau on the core, 12,200 to 13,400 overused (35% below pairing alone), placement legal; k = 1.5, a thinner factor, or demand on top all leave the legaliser without room |
 | 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers seldom pack with their LUTs (16% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
+| 2026-09-18 | 6g | Pack a register into its LUT's ALM half as a cluster child behind `--register-packing`; one per LUT; the cluster's registers must pass the LAB control model | Probe: 99% of LUT-driven registers packed, Fmax down a few percent, pairing routes in a third of the time; core: 5,360 registers packed, plateau 13,992 under the delay cost (worse than 12,182) and 1,964 under the unit cost (a third of 5,694) |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

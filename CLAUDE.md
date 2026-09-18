@@ -203,9 +203,19 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   before the table replays), so router experiments from a checkpoint use the `MISTRAL_R2_*`
   environment block in `Arch::run_router_phase`. The next unit is the placement cost model
   (design doc section 9.5).
+- Stage 6 (6g): `--register-packing` packs a register into the ALM half of the LUT that drives it
+  as a cluster child (`mistral/register_packing.*`), placed by the same `Arch::getClusterPlacement`
+  override as 6b's pairs; one register per LUT (the arch admits one per half), plain LUTs only. It
+  runs after `assignArchInfo` because the packer asks the LAB control model whether a cluster's own
+  registers can share a LAB (a pair whose registers cannot is unplaceable and was rejected at every
+  ALM until HeAP's timeout). With it, `PlacerHeapCfg::cluster_units_by_bucket` makes the cut
+  spreader weigh a cluster by the members of the pass's bucket only. Off by default. On the core it packs 5,360 of 9,632 LUT-driven registers; the router plateau is 15% worse
+  under the delay cost and a third of 6f's unit-cost plateau (1,964 against 5,694) under
+  `--router2-unit-cost`.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
-  the router2 experiment block `MISTRAL_R2_*` and the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`,
+  the router2 experiment block `MISTRAL_R2_*`, the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`, the
+  cluster rejection log `MISTRAL_DEBUG_CLUSTER_REJECT`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
 
@@ -235,8 +245,8 @@ after every net's previous binding is ripped up, which removed every bind-time f
 reuse runs and is byte-identical for the clean flow) and 3c-3 (route survival measured and
 reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved routes) done; Stage 6
 (density) has 6a (legaliser stall exit), 6b (`--alm-pairing`), 6c (`--spread-demand`), and 6e
-(`--spread-congestion`), and 6f (the router's share measured; `--router2-reroute`,
-`--router2-unit-cost`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
+(`--spread-congestion`), 6f (the router's share measured; `--router2-reroute`,
+`--router2-unit-cost`), and 6g (`--register-packing`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
 removed, its record and landing commit in the tracker. Every new capability
 is off by default and unpromoted. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against

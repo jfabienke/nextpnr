@@ -31,6 +31,7 @@
 #include "placement_reuse.h"
 #include "placement_transaction.h"
 #include "placer_heap.h"
+#include "register_packing.h"
 #include "reuse_plan.h"
 #include "route_reuse.h"
 
@@ -2591,6 +2592,142 @@ TEST_F(LabControlCaptureTest, AlmPairingFormsOnlyPairsTheAlmRuleAllows)
     EXPECT_EQ(r3.by_any, 1u);
     EXPECT_TRUE(is_alm_pair_root(q4a));
     EXPECT_EQ(p5c->cluster, ClusterId());
+}
+
+TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
+{
+    // Stage 6 (6g): a register driven by a plain LUT joins that LUT's cluster and lands on a
+    // register bel of the LUT's half, a pair's registers land on their own halves, a LUT takes
+    // one (the checker admits one register per half), registers whose control sets cannot share
+    // a LAB are kept apart, and the checker accepts the packed ALMs live and detached.
+    std::vector<NetInfo *> nets;
+    for (int i = 0; i < 30; i++)
+        nets.push_back(ctx->createNet(ctx->idf("rp_n%d", i)));
+    const IdString ports[] = {id_A, id_B, id_C, id_D, id_E};
+    auto lut = [&](const char *name, IdString type, std::initializer_list<int> ins, int out) {
+        CellInfo *cell = ctx->createCell(ctx->id(name), type);
+        int i = 0;
+        for (int n : ins) {
+            cell->addInput(ports[i]);
+            cell->connectPort(ports[i], nets.at(n));
+            i++;
+        }
+        cell->addOutput(id_Q);
+        cell->connectPort(id_Q, nets.at(out));
+        return cell;
+    };
+    auto ff = [&](const char *name, int d, int ena = -1, int sclr = -1) {
+        CellInfo *cell = ctx->createCell(ctx->id(name), id_MISTRAL_FF);
+        cell->addInput(id_DATAIN);
+        cell->connectPort(id_DATAIN, nets.at(d));
+        cell->addInput(id_CLK);
+        cell->connectPort(id_CLK, nets.at(28));
+        if (ena >= 0) {
+            cell->addInput(id_ENA);
+            cell->connectPort(id_ENA, nets.at(ena));
+        }
+        if (sclr >= 0) {
+            cell->addInput(id_SCLR);
+            cell->connectPort(id_SCLR, nets.at(sclr));
+        }
+        cell->addOutput(id_Q);
+        return cell;
+    };
+    CellInfo *a = lut("rp_a", id_MISTRAL_ALUT4, {0, 1, 2, 3}, 20);
+    CellInfo *b = lut("rp_b", id_MISTRAL_ALUT4, {0, 4, 5, 6}, 21); // shares one input with a: pairs at level 1
+    CellInfo *c = lut("rp_c", id_MISTRAL_ALUT4, {7, 8, 9, 10}, 22);
+    CellInfo *d = lut("rp_d", id_MISTRAL_ALUT4, {7, 11, 12, 13}, 23); // shares one input with c
+    CellInfo *s = lut("rp_s", id_MISTRAL_ALUT3, {14, 15, 16}, 24);    // shares nothing: stays single
+    CellInfo *fa = ff("rp_fa", 20), *fa2 = ff("rp_fa2", 20), *fa3 = ff("rp_fa3", 20);
+    CellInfo *fb = ff("rp_fb", 21);
+    // c's register takes an enable and a synchronous clear, d's a second enable: with a
+    // non-global clock the LAB's shared lines cannot carry all three, so d's stays out.
+    CellInfo *fc = ff("rp_fc", 22, 25, 26);
+    CellInfo *fd = ff("rp_fd", 23, 27);
+    CellInfo *fs = ff("rp_fs", 24);
+    CellInfo *fx = ff("rp_fx", 29); // driven by no LUT
+    EXPECT_EQ(pair_alm_luts(*ctx, 1).pairs, 2u);
+    ctx->assignArchInfo(); // the packer reads the registers' control sets
+    auto r = pack_registers(*ctx);
+    EXPECT_GE(r.registers, 8u); // the fixture's own registers are counted too
+    EXPECT_EQ(r.lut_driven, 7u);
+    EXPECT_EQ(r.packed, 4u);
+    EXPECT_EQ(r.lut_full, 2u);
+    EXPECT_EQ(r.control_conflict, 1u);
+    EXPECT_EQ(r.onto_pair_root, 2u);
+    EXPECT_EQ(r.onto_pair_child, 1u);
+    EXPECT_EQ(r.onto_single, 1u);
+    EXPECT_TRUE(is_alm_cluster_root(a));
+    EXPECT_FALSE(is_alm_pair_root(a));
+    EXPECT_EQ(fa->cluster, a->name);
+    EXPECT_EQ(fa->constr_z, 2);
+    EXPECT_EQ(fa2->cluster, ClusterId());
+    EXPECT_EQ(fa3->cluster, ClusterId());
+    EXPECT_EQ(fb->cluster, a->name);
+    EXPECT_EQ(fb->constr_z, 4);
+    EXPECT_EQ(fc->cluster, c->name);
+    EXPECT_EQ(fd->cluster, ClusterId());
+    EXPECT_TRUE(is_alm_cluster_root(s));
+    EXPECT_EQ(fs->cluster, s->name);
+    EXPECT_EQ(fs->constr_z, 2);
+    EXPECT_EQ(fx->cluster, ClusterId());
+    EXPECT_TRUE(registers_share_a_lab({fa, fb}));
+    EXPECT_FALSE(registers_share_a_lab({fc, fd}));
+
+    auto &lab0 = ctx->labs.at(0);
+    std::vector<std::pair<CellInfo *, BelId>> placement;
+    ASSERT_TRUE(ctx->getClusterPlacement(a->cluster, lab0.alms[1].lut_bels[0], placement));
+    ASSERT_EQ(placement.size(), 4u);
+    EXPECT_EQ(placement[1].second, lab0.alms[1].lut_bels[1]); // b, the partner
+    EXPECT_EQ(placement[2].second, lab0.alms[1].ff_bels[0]);  // fa, the root's half
+    EXPECT_EQ(placement[3].second, lab0.alms[1].ff_bels[2]);  // fb, the partner's half
+    EXPECT_FALSE(ctx->getClusterPlacement(a->cluster, lab0.alms[1].lut_bels[1], placement));
+    // A single LUT seeds from either half and its register follows the half.
+    ASSERT_TRUE(ctx->getClusterPlacement(s->cluster, lab0.alms[2].lut_bels[1], placement));
+    ASSERT_EQ(placement.size(), 2u);
+    EXPECT_EQ(placement[1].second, lab0.alms[2].ff_bels[2]);
+    ASSERT_TRUE(ctx->getClusterPlacement(s->cluster, lab0.alms[2].lut_bels[0], placement));
+    EXPECT_EQ(placement[1].second, lab0.alms[2].ff_bels[0]);
+
+    // The checker accepts the packed ALMs, live and detached (HeAP places clusters through the
+    // Stage 4B transaction, so the detached evaluator must agree with the live checker).
+    ctx->placement_revision = PlacementRevisionState(); // earlier tests exhaust the fixture's session
+    {
+        std::vector<std::pair<CellInfo *, BelId>> pair_targets;
+        ASSERT_TRUE(ctx->getClusterPlacement(a->cluster, lab0.alms[1].lut_bels[0], pair_targets));
+        HeAPDisplacedBindings displaced; // every target bel is free
+        for (auto &target : pair_targets)
+            displaced[target.second] = {nullptr, STRENGTH_NONE};
+        auto prepared = prepare_placement_transaction(*ctx, placement_edits_for_candidate(pair_targets, displaced));
+        ASSERT_TRUE(prepared);
+        auto frozen = freeze_placement_candidate(*ctx, prepared);
+        ASSERT_EQ(frozen.status, FrozenPlacementStatus::Ready);
+        auto assessment = evaluate_placement_candidate(frozen);
+        EXPECT_EQ(assessment.status, FrozenPlacementStatus::Ready);
+        EXPECT_TRUE(assessment.legal);
+    }
+    const std::vector<std::pair<BelId, CellInfo *>> binds = {
+            {lab0.alms[1].lut_bels[0], a}, {lab0.alms[1].lut_bels[1], b}, {lab0.alms[1].ff_bels[0], fa},
+            {lab0.alms[1].ff_bels[2], fb}, {lab0.alms[2].lut_bels[1], s}, {lab0.alms[2].ff_bels[2], fs}};
+    for (auto &bind : binds)
+        ctx->bindBel(bind.first, bind.second, STRENGTH_STRONG);
+    for (auto &bind : binds)
+        EXPECT_TRUE(ctx->isBelLocationValid(bind.first)) << ctx->nameOfBel(bind.first);
+    EXPECT_TRUE(ctx->check_lab_input_count(0));
+    for (auto &bind : binds)
+        ctx->unbindBel(bind.first);
+    // The fixture's context is shared: take the test's cells and nets out again.
+    for (CellInfo *cell : {a, b, c, d, s, fa, fa2, fa3, fb, fc, fd, fs, fx}) {
+        std::vector<IdString> connected;
+        for (auto &port : cell->ports)
+            if (port.second.net != nullptr)
+                connected.push_back(port.first);
+        for (IdString port : connected)
+            cell->disconnectPort(port);
+        ctx->cells.erase(cell->name);
+    }
+    for (NetInfo *n : nets)
+        ctx->nets.erase(n->name);
 }
 
 TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllows)

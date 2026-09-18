@@ -24,6 +24,7 @@
 #include "alm_pairing.h"
 #include "log.h"
 #include "nextpnr.h"
+#include "register_packing.h"
 
 #include <memory>
 
@@ -722,20 +723,9 @@ bool Arch::getClusterPlacement(ClusterId cluster, BelId root_bel,
                                std::vector<std::pair<CellInfo *, BelId>> &placement) const
 {
     CellInfo *root = getCtx()->cells.at(cluster).get();
-    if (!is_alm_pair_root(root))
+    if (!is_alm_pair_root(root) && !is_alm_cluster_root(root))
         return BaseArch::getClusterPlacement(cluster, root_bel, placement);
-    placement.clear();
-    Loc loc = getBelLocation(root_bel);
-    if (loc.z % 6 != 0) // only the first LUT half of an ALM seeds a pair candidate
-        return false;
-    BelId child_bel = getBelByLocation(Loc(loc.x, loc.y, loc.z + 1));
-    CellInfo *child = root->constr_children.front();
-    if (child_bel == BelId() || !isValidBelForCellType(root->type, root_bel) ||
-        !isValidBelForCellType(child->type, child_bel))
-        return false;
-    placement.emplace_back(root, root_bel);
-    placement.emplace_back(child, child_bel);
-    return true;
+    return alm_cluster_placement(*this, root, root_bel, placement); // Stage 6 (6b, 6g)
 }
 
 // Stage 6 (6e): RUDY over the current placement. Every net with two or more placed endpoints
@@ -884,6 +874,7 @@ bool Arch::run_placement()
             // horizontally.
             cfg.hpwl_scale_x = 1;
             cfg.hpwl_scale_y = 2;
+            cfg.cluster_units_by_bucket = args.register_packing; // Stage 6 (6g): LUT+register clusters
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };
@@ -943,8 +934,29 @@ bool Arch::run_placement()
                     log_error("Failed to evaluate a detached HeAP cluster candidate.\n");
                 if (!placement_candidate_rust_matches(frozen, assessment))
                     log_error("Rust disagrees with detached C++ for a HeAP cluster candidate.\n");
-                if (!assessment.legal)
+                if (!assessment.legal) {
+                    static int debug_left = getenv("MISTRAL_DEBUG_CLUSTER_REJECT") ? 20 : 0;
+                    if (debug_left > 0) {
+                        --debug_left;
+                        for (const auto &res : assessment.results)
+                            if (res.status != NPNR_LAB_V2_LEGAL)
+                                log_info("[cluster-reject] root %s: status %u reason %u query %u alm %u slot %u "
+                                         "observed %d limit %d (frozen %s)\n",
+                                         owner->nameOf(targets.front().first), res.status, res.reason, res.query,
+                                         res.failing_alm, res.failing_slot, res.observed, res.limit,
+                                         frozen.status == FrozenPlacementStatus::Ready ? "ready" : "other");
+                        for (const auto &t : targets)
+                            if (t.first->type == id_MISTRAL_FF)
+                                log_info("[cluster-reject]   %s at %s: clk %s ena %s aclr %s sclr %s sload %s\n",
+                                         owner->nameOf(t.first), owner->nameOfBel(t.second),
+                                         owner->nameOf(t.first->ffInfo.ctrlset.clk.net),
+                                         owner->nameOf(t.first->ffInfo.ctrlset.ena.net),
+                                         owner->nameOf(t.first->ffInfo.ctrlset.aclr.net),
+                                         owner->nameOf(t.first->ffInfo.ctrlset.sclr.net),
+                                         owner->nameOf(t.first->ffInfo.ctrlset.sload.net));
+                    }
                     return HeAPClusterTransactionOutcome::Rejected;
+                }
                 auto outcome = commit_placement_transaction(*owner, std::move(prepared));
                 if (outcome != PlacementCommitOutcome::Committed)
                     log_error("Failed to commit a detached HeAP cluster candidate.\n");

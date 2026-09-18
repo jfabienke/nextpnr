@@ -116,6 +116,10 @@ struct PlacerHeapCfg
     // comparison scale together, and with the hook unset the arithmetic is the reference's.
     std::function<int(Context *, const CellInfo *, int x, int y)> get_cell_spread_units;
     int spread_units_per_bel = 1;
+    // A cluster's weight in a spreading pass counts only the members whose bel bucket the pass
+    // spreads (a LUT-plus-register cluster weighs one LUT in the LUT pass and one register in the
+    // register pass) instead of every member. Off keeps the reference accounting.
+    bool cluster_units_by_bucket = false;
     // Called at the start of every spreading pass with the pass's own view of where each cell
     // currently sits (solver positions, not bels), so the architecture can rebuild whatever its
     // unit function needs, such as a congestion estimate over the current placement.

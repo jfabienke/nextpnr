@@ -21,6 +21,7 @@
 #include "design_utils.h"
 #include "log.h"
 #include "nextpnr.h"
+#include "register_packing.h"
 #include "util.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -1246,6 +1247,8 @@ bool Arch::pack()
     packer.run();
 
     assignArchInfo();
+    if (args.register_packing)
+        report_register_packing(pack_registers(*getCtx())); // Stage 6 (6g): reads the registers' control sets
 
     build_phase = BuildPhase::Packed;
     return true;

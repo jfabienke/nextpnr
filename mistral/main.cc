@@ -88,6 +88,8 @@ po::options_description MistralCommandHandler::getArchOptions()
                                                 "rebuilt every spreading pass (off by default; experimental)");
     specific.add_options()("spread-demand", "spread comb cells by their unique input count instead of one per bel "
                                             "(routing-demand-aware placement; off by default; experimental)");
+    specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
+                                               "placement (off by default; experimental)");
     specific.add_options()("router2-reroute", po::value<int>(),
                            "rip up and re-route every arc every N router2 iterations, not only the arcs on overused "
                            "wires (off by default; experimental)");
@@ -215,6 +217,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     }
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
+    chipArgs.register_packing = vm.count("register-packing") != 0;
     if (vm.count("reuse-routes-history")) {
         chipArgs.reuse_routes_history = vm["reuse-routes-history"].as<float>();
         if (chipArgs.reuse_routes_history < 1.0f)

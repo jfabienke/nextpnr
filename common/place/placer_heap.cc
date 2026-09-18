@@ -1971,7 +1971,21 @@ class HeAPPlacer
                     }
                     int total = 0;
                     for (const CellInfo *member : members->second)
-                        total += units_of(*member);
+                        if (!p->cfg.cluster_units_by_bucket || !is_cell_fixed(*member))
+                            total += units_of(*member);
+                    chain_units[cs.first] = total;
+                }
+            } else if (p->cfg.cluster_units_by_bucket) {
+                for (auto &cs : p->chain_size) {
+                    auto members = p->cluster2cells.find(cs.first);
+                    if (members == p->cluster2cells.end()) {
+                        chain_units[cs.first] = cs.second;
+                        continue;
+                    }
+                    int total = 0;
+                    for (const CellInfo *member : members->second)
+                        if (!is_cell_fixed(*member))
+                            ++total;
                     chain_units[cs.first] = total;
                 }
             } else {

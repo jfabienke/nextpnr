@@ -976,3 +976,30 @@ register must pack with its LUT the way pairing packs two LUTs, and a
 net's sinks must be drawn into fewer rows and LABs. The router's own
 lever after that is the base cost.
 
+### 9.6 The register packs with its LUT
+
+The first placement-side lever from 9.5 is the one Quartus applies to
+95% of LUT-driven registers: the register sits in the ALM half of the
+LUT that drives it, so the data path is the half's internal wire and
+costs no LAB input line, no fabric wire, and no route-through LUT. The
+arch already admits this (the checker's data-in rule) but nothing asked
+for it: HeAP places registers and LUTs as independent cells and lands 7%
+of them together. `--register-packing` runs after `assignArchInfo` and
+attaches one register to its LUT's cluster as a child at relative z 2
+(the root's half) or 4 (a pair partner's half); `Arch::getClusterPlacement`
+puts it on the register bel of whichever half the LUT lands on, and the
+same override now places pairs and register clusters alike. The arch
+admits one register per half, so a LUT with several registers keeps one.
+
+Two rules the packer must respect came out of the first run. The cut
+spreader weighs a cluster by all its members, so a LUT-plus-register
+cluster counted as two LUTs in the LUT pass;
+`PlacerHeapCfg::cluster_units_by_bucket` counts only the members of the
+pass's bucket. And a pair whose two registers cannot share a LAB's
+control lines (the model's DATAIN allocation: a non-global clock, two
+enables and a synchronous clear do not fit) can never be placed; HeAP's
+detached transaction rejected it at every ALM until the cell placement
+timeout. The packer therefore asks the LAB control model
+(`registers_share_a_lab`) whether the cluster's own registers fit an
+empty LAB before attaching one, and reports the conflicts it kept apart.
+
