@@ -316,8 +316,14 @@ class LabControlCaptureTest : public ::testing::Test
 
     static void TearDownTestSuite() { ctx.reset(); }
 
+    // The context is shared by the suite: a test that creates cells or nets removes them, and the
+    // teardown fails the test that did not.
+    size_t cells_before = 0, nets_before = 0;
+
     void SetUp() override
     {
+        cells_before = ctx->cells.size();
+        nets_before = ctx->nets.size();
         ctx->args.lab_controls = LabControlMode::Legacy;
         ctx->args.lab_legality = LabLegalityMode::Legacy;
         for (auto *net : nets)
@@ -334,7 +340,12 @@ class LabControlCaptureTest : public ::testing::Test
         }
     }
 
-    void TearDown() override { clear_bindings(); }
+    void TearDown() override
+    {
+        clear_bindings();
+        EXPECT_EQ(ctx->cells.size(), cells_before) << "the test left cells in the shared context";
+        EXPECT_EQ(ctx->nets.size(), nets_before) << "the test left nets in the shared context";
+    }
 
     void clear_bindings()
     {
@@ -2242,6 +2253,12 @@ TEST_F(LabControlCaptureTest, MlabGroupingAndWriteReservationsRemainHostOwned)
     for (unsigned i = 0; i < wires.size(); ++i)
         ctx->wires.at(wires[i]).flags = saved_flags[i];
     ctx->args.lab_controls = LabControlMode::Legacy;
+    // The fixture's context is shared: take the test's cells out again (its nets are the fixture's).
+    for (auto *ram : rams) {
+        ram->disconnectPort(id_CLK1);
+        ram->disconnectPort(id_A1EN);
+        ctx->cells.erase(ram->name);
+    }
 }
 
 #ifndef NO_RUST
@@ -2701,6 +2718,19 @@ TEST_F(LabControlCaptureTest, AlmPairingFormsOnlyPairsTheAlmRuleAllows)
     EXPECT_EQ(r3.by_any, 1u);
     EXPECT_TRUE(is_alm_pair_root(q4a));
     EXPECT_EQ(p5c->cluster, ClusterId());
+
+    // The fixture's context is shared: take the test's cells and nets out again.
+    for (CellInfo *cell : {p5a, p5b, p5c, q4a, q4b}) {
+        std::vector<IdString> connected;
+        for (auto &port : cell->ports)
+            if (port.second.net != nullptr)
+                connected.push_back(port.first);
+        for (IdString port : connected)
+            cell->disconnectPort(port);
+        ctx->cells.erase(cell->name);
+    }
+    for (NetInfo *n : nets)
+        ctx->nets.erase(n->name);
 }
 
 TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)

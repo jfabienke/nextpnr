@@ -2929,6 +2929,54 @@ count and the verify mode to fail closed), `./build/nextpnr-mistral-test`
 50/50, exec probe legacy byte-identical, `git diff --check` and
 `clang-format` clean.
 
+### 2026-09-19: Coding rules: no panics, protocol coverage, telemetry, fixture leaks, the gate
+
+The user asked which coding rules the work carries and whether to add
+more, and then to design and land the gaps found. Five landed, each
+with the check that enforces it (design section 11):
+
+- **No panics in the crates.** `#![deny(clippy::unwrap_used,
+  clippy::expect_used, clippy::panic, clippy::unreachable)]` in
+  `npnr_mistral_lab` and `npnr_mistral_lab_ffi`, tests exempt. The audit
+  found one `expect`, on the FFI's worker quota release; it is a
+  `let else` now. Indexing by validated ids is the panic source that
+  remains, and the FFI's `catch_unwind` with the poisoned handle stays
+  the backstop.
+- **Protocol coverage in the oracle.** The resident module's doc lists
+  the seven patch shapes `mistral/lab_resident.cc` sends; the oracle
+  generator produces all seven, with bursts of sixty commits every
+  fortieth step and unchanged resends every tenth, and asserts that it
+  did (at least 190 bursts and 300 unchanged resends over 8,000 steps).
+  The burst is the shape the core's verify run caught after the crate's
+  tests had passed; the oracle catches it now.
+- **Telemetry.** `--telemetry file.json` (`ArchArgs`,
+  `mistral/telemetry.*`) writes the phase, device, checksum, the Stage 5
+  and 6 options, the LAB legality, resident, and control-set counters,
+  cell and net counts, and the placement and routing wall times, after
+  placement and again after routing. The checksum is taken where the
+  placer and router log theirs, so the file's number is the log's.
+  `--report` is untouched.
+- **Fixture leaks.** `LabControlCaptureTest` records the shared
+  context's cell and net counts in `SetUp` and fails a test in
+  `TearDown` that left any. Two tests leaked (MLAB grouping two RAM
+  cells; ALM pairing five cells and 24 nets); both take theirs down now.
+- **The gate.** `mistral/tests/gate.sh` runs the scoped cargo test,
+  clippy, and fmt, builds and runs both gtest suites, runs the probe on
+  the default path against its recorded checksums and report hash, then
+  `git diff --check` and clang-format on the changed C++ files. Its
+  logs go under `build/gate/`.
+
+| Check | Result |
+| --- | --- |
+| `cargo clippy -D warnings` with the deny lints, both crates | Clean once the one `expect` was replaced |
+| `cargo test --workspace` | Every crate test passes; the resident oracle's 8,000 steps include the bursts and unchanged resends it now asserts |
+| gtest, `build/rust-enabled` | 62 tests pass (the telemetry writer test is new) |
+| gtest, `build` (Rust disabled) | 51 tests pass |
+| Fixture leak check, first run | 2 of 61 tests failed it (MLAB grouping, ALM pairing); 0 after the fixes |
+| Probe with `--telemetry` against the same run without | Checksums `0xbb18ede9` / `0xbc1365c6`, `--report` byte-identical, the log differs in timings only |
+| Telemetry files | Placement-only run: phase `placed`, checksum `0xbb18ede9`; full run: phase `routed`, checksum `0xbc1365c6`, placement 16.2 s, routing 8.2 s, 12,169 cells, 13,396 nets |
+| `mistral/tests/gate.sh` end to end | Passed in 58 s (cargo 3 s, builds up to date, both suites 20 s, probe 25 s) |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3023,6 +3071,7 @@ count and the verify mode to fail closed), `./build/nextpnr-mistral-test`
 | 2026-09-18 | 6g | Pack a register into its LUT's ALM half as a cluster child behind `--register-packing`; one per LUT; the cluster's registers must pass the LAB control model | Probe: 99% of LUT-driven registers packed, Fmax down a few percent, pairing routes in a third of the time; core: 5,360 registers packed, plateau 13,992 under the delay cost (worse than 12,182) and 1,964 under the unit cost (a third of 5,694) |
 | 2026-09-18 | 6h | Make the spreader and the legaliser weigh a vertical tile like the solver does, behind `--row-cost W` | Probe: sink classes move to Quartus's, fabric wires 9% fewer, router slower to settle, Fmax a few percent down; **core: routes to completion for the first time** (0 overused at iteration 45 with the unit cost and periodic re-routes, at 125 with the delay cost), signoff 9.8 to 11.9 MHz against Quartus's 25.2 |
 | 2026-09-18 | Rust | Reopen the concluded crate for a performance revision at the user's direction: resident LAB snapshots patched one ALM at a time replace the per-query capture in every non-legacy legality mode; the capture path stays as the harness | Probe: the Rust authority at wall parity with legacy with the annealer on the overlay seam (30.6 s against 30.7 s), verify mode zero mismatches over 14.6 million queries; core: placement 1,065 s against 750 s (1.4 times, from 6 times on the first resident build and an order of magnitude on the capture path), byte-identical, 5.36 billion queries; the 59 ns per query that remain are the call, the marshalling, and the rules, which a per-tile query would halve |
+| 2026-09-19 | rules | Five coding rules, each with its check: the crates deny `unwrap`, `expect`, `panic`, and `unreachable` outside tests; the oracle generates every patch shape the arch sends; `--telemetry` writes the counters as JSON beside the unchanged `--report`; the fixture fails a test that leaks cells or nets; `mistral/tests/gate.sh` runs before every commit | One `expect` removed from the FFI; the leak check found two tests to fix; telemetry on the probe leaves the report and both checksums byte-identical; the gate runs in 58 s |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

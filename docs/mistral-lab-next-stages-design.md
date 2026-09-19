@@ -1092,3 +1092,54 @@ authority with the annealer on the overlay seam runs at the legacy
 path's wall time; the core's number is the measurement in the tracker's
 parity entry.
 
+## 11. Coding rules and what enforces them
+
+The intent of the Rust work is fast iteration by agents on the LAB
+rules, with safe idioms and concurrency as the by-products. A rule
+serves that intent only when a check enforces it inside the iteration
+loop, in seconds for the crate and in a minute for the flow; a rule in
+prose is a rule the next session forgets. The five rules landed on
+2026-09-19 are each paired with their check.
+
+The crates already forbade `unsafe` and returned typed errors at every
+boundary, but nothing stopped an `unwrap` from turning a boundary error
+into an abort, and an audit found one `expect` in the FFI. The lints
+`clippy::unwrap_used`, `expect_used`, `panic`, and `unreachable` are
+denied in both crates, with tests exempt, because a test's panic is its
+failure report. Indexing by an id the boundary has validated is the
+panic source the lints cannot see; the FFI's `catch_unwind` and the
+poisoned handle remain for that, as the backstop rather than the rule.
+
+The resident protocol's oracle compared the resident evaluator to the
+capture path over random traffic, but the traffic it generated was
+shaped by the test's author and not by the caller: the burst a chain
+bind sends was missing, and the core's verify run found the defect
+hours after the crate's tests had passed. The module now lists the
+patch shapes the arch sends, the generator produces each of them, and
+the test asserts that it did; a new shape in `mistral/lab_resident.cc`
+is a change to that list and the generator in the same commit.
+
+Telemetry is a file of its own, `--telemetry`, rather than fields in
+`--report`, because the report's byte identity across builds is the
+gate for every resume and reuse path and any new field would break it.
+The file carries what the record has been copying from logs by hand:
+the checksum the log prints, the options that shaped the run, the
+counters the stats lines print, and the phase times. It is written at
+the end of each phase, so a run that dies in the router leaves the
+placement's file behind. The option travels in `ArchArgs` for the same
+reason every Stage 5 and 6 option does: a settings key would intern a
+string before the netlist is read.
+
+The gtest fixture shares one context across the suite for the chip
+database's sake, so a test that leaves a cell or a net behind changes
+the tests that run after it, and the failure appears somewhere else.
+The fixture now counts cells and nets before and after each test and
+fails the test that leaked; two tests had, without any symptom yet.
+
+The gate script exists because the conventions listed six commands and
+three trees, and a session under time pressure ran the subset it
+remembered. `mistral/tests/gate.sh` is the whole list, with the probe
+identity checked against the recorded checksums and report hash, in
+58 seconds; a deliberate change to the default path updates those
+constants in the same commit, which makes such a change visible in the
+diff.

@@ -53,8 +53,9 @@ ctest --test-dir build --output-on-failure                    # same tests via c
 # Rust workspace (rust/Cargo.toml: nextpnr, example_printnets, npnr_mistral_lab, npnr_mistral_lab_ffi)
 cargo test   --manifest-path rust/Cargo.toml --offline --workspace
 cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi --all-targets -- -D warnings
-cargo fmt    --manifest-path rust/Cargo.toml --all -- --check
+cargo fmt    --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -- --check  # not --all: it reformats upstream rust/nextpnr
 git diff --check
+mistral/tests/gate.sh   # all of the above, both gtest suites, the probe identity, clang-format on changed files; 58 s
 
 # Backend self-check, arch regressions (tests/ is a submodule)
 build/nextpnr-generic --uarch example --test
@@ -242,6 +243,11 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   cluster rejection log `MISTRAL_DEBUG_CLUSTER_REJECT`,
   and ~35 `VUP_*` clock/IO/PLL debug switches in `mistral/`).
   `rg getenv mistral` before adding another.
+- `--telemetry file.json` writes the run's phase, checksum (the one the log prints), device, the
+  Stage 5 and 6 options, the LAB legality, resident, and control-set counters, cell and net
+  counts, and the placement and routing wall times as JSON after placement and again after
+  routing (`mistral/telemetry.*`, an `ArchArgs` option). It is the machine-readable record;
+  `--report` is untouched by it.
 
 ## Current work and its documents
 
@@ -283,6 +289,17 @@ full recomputation, and nothing may silently certify a partial result.
   `build/rust-enabled`; changes to `common/` or fallback paths also run the Rust-disabled `build/`.
 - Assertions in `mistral/delay.cc` and similar signoff guards are correctness guards with silicon
   evidence behind them; do not downgrade them to warnings.
+- Run `mistral/tests/gate.sh` before every commit. A change on a legality path (the LAB rules,
+  the resident protocol, `lab_v2*`, `lab_resident.*`) also records a verify-mode placement of the
+  probe, or of the core when the protocol changed, in the tracker; a follow-up commit is fine.
+- The two lab crates deny `unwrap`, `expect`, `panic`, and `unreachable` outside tests: answer
+  with typed errors and call statuses, and keep the FFI's `catch_unwind` as the backstop. A new
+  shape of patch the arch sends goes into the resident module's list and the oracle generator in
+  the same change.
+- Stats lines are `name: key=value` and stable across builds, and nothing logs per query;
+  `--telemetry` is the machine-readable form. `--report` stays byte-identical for the same run.
+- A test that creates cells or nets in the shared fixture context takes them down again; the
+  fixture's teardown fails the test otherwise.
 - Untracked `AGENTS.md` and `mistral/tests/__pycache__/` are not part of the LAB work; leave them.
 
 ## Repository guidelines (from AGENTS.md)
