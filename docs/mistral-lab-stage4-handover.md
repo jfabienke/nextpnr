@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `6aeaea47` (Stage 6 through 6h, the Rust legality authority at parity, the coding rules and their gate, the live monitor)
+- Commit: `8adb09f8` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -57,7 +57,11 @@ Handover point:
   against Quartus's 25.2; recipe in `build/stage6-fullcore/core_probe_flow.sh`,
   outside git). The next units are a hybrid base cost, the LAB-level
   assignment, and timing-driven placement quality (design doc 9.5 to 9.7).
-- Legacy LAB legality remains the default. Rust authority is opt-in.
+- The Rust LAB legality authority is the default in Rust builds since 2026-09-19
+  (`--lab-legality rust`; legacy in Rust-disabled builds and by `--lab-legality
+  legacy`), with the annealer on the overlay seam (`--sa-seam on`). The Stage 1
+  control-plan authority stays legacy: the complete evaluator owns the control
+  check. Tracker entry "Promotion".
 - Parallel placement evaluation exists behind `--placer-lookahead N` (with
   `--threads W`), is byte-identical to the serial search, and is off by default.
   It is not promoted: it measured no end-to-end gain on Fabi386.
@@ -80,10 +84,10 @@ The live modes are:
 
 | Mode | Behavior |
 | --- | --- |
-| `legacy` | Apply the C++ result; default mode |
+| `legacy` | Apply the C++ result; the default for `--lab-controls`, and for `--lab-legality` in Rust-disabled builds |
 | `shadow` | Apply C++ after detached comparison |
 | `verify` | Apply Rust only after exact C++ agreement |
-| `rust` | Apply a validated Rust result |
+| `rust` | Apply a validated Rust result; the default for `--lab-legality` in Rust builds since 2026-09-19 |
 
 Stage 2 retained the single-search capture, reduced Rust decoder temporaries,
 and direct final-buffer construction. The complete warm V1 dispatch target of
@@ -368,6 +372,8 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `dfae9b8d` | The live monitor's renderer (`rust/npnr_mistral_monitor`) and its C ABI (the FFI crate's `monitor` module) |
 | `ac23a858` | `--monitor`: the session that owns the terminal, feeds the log tail, and renders from atomics and the phase clock (`mistral/monitor.*`) |
 | `6aeaea47` | The monitor recorded: tracker entry, decision row, design section 12; the gate and CLAUDE.md cover the monitor crate |
+| `79e977f5` | The Rust LAB evaluator promoted to the default authority in Rust builds; `--sa-seam on` default; the gate's probe on the real default path |
+| `8adb09f8` | The promotion and the concurrency decision recorded |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
@@ -421,21 +427,27 @@ Key files: `common/place/placer1.h/.cc` (seam types, overlay, shadow, batch),
 (`mistral_assess_swap`, `mistral_commit_swap`), `mistral/tests/lab_legality.cc`
 (`SwapSeam*`).
 
-## Rust evaluator: concluded
+## Rust evaluator: concluded in Stage 4, reopened twice, promoted
 
-The two crates (`npnr_mistral_lab`, `npnr_mistral_lab_ffi`) are concluded at
-their current contract: ABI V1, ABI V2, and the frozen-batch handle. They stay
-in the build as the parity harness (`--lab-controls`/`--lab-legality` shadow
-and verify modes, and the fatal Rust cross-check on every lookahead candidate)
-and are not promoted to default authority or extended into the next design.
-The tracker records the safety, memory, cost, and maintainability evaluation
-behind this. Reopen only for a revision of `LegacyControlRulesV1`, which must
-then be versioned in both implementations or the Rust authority modes retired.
+The crates (`npnr_mistral_lab`, `npnr_mistral_lab_ffi`, and since 2026-09-19
+`npnr_mistral_monitor`) were concluded at the end of Stage 4 at their contract:
+ABI V1, ABI V2, and the frozen-batch handle. They were reopened twice at the
+user's direction, each time for one recorded unit: the resident LAB snapshots
+that brought the Rust legality authority to parity (tracker entry "Rust
+legality at parity"), and the live monitor (tracker entry "The live monitor").
+On 2026-09-19 the Rust legality authority became the default in Rust builds
+(tracker entry "Promotion"); the shadow and verify modes and the capture path
+remain the parity harness, and the fatal Rust cross-check on every lookahead
+candidate stays. A rules revision must be versioned in both implementations,
+and a protocol revision must extend the resident module's patch-shape list and
+the oracle in the same change.
 
 ## Default-mode and promotion policy
 
-Legacy remains the default. Completing a stage gate does not automatically
-promote Rust authority, parallel evaluation, performance QoS, or incremental
-reuse. Each promotion requires its own evidence-backed decision, with a simple
-fallback path retained until full P&R parity and operational stability are
-established.
+The Rust legality authority and the annealer's overlay seam are the defaults
+in Rust builds since 2026-09-19, by the user's decision on the recorded
+evidence; the legacy rules remain in every build as the fallback and the
+harness reference. Completing a stage gate does not automatically promote
+anything else: parallel evaluation, performance QoS, and incremental reuse
+each require their own evidence-backed decision, and the concurrency paths
+were considered and left off on 2026-09-19 (tracker decision log).
