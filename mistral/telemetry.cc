@@ -53,7 +53,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
     const auto &lc = arch.lab_control_stats;
     const auto &ll = arch.lab_legality_stats;
     char checksum[16];
-    snprintf(checksum, sizeof(checksum), "0x%08x", arch.telemetry_checksum);
+    snprintf(checksum, sizeof(checksum), "0x%08x", arch.telemetry_checksum.load());
     Json::object options{
             {"lab_controls", lab_control_mode_name(a.lab_controls)},
             {"lab_legality", lab_legality_mode_name(a.lab_legality)},

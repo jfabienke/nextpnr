@@ -28,6 +28,7 @@
 #include "lab_v2.h"
 #include "lab_v2_replay.h"
 #include "log.h"
+#include "monitor.h"
 #include "nextpnr.h"
 #include "placement_coordinator.h"
 #include "placement_pool.h"
@@ -2868,6 +2869,50 @@ TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
     for (NetInfo *n : nets)
         ctx->nets.erase(n->name);
 }
+
+TEST(MonitorLog, ChunksSplitIntoLinesWithThePartialLineCarried)
+{
+    std::string pending;
+    std::vector<std::string> lines;
+    auto emit = [&](const std::string &line) { lines.push_back(line); };
+    split_log_lines(pending, "Info: one\nInfo: tw", emit);
+    split_log_lines(pending, "o\n\nInfo: three", emit);
+    EXPECT_EQ(lines, (std::vector<std::string>{"Info: one", "Info: two", ""}));
+    EXPECT_EQ(pending, "Info: three");
+    split_log_lines(pending, "\n", emit);
+    EXPECT_EQ(lines.back(), "Info: three");
+    EXPECT_TRUE(pending.empty());
+}
+
+#ifndef NO_RUST
+TEST_F(LabControlCaptureTest, MonitorSessionCollectsPhasesAndRendersTheFrame)
+{
+    // `--monitor` in its dry form: no terminal, no log hook, no ticker; the session collects the
+    // phase clock and the counters and the renderer draws them.
+    auto session = MonitorSession::start(*ctx, "probe", "", true);
+    ASSERT_NE(session, nullptr);
+    session->phase(NPNR_MONITOR_PHASE_PLACE);
+    NpnrMonitorSnapshotV1 snapshot{};
+    session->fill(snapshot);
+    EXPECT_EQ(snapshot.phase, uint32_t(NPNR_MONITOR_PHASE_PLACE));
+    EXPECT_EQ(snapshot.cells, ctx->cells.size());
+    EXPECT_EQ(snapshot.nets, ctx->nets.size());
+    EXPECT_EQ(snapshot.legality[0], ctx->lab_legality_stats.evaluations.load());
+    EXPECT_GE(snapshot.run_seconds, 0.0);
+    EXPECT_GT(snapshot.phase_seconds[NPNR_MONITOR_PHASE_LOAD] + snapshot.phase_seconds[NPNR_MONITOR_PHASE_PLACE], 0.0);
+    std::string frame;
+    EXPECT_EQ(session->render_to(frame), uint32_t(NPNR_LAB_CALL_OK));
+    EXPECT_NE(frame.find("phase: PLACE"), std::string::npos) << frame;
+    EXPECT_NE(frame.find("probe @ "), std::string::npos);
+    EXPECT_NE(frame.find("lab-controls legacy  lab-legality legacy"), std::string::npos) << frame;
+    EXPECT_NE(frame.find("log: not kept (add --log)"), std::string::npos);
+    EXPECT_NE(frame.find("LAB LEGALITY (legacy)"), std::string::npos);
+    EXPECT_EQ(session->last_status(), uint32_t(NPNR_LAB_CALL_OK));
+    const auto options = monitor_option_lines(ctx->args);
+    EXPECT_EQ(options.size(), 3u);
+    EXPECT_NE(options[2].find("router2 unit-cost off"), std::string::npos);
+}
+#endif
 
 TEST_F(LabControlCaptureTest, TelemetryFileCarriesThePhaseChecksumAndCounters)
 {

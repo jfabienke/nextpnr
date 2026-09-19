@@ -86,7 +86,7 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
         const uint32_t status = npnr_mistral_resident_v2_reset(handle_, lab, lab_info.is_mlab ? 1u : 0u);
         if (status != NPNR_LAB_CALL_OK)
             return status;
-        ++resets;
+        bump(resets);
         dirty = kAllBelsDirty;
         refacts = kAllBelsDirty;
         std::fill_n(committed_lut_.begin() + size_t(lab) * 20, 20, NpnrLabLutV2{});
@@ -108,7 +108,7 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
         const uint8_t alm = uint8_t(bel / 6), slot = uint8_t(bel % 6);
         const CellInfo *now = *bound_[base + bel];
         if (!(refacts & bit) && now == occupant_[base + bel]) {
-            ++restored;
+            bump(restored);
             has_pending_[base + bel] = 0;
             continue;
         }
@@ -122,7 +122,7 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
         const void *fresh = is_lut ? static_cast<const void *>(&patch.lut) : static_cast<const void *>(&patch.ff);
         const size_t size = is_lut ? sizeof(NpnrLabLutV2) : sizeof(NpnrLabFfV2);
         if (std::memcmp(fresh, committed, size) == 0) {
-            ++restored;
+            bump(restored);
             has_pending_[base + bel] = 0;
             occupant_[base + bel] = now;
             refacts &= ~bit;
@@ -142,7 +142,7 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
     const uint32_t status =
             npnr_mistral_resident_v2_evaluate(handle_, lab, count ? batch.data() : nullptr, count, query, query_alm,
                                               recompute ? NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS : 0u, &out);
-    ++evaluations;
+    bump(evaluations);
     if (status == NPNR_LAB_CALL_OK && out.status != NPNR_LAB_V2_MALFORMED) {
         dirty = still_dirty;
         for (uint32_t i = 0; i < count; ++i) {
@@ -156,9 +156,9 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
                 has_pending_[base + bel] = 0;
                 occupant_[base + bel] = *bound_[base + bel];
                 refacts &= ~(uint64_t(1) << bel);
-                ++commits;
+                bump(commits);
             } else {
-                ++trials;
+                bump(trials);
             }
         }
     }

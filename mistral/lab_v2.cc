@@ -644,7 +644,7 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
     // patched in), in every non-legacy mode. Shadow and verify also run the capture path, C++ and
     // Rust, as the parity harness: the three verdicts and the live check must agree.
     if (!arch.lab_resident)
-        arch.lab_resident = std::make_shared<ResidentLabLegality>(arch);
+        std::atomic_store(&arch.lab_resident, std::make_shared<ResidentLabLegality>(arch));
     NpnrLabVerdictV2 candidate{};
     const uint32_t call =
             arch.lab_resident->evaluate(arch, lab, query, query_alm, mode != LabLegalityMode::Rust, candidate);
@@ -725,8 +725,9 @@ void report_lab_legality_stats(const Arch &arch)
     if (arch.lab_resident)
         log_info("LAB legality resident: evaluations=%" PRIu64 " resets=%" PRIu64 " trials=%" PRIu64 " commits=%" PRIu64
                  " restored=%" PRIu64 ".\n",
-                 arch.lab_resident->evaluations, arch.lab_resident->resets, arch.lab_resident->trials,
-                 arch.lab_resident->commits, arch.lab_resident->restored);
+                 arch.lab_resident->evaluations.load(), arch.lab_resident->resets.load(),
+                 arch.lab_resident->trials.load(), arch.lab_resident->commits.load(),
+                 arch.lab_resident->restored.load());
 }
 
 NEXTPNR_NAMESPACE_END

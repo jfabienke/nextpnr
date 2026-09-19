@@ -21,6 +21,7 @@
 #define MISTRAL_LAB_RESIDENT_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -59,7 +60,13 @@ struct ResidentLabLegality
     uint32_t evaluate(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm, bool recompute,
                       NpnrLabVerdictV2 &out);
 
-    uint64_t evaluations = 0, resets = 0, trials = 0, commits = 0, restored = 0;
+    // Single-writer counters: the owner thread bumps them with a relaxed load and store (a plain
+    // add on the hot path) and the monitor's ticker reads them.
+    std::atomic<uint64_t> evaluations{0}, resets{0}, trials{0}, commits{0}, restored{0};
+    static void bump(std::atomic<uint64_t> &counter)
+    {
+        counter.store(counter.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
 
   private:
     NpnrLabResidentV2 *handle_ = nullptr;

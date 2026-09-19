@@ -18,12 +18,14 @@
  */
 
 #include <cerrno>
+#include <filesystem>
 #include <fstream>
 #include "build_state.h"
 #include "command.h"
 #include "design_utils.h"
 #include "jsonwrite.h"
 #include "log.h"
+#include "monitor.h"
 #include "timing.h"
 
 USING_NEXTPNR_NAMESPACE
@@ -90,6 +92,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                                             "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
+    specific.add_options()("monitor", "show a live dashboard of the run in the terminal (phases, LAB legality and "
+                                      "resident counters, placer and router progress, log tail); the log text "
+                                      "goes to --log");
     specific.add_options()("telemetry", po::value<std::string>(),
                            "write the run's counters (LAB legality, resident session, control sets), options, "
                            "checksum, and phase times as JSON to this file after placement and after routing");
@@ -120,6 +125,7 @@ po::options_description MistralCommandHandler::getArchOptions()
 
 void MistralCommandHandler::customBitstream(Context *ctx)
 {
+    ctx->monitor_phase(NPNR_MONITOR_PHASE_SIGNOFF);
     report_lab_control_stats(*ctx);
     report_lab_legality_stats(*ctx);
     write_lab_control_profile(*ctx);
@@ -259,6 +265,13 @@ void MistralCommandHandler::customAfterLoad(Context *ctx)
         std::string filename = vm["qsf"].as<std::string>();
         auto in = open_ifstream_and_log_error(filename, "input QSF file");
         ctx->read_qsf(in);
+    }
+    if (vm.count("monitor")) {
+        const char *source = vm.count("json") ? "json" : vm.count("resume") ? "resume" : nullptr;
+        const std::string design =
+                source ? std::filesystem::path(vm[source].as<std::string>()).stem().string() : std::string();
+        const std::string log_path = vm.count("log") ? vm["log"].as<std::string>() : std::string();
+        ctx->monitor = MonitorSession::start(*ctx, design, log_path);
     }
 }
 

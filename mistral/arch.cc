@@ -714,6 +714,7 @@ void Arch::report_lab_states() const
 
 bool Arch::place()
 {
+    monitor_phase(NPNR_MONITOR_PHASE_PLACE);
     // Stage 5 (3a): adopt the context in the phase this step needs and run
     // the typed transition; the phase check catches a second placement or a
     // placement of an unpacked design at the legacy boundary.
@@ -1105,6 +1106,7 @@ void Arch::prepare_route()
 
 bool Arch::route()
 {
+    monitor_phase(NPNR_MONITOR_PHASE_ROUTE_PREPARE);
     Context &ctx = *getCtx();
     Build<BuildPhase::RoutePrepared> prepared = [&]() {
         if (checkpoint_phase_ == "route-prepared") {
@@ -1123,6 +1125,7 @@ bool Arch::route()
 
 bool Arch::run_router_phase()
 {
+    monitor_phase(NPNR_MONITOR_PHASE_ROUTE);
     const auto started = std::chrono::steady_clock::now();
     // Stage 6 (6f) diagnostic: MISTRAL_DUMP_LAB_LINES=x,y prints, for LAB (x,y), every input line's
     // sources by wire type and every LAB output's destinations by type, with the column wires named.

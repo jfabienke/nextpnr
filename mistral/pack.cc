@@ -1243,6 +1243,7 @@ struct MistralPacker
 
 bool Arch::pack()
 {
+    monitor_phase(NPNR_MONITOR_PHASE_PACK);
     MistralPacker packer(getCtx());
     packer.run();
 

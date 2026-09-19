@@ -20,6 +20,7 @@
 #ifndef MISTRAL_ARCH_H
 #define MISTRAL_ARCH_H
 
+#include <atomic>
 #include <set>
 #include <sstream>
 
@@ -34,6 +35,7 @@
 #include "relptr.h"
 
 #include "cyclonev.h"
+#include "monitor_abi.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -747,7 +749,11 @@ struct Arch : BaseArch<ArchRanges>
     // For `--telemetry`: wall time of the placement and routing phases, and the design checksum
     // taken where the placer and router log theirs (before the arch attributes are written).
     mutable double telemetry_placement_seconds = 0.0, telemetry_routing_seconds = 0.0;
-    mutable uint32_t telemetry_checksum = 0;
+    mutable std::atomic<uint32_t> telemetry_checksum{0};
+    // `--monitor`: the live dashboard session, started by the command handler after the netlist
+    // is loaded; null otherwise. The phase hooks cost one test without it.
+    mutable std::shared_ptr<struct MonitorSession> monitor;
+    void monitor_phase(uint32_t phase) const;
     static uint64_t lab_bel_bit(const BelInfo &data)
     {
         return uint64_t(1) << (data.lab_data.alm * 6 + (data.type == id_MISTRAL_FF ? 2 : 0) + data.lab_data.idx);
