@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `d0689a6f` (Stage 6, 6a to 6h; the full core routes to completion)
+- Commit: `e5699589` (Stage 6 through 6h, the Rust legality authority at parity on the probe)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -41,6 +41,12 @@ Handover point:
   wires because LAB lines are fed by row wires (a vertical hop is a
   stair) and registers seldom pack with their LUTs (16% against 95%); negotiation variants
   move the core's plateau 13%, a unit wire cost halves it
+  The Rust legality authority was brought to parity at the user's
+  direction (2026-09-19, tracker "Rust legality at parity", design section
+  10): resident LAB snapshots patched per bel replace the capture per
+  query in every non-legacy mode, the exec probe runs at legacy wall time
+  with `--sa-seam on`, the full core at 1.4 times legacy placement, both
+  byte-identical with the verify harness at zero mismatches.
   (`--router2-unit-cost`, `--router2-reroute`, both opt-in). 6g packs a
   register into its LUT's ALM half (`--register-packing`, opt-in):
   5,360 of the core's 9,632 LUT-driven registers pack; the core's router plateau is a third of 6f's under the unit wire cost and 15% worse under the delay cost. 6h makes HeAP's spreader and legaliser weigh a vertical
@@ -356,6 +362,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `18841bf3` | Stage 6 unit 6f: the router's share measured on the identical netlist (2.8 times Quartus's fabric wires, row-fed LAB lines, unpacked registers); `--router2-reroute`, `--router2-unit-cost`, per-tile utilisation dump |
 | `0f9abd87` | Stage 6 unit 6g: register packing (`--register-packing`), the spreader's per-bucket cluster weight, the packer's control-set check |
 | `d0689a6f` | Stage 6 unit 6h: the row-aware placement cost (`--row-cost`); the full core routes to completion |
+| `e5699589` | The Rust legality authority at parity: resident LAB snapshots (`ResidentLabs`, `BelPatchV2`, `mistral/lab_resident.*`), the capture path kept as the harness |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
