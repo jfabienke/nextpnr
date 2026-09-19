@@ -14,6 +14,17 @@
 //! for the run; the rules compare ids for equality only, and the mirror maps
 //! the control keys to the model's small ids with a reference-counted table.
 //! The verdict equals `evaluate_lab_v2` over the same facts field for field.
+//!
+//! What the arch sends in one call, and what the oracle test must generate
+//! (`mistral/lab_resident.cc` is the caller):
+//! 1. one trial: the legaliser bound a candidate and asks;
+//! 2. nothing: the bel is back to the committed facts, or the LAB is unchanged;
+//! 3. commits: bels found unchanged at the query after their trial;
+//! 4. a commit and a trial of the same ALM in one call;
+//! 5. several trials, in one ALM or several: the annealer's swaps;
+//! 6. a burst of up to sixty commits: a LAB just reset, or a chain bound
+//!    before any query (more than `MAX_TRIALS` changed bels);
+//! 7. a patch whose facts equal the held facts, which is skipped.
 
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
@@ -769,14 +780,45 @@ mod tests {
             resident.reset(lab, lab == 2).unwrap();
         }
         let (mut legal, mut trials, mut ff_legal) = (0, 0, 0);
+        let mut bursts = 0;
+        let mut unchanged = 0;
         for step in 0..8000u64 {
             let lab = rng.next(3) as usize;
             let count = rng.next(4) as usize;
             let mut patches: Vec<BelPatchV2> = Vec::new();
+            if step % 40 == 39 {
+                // Shape 6: a burst of commits over every bel, as after a reset.
+                for alm in 0..ALMS as u32 {
+                    for slot in 0..(LUTS + FFS) as u32 {
+                        let mut patch = random_patch(&mut rng, &keys, alm, slot);
+                        patch.commit = 1;
+                        patches.push(patch);
+                    }
+                }
+                bursts += 1;
+            }
             while patches.len() < count {
                 let alm = rng.next(ALMS as u32);
                 let slot = rng.next((LUTS + FFS) as u32);
                 if patches.iter().any(|p| p.alm == alm && p.slot == slot) {
+                    continue;
+                }
+                if step % 10 == 9 {
+                    // Shape 7: the held facts resent, as a trial, which changes nothing.
+                    let held = &shadow[lab].alm[alm as usize];
+                    let mut patch = BelPatchV2 {
+                        alm,
+                        slot,
+                        commit: 0,
+                        ..BelPatchV2::default()
+                    };
+                    if (slot as usize) < LUTS {
+                        patch.lut = held.lut[slot as usize];
+                    } else {
+                        patch.ff = held.ff[slot as usize - LUTS];
+                    }
+                    patches.push(patch);
+                    unchanged += 1;
                     continue;
                 }
                 patches.push(random_patch(&mut rng, &keys, alm, slot));
@@ -831,6 +873,10 @@ mod tests {
         assert!(
             ff_legal > 30,
             "legal control verdicts should occur: {ff_legal}"
+        );
+        assert!(
+            bursts >= 190 && unchanged >= 300,
+            "{bursts} bursts, {unchanged} unchanged"
         );
     }
 

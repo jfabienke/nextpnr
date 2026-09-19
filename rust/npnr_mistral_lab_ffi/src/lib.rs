@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: ISC
 //! Synchronous, caller-owned batch transport. No pointers are retained.
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 #[cfg(not(panic = "unwind"))]
 compile_error!("LAB FFI requires panic=unwind for its containment boundary");
@@ -80,11 +87,12 @@ fn release_batch(worker_id: u64, bytes: usize) {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     quota.retained_bytes -= bytes;
-    let worker_count = quota
-        .workers
-        .get_mut(&worker_id)
-        .expect("owned batch quota");
-    *worker_count -= 1;
+    // A release without a reservation cannot happen through the handle contract; if it did,
+    // the quota stays as it was rather than the process going down.
+    let Some(worker_count) = quota.workers.get_mut(&worker_id) else {
+        return;
+    };
+    *worker_count = worker_count.saturating_sub(1);
     if *worker_count == 0 {
         quota.workers.remove(&worker_id);
     }

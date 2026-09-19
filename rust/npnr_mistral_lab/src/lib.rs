@@ -43,6 +43,15 @@
 //! ```
 
 #![forbid(unsafe_code)]
+// The evaluator answers with typed errors and call statuses; a panic is a defect, and the FFI's
+// `catch_unwind` is the backstop for the one source that remains (indexing by validated ids).
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod model;
 mod resident;
