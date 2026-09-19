@@ -45,12 +45,14 @@
 #![forbid(unsafe_code)]
 
 mod model;
+mod resident;
 mod rules;
 mod v2;
 pub mod v2_wire;
 pub mod wire;
 
 pub use model::{BoundaryError, ControlKind, ControlLabSnapshot, RejectionReason};
+pub use resident::{ResidentError, ResidentLabs};
 pub use rules::{ControlAllocation, ControlAssessment, ControlConflict, evaluate};
 pub use v2::{
     LabV2BoundaryError, ValidatedLabSnapshotV2, evaluate_lab_v2, evaluate_lab_v2_wire_into,

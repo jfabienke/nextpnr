@@ -1040,3 +1040,55 @@ core, under the unit wire cost. The delay cost with the same recipe is
 the next measurement, because the unit cost's routes are delay-blind and
 the signoff Fmax it produces is a lower bound.
 
+## 10. The Rust evaluator at parity: resident LAB snapshots
+
+The crate was concluded in Stage 4 as a parity harness on a value
+contract: every query captured the whole LAB into a record, Rust
+validated and evaluated the record, and no live pointer crossed the
+boundary. That contract made the evaluator independent and safe, and it
+made the authority mode slow by construction: on the exec probe the
+capture was 62% of every query and the record's validation another 19%,
+and the full core's legaliser asks tens of millions of times, so the
+mode ran an order of magnitude behind the live C++ check. The user
+directed a performance revision to reach parity (2026-09-18), the one
+reopening the concluded entry had not foreseen.
+
+The resident session keeps the contract and removes the capture. Rust
+owns one snapshot per LAB, validated once at reset and then patched one
+ALM at a time (`AlmPatchV2`: the ALM's LUT and register facts, net ids
+as run-stable keys, since the rules compare ids only for equality).
+The arch marks the ALMs whose bindings or facts changed from the same
+hooks that version LABs for reuse (`Arch::lab_alm_dirty`), so a query
+sends only what changed since the LAB's last query, usually one ALM,
+and the session evaluates over cached per-ALM input counts and a cached
+control projection; the verdict equals `evaluate_lab_v2` over the same
+facts field for field (the crate's oracle test says so over random
+patch sequences), which keeps the C++ detached evaluator and the
+capture path as the parity harness in the shadow and verify modes.
+
+Two placement patterns shaped the protocol, and the core's profile
+shaped the granularity. The legaliser binds a candidate, asks, and
+usually unbinds; the annealer swaps, asks, and usually reverts. So a
+changed bel travels as a trial the session holds in view for that
+evaluation only, and is committed when the next query of that LAB finds
+it unchanged; a bel whose occupant is back to the one the committed
+facts were built from sends nothing, and a LAB just reset or a chain
+bound before any query travels as commits. The patch is one bel, not
+one ALM, because the placer changes one bel per query and the core's
+legaliser spent a third of each query building and comparing the other
+five. Register queries run the control-set rules on a resident mirror
+of the control model's own snapshot, with the trial rows substituted on
+a copy, instead of projecting forty registers into a record and
+validating it each time; the mirror maps the control net keys to the
+model's ids with a reference-counted table. The ALM rules read the six
+slots by reference with the trial substituted, so nothing is copied for
+a trial, and the ALM's unique input count travels in each patch as the
+arch keeps it, one fact among the others the arch supplies; the
+authority mode takes it, the shadow and verify modes recompute it from
+the facts and report a difference, as the capture path always did. What
+remains per query is the FFI call, the ALM rules for the queried ALM,
+and the control rules for a register query, and on the probe the Rust
+authority with the annealer on the overlay seam runs at the legacy
+path's wall time; the core's number is the measurement in the tracker's
+parity entry.
+

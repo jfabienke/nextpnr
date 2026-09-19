@@ -31,6 +31,13 @@ impl ControlConflict<'_> {
     pub fn control_kind(&self) -> ControlKind {
         self.failure.kind
     }
+    /// The register whose signal could not be placed, as the wire result reports it.
+    pub(crate) fn ff_slot(&self) -> u32 {
+        self.failure.incoming.origin.map_or(u32::MAX, FfSlot::index)
+    }
+    pub(crate) fn resource_mask(&self) -> u32 {
+        u32::from(self.failure.mask)
+    }
 }
 
 impl ControlAssessment<'_> {

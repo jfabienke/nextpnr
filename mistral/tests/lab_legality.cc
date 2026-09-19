@@ -20,6 +20,7 @@
 #include "lab_control_plan.h"
 #include "lab_preparation.h"
 #include "lab_replay.h"
+#include "lab_resident.h"
 #include "lab_reuse.h"
 #include "lab_snapshot.h"
 #include "lab_v2.h"
@@ -1616,6 +1617,99 @@ TEST_F(LabControlCaptureTest, V2EveryDetachedSubcheckHasRustParity)
 }
 
 #ifndef NO_RUST
+#ifndef NO_RUST
+TEST_F(LabControlCaptureTest, ResidentLegalityPatchesChangedAlmsAndMatchesTheCapturePath)
+{
+    // Stage 6 (parity): the Rust modes evaluate through a resident LAB snapshot that receives
+    // only the ALMs changed since its last query. Its verdicts must equal the capture path's,
+    // a query on an unchanged LAB must send nothing, and a facts change on a bound cell must
+    // reach it.
+    ctx->args.lab_legality = LabLegalityMode::Rust;
+    ctx->lab_resident.reset();
+    ctx->lab_bel_dirty.clear();
+    ctx->lab_bel_refacts.clear();
+    auto &lab0 = ctx->labs.at(0);
+    auto reference = [&](NpnrLabQueryV2 query, uint32_t alm) {
+        return evaluate_lab_v2_cpp(capture_lab_v2(*ctx, 0, query, alm, 1, 1)).status == NPNR_LAB_V2_LEGAL;
+    };
+    cells[0]->ffInfo.ctrlset.clk = {nets[0], false};
+    cells[4]->ffInfo.ctrlset.clk = {nets[0], false};
+    cells[8]->ffInfo.ctrlset.clk = {nets[0], false};
+    cells[8]->ffInfo.ctrlset.ena = {nets[2], true};
+    bind(0);
+    bind(4);
+    bind(8);
+    ASSERT_TRUE(reference(NPNR_LAB_QUERY_FF_BEL, 0));
+    // The first query creates the session, resets LAB 0, and commits the three bound registers
+    // (a resync after a reset travels as commits); later queries on the unchanged LAB send nothing.
+    auto query0 = [&](unsigned alm) { return ctx->isBelLocationValid(lab0.alms[alm].ff_bels[0]); };
+    EXPECT_EQ(query0(0), reference(NPNR_LAB_QUERY_FF_BEL, 0));
+    ASSERT_TRUE(ctx->lab_resident && ctx->lab_resident->available());
+    EXPECT_EQ(ctx->lab_resident->resets, 1u);
+    const uint64_t first = ctx->lab_resident->commits;
+    EXPECT_EQ(first, 3u);
+    EXPECT_EQ(ctx->lab_resident->trials, 0u);
+    EXPECT_EQ(query0(1), reference(NPNR_LAB_QUERY_FF_BEL, 1));
+    EXPECT_EQ(query0(2), reference(NPNR_LAB_QUERY_FF_BEL, 2));
+    EXPECT_EQ(ctx->lab_resident->trials + ctx->lab_resident->commits, first);
+    // One more register in the other half of ALM 0: one trial, then one commit, still legal.
+    cells[2]->ffInfo.ctrlset.clk = {nets[0], false};
+    bind(2);
+    EXPECT_TRUE(reference(NPNR_LAB_QUERY_FF_BEL, 0));
+    EXPECT_TRUE(ctx->isBelLocationValid(lab0.alms[0].ff_bels[2]));
+    EXPECT_EQ(ctx->lab_resident->trials, 1u);
+    EXPECT_TRUE(query0(0));
+    EXPECT_EQ(ctx->lab_resident->commits, first + 1);
+    // A second register in a half is illegal on both paths: a trial the session undoes, so
+    // unbinding it restores the committed facts and the next query sends nothing.
+    cells[1]->ffInfo.ctrlset.clk = {nets[0], false};
+    bind(1);
+    EXPECT_FALSE(reference(NPNR_LAB_QUERY_FF_BEL, 0));
+    EXPECT_FALSE(ctx->isBelLocationValid(lab0.alms[0].ff_bels[1]));
+    EXPECT_EQ(ctx->lab_resident->trials, 2u);
+    const uint64_t restored = ctx->lab_resident->restored;
+    ctx->unbindBel(cells[1]->bel);
+    EXPECT_TRUE(query0(0));
+    EXPECT_EQ(ctx->lab_resident->trials, 2u);
+    EXPECT_EQ(ctx->lab_resident->commits, first + 1);
+    EXPECT_EQ(ctx->lab_resident->restored, restored + 1);
+    // A control-set change on a bound register, reported the way assign_ff_info reports it,
+    // reaches the session: a second clock on ALM 1 makes the LAB's controls illegal.
+    cells[4]->ffInfo.ctrlset.clk = {nets[3], true};
+    cells[4]->ffInfo.ctrlset.ena = {nets[4], false};
+    cells[4]->ffInfo.ctrlset.sclr = {nets[5], false};
+    cells[4]->ffInfo.ctrlset.sload = {nets[6], false};
+    ctx->note_lab_cell_mutation(cells[4]);
+    const bool changed = reference(NPNR_LAB_QUERY_FF_BEL, 1);
+    EXPECT_EQ(query0(1), changed);
+    EXPECT_EQ(ctx->lab_resident->trials, 3u);
+    EXPECT_EQ(query0(1), changed);
+    EXPECT_EQ(ctx->lab_resident->commits, first + 2);
+    // Every scoped query agrees with the capture path, and none sends a patch.
+    for (unsigned alm = 0; alm < 10; ++alm) {
+        EXPECT_EQ(ctx->isBelLocationValid(lab0.alms[alm].lut_bels[0]), reference(NPNR_LAB_QUERY_COMB_BEL, alm))
+                << "comb alm " << alm;
+        EXPECT_EQ(ctx->isBelLocationValid(lab0.alms[alm].ff_bels[0]), reference(NPNR_LAB_QUERY_FF_BEL, alm))
+                << "ff alm " << alm;
+    }
+    EXPECT_EQ(ctx->lab_resident->trials + ctx->lab_resident->commits, first + 5);
+    // The verify harness runs the capture path beside the resident and finds no disagreement.
+    ctx->args.lab_legality = LabLegalityMode::Verify;
+    const auto mismatches = ctx->lab_legality_stats.mismatches.load();
+    const auto errors = ctx->lab_legality_stats.errors.load();
+    for (unsigned alm = 0; alm < 10; ++alm) {
+        ctx->isBelLocationValid(lab0.alms[alm].lut_bels[1]);
+        ctx->isBelLocationValid(lab0.alms[alm].ff_bels[2]);
+    }
+    EXPECT_EQ(ctx->lab_legality_stats.mismatches.load(), mismatches);
+    EXPECT_EQ(ctx->lab_legality_stats.errors.load(), errors);
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
+    ctx->lab_resident.reset();
+    ctx->lab_bel_dirty.clear();
+    ctx->lab_bel_refacts.clear();
+}
+#endif
+
 TEST_F(LabControlCaptureTest, V2LiveModesPreserveScopeAndRejectStaleAuthority)
 {
     const auto bel = ctx->labs[0].alms[0].ff_bels[0];
@@ -1634,16 +1728,28 @@ TEST_F(LabControlCaptureTest, V2LiveModesPreserveScopeAndRejectStaleAuthority)
     }
     clear_bindings();
 
+    // A stale cached count: the shadow mode reports it and answers live, the verify mode fails
+    // closed, and the authority mode takes the arch's count as a fact (the resident session
+    // recomputes counts only in the harness modes), so a count over the limit makes it reject.
+    bind(0);
     auto &cached = ctx->labs[0].alms[0].unique_input_count;
     cached = 7;
     ctx->args.lab_legality = LabLegalityMode::Shadow;
     EXPECT_TRUE(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX));
-    for (auto mode : {LabLegalityMode::Verify, LabLegalityMode::Rust}) {
-        ctx->args.lab_legality = mode;
-        EXPECT_THROW(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX),
-                     log_execution_error_exception);
-    }
+    ctx->args.lab_legality = LabLegalityMode::Verify;
+    EXPECT_THROW(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX), log_execution_error_exception);
+    ctx->args.lab_legality = LabLegalityMode::Rust;
+    EXPECT_TRUE(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX));
+    // The count travels with a bel whose facts changed, as it does in the arch (the count
+    // changes when a bel's facts do): a control change on the bound register carries it.
+    cached = resolved_lab_input_limit() + 1;
+    cells[0]->ffInfo.ctrlset.ena = {nets[7], false};
+    ctx->note_lab_cell_mutation(cells[0]);
+    EXPECT_FALSE(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX));
     cached = 0;
+    cells[0]->ffInfo.ctrlset.ena = {};
+    ctx->note_lab_cell_mutation(cells[0]);
+    EXPECT_TRUE(dispatch_lab_legality(*ctx, 0, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX));
     ctx->args.lab_legality = LabLegalityMode::Legacy;
 }
 #endif

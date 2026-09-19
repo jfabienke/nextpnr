@@ -2831,6 +2831,104 @@ against Quartus it is 2.6 times faster in wall time on newer hardware,
 at 0.45 times the Fmax and 1.39 times the ALMs (28,652, of which 8,627
 are route-through LUTs for registers that did not pack).
 
+### 2026-09-18: Rust legality at parity: resident LAB snapshots
+
+The user directed a performance revision of the concluded crate to
+bring the Rust legality authority to parity with the C++ path. The
+benchmark entry above attributed the mode's cost: the whole-LAB capture
+per query 62%, the record's validation 19%, the evaluation itself 9%.
+The revision (design section 10) keeps the value contract and removes
+the per-query capture: Rust owns a resident snapshot per LAB, patched
+one ALM at a time with net ids as run-stable keys; the arch marks the
+changed ALMs from the LAB-version hooks; a changed ALM travels as a
+trial the session undoes after the evaluation and is committed when the
+next query of the LAB finds it unchanged. New surface, all under the
+existing safety rules: `ResidentLabs` and `AlmPatchV2` in the crate,
+`npnr_mistral_resident_v2_{create,reset,evaluate,destroy}` in the FFI
+(owner-only handle, envelope checks, a panic poisons it),
+`ResidentLabLegality` in `mistral/lab_resident.*`, `Arch::lab_alm_dirty`.
+The capture path stays as the parity harness: shadow and verify run the
+capture C++, the capture Rust, and the resident Rust on every query and
+require the verdicts to agree.
+
+Steps and what each measured on the exec probe (`--seed 1 --threads 1
+--freq 12`, four runs in parallel per round):
+
+| Step | HeAP | Refine (SA) | Wall | Note |
+| --- | ---: | ---: | ---: | --- |
+| legacy (final round) | 5.54 s | 9.55 s | 31.1 s | |
+| capture path, `--lab-legality rust` (before) | 12.23 s | 25.66 s | 53.3 s | 14.6 million whole-LAB captures |
+| resident, every dirty ALM patched and applied | 6.85 s | 16.46 s | 39.8 s | 26.0 million patches for 14.6 million queries |
+| resident, ALMs back to the sent facts skipped | 7.09 s | 15.73 s | 39.0 s | 24.0 million patches: a query rarely sees a state the session already holds |
+| resident, trials and commits, pending facts hashed | 9.60 s | 20.78 s | 45.6 s | slower: a byte hash of 376 bytes per differing ALM |
+| resident, trials and commits, pending facts compared | 6.86 s | 15.13 s | 37.3 s | 14.9 million trials, 1.9 million commits, 11.1 million restores |
+| resident, trials as views, control-set cache, lean verdict, occupant signature | 6.78 s | 16.49 s | 40.0 s | the same counts; the session copies nothing for a trial |
+| the same with `--sa-seam on` | 6.41 s | 9.42 s | 32.0 s | within 3% of legacy in the same round |
+| resident on per-bel patches, control rules on a resident mirror of the model's snapshot | 6.74 s | 15.34 s | 38.2 s | the placer changes one bel per query: 15.5 million trials, 2.6 million commits, 15.2 million restores by occupant; register queries run the control rules without a projection (legacy in this round: 5.61 s, 9.79 s, 31.6 s) |
+| the same with `--sa-seam on` | 6.77 s | 10.98 s | 34.6 s | |
+| resident without per-query buffers (trials composed on demand, the mirror's table scanned to its used length, resyncs and chain binds sent as commits, at most eight trials in view) | 6.21 s | 13.25 s | 35.3 s | legacy in this round: 5.54 s, 9.80 s, 31.1 s |
+| the same with `--sa-seam on` | 6.14 s | 9.37 s | 31.3 s | at parity with legacy (31.1 s), verify zero mismatches |
+| resident with the ALM rules over slot references and the arch's ALM input count carried in each patch (recomputed only in the harness modes) | 6.33 s | 13.68 s | 36.3 s | legacy in this round: 6.00 s, 10.95 s, 33.4 s |
+| the same with `--sa-seam on` | 6.41 s | 10.99 s | 34.2 s | at parity with legacy (33.4 s), verify zero mismatches |
+| resident with the trial rows written into the mirror in place and undone, the patch batch off the stack, and no count comparison in the authority mode (the final build) | 5.81 s | 12.09 s | 33.4 s | legacy in this round: 5.47 s, 9.49 s, 30.7 s |
+| the same with `--sa-seam on` | 5.83 s | 9.16 s | 30.6 s | **at parity with legacy (30.7 s), verify zero mismatches** |
+| `--lab-legality verify` (harness: capture C++, capture Rust, resident Rust, live) | 15.70 s | 41.11 s | 73.4 s | 14,585,426 queries, zero mismatches, zero errors |
+
+Every run's checksums equal the legacy reference (0xbb18ede9 /
+0xbc1365c6). Per query the resident path now costs about 0.2 µs in the
+legaliser against the live check's 0.05 to 0.1 µs; the annealer's swaps
+dirty two ALMs each and cost more, which the overlay seam (Stage 1c)
+answers.
+
+Full core, milestone recipe, four runs in parallel:
+
+| Build and mode | HeAP | Refine | Router2 | Wall | Checksums and harness |
+| --- | ---: | ---: | ---: | ---: | --- |
+| legacy (same round as each row below) | 740 to 757 s | 69 to 73 s | 96 to 103 s | 921 to 953 s | 0xe0b15557 / 0x681553a4 |
+| capture path, `--lab-legality rust` (before) | iteration 2 of 21 after 61 min | | | stopped | |
+| resident, ALM patches, trials and commits | iteration 17 of 21 after 65 min | | | stopped | |
+| resident, per-bel patches and the control mirror | iteration 7 at 16 min, the same pace | | | stopped | |
+| resident, in-place trials and the arch's counts | 1,103 s | 90 s | 97 s | 1,303 s | identical; 5,356,364,659 queries (26.5 million legal), zero mismatches, zero errors; the same with the seam: 1,104 s, 85 s, 97 s, 1,299 s |
+| the final build: trial rows in place, the batch off the stack, no count comparison in the authority mode | 1,065 s | 106 s | 95 s | 1,278 s | identical; 5,356,364,659 queries, zero mismatches, zero errors; the same with the seam: 1,057 s, 95 s, 94 s, 1,260 s (legacy in this round: 750 s, 67 s, 96 s, 926 s) |
+| `--lab-legality verify` on the core (the harness: capture C++, capture Rust, resident Rust, and the live check on every query) | running at this commit (three paths per query on five billion queries); its count lands in a follow-up |
+
+Reading. On the exec probe the Rust legality authority now runs at the
+legacy path's wall time (30.6 s against 30.7 s with the annealer on the
+overlay seam; 33.4 s against 30.7 s without it), byte-identical, with the
+verify harness agreeing on every one of 14.6 million queries. On the
+full core it runs at 1.4 times the legacy placement (1,065 s against
+750 s), byte-identical, from the six times of the first resident build
+and the order of magnitude of the capture path. The gap that remains is
+59 nanoseconds per query over 5.36 billion queries, and it is the
+architecture: the legacy check reads the arch's cached counts and runs
+the native control-set evaluator in place, while the Rust authority
+marshals the changed bel, crosses the FFI, runs the ALM rules on the
+queried ALM and the control rules on the mirror, and writes a verdict,
+about 60 nanoseconds of work that no further trimming of the same design
+removes (the rules themselves are now cheaper than the native ones: the
+mirror's control evaluation costs a quarter of `evaluate_lab_controls_native`).
+What would close it is a per-tile query, one call for a candidate cell
+against every bel of a tile with the verdicts returned as a mask, which
+changes HeAP's legaliser loop (`try_place_cell`) and is a unit of its
+own; it would remove the per-query call and marshalling but not the
+rules, so it lands below 1.2 rather than at 1.0. The harness stands in
+every mode: zero mismatches on the probe and on the core.
+
+Validation as landed: `cargo test --offline --workspace` (the crate's
+oracle test compares 8,000 random per-bel patch sequences, trials and
+commits, with the arch's counts supplied and alternately recomputed,
+against `evaluate_lab_v2` over a shadow model, and the control mirror's
+conflicts, id release, and rejected patches have their own tests; the
+FFI test covers envelopes, malformed patches, the flag, and an unreset
+LAB), `cargo clippy -D warnings` and `cargo fmt --check` on the two lab
+crates (the unrelated `nextpnr` binding crate is not fmt-clean upstream
+and was left alone), `./build/rust-enabled/nextpnr-mistral-test` 61/61
+(new: `ResidentLegalityPatchesChangedAlmsAndMatchesTheCapturePath`; the
+stale-authority test now expects the authority mode to take the arch's
+count and the verify mode to fail closed), `./build/nextpnr-mistral-test`
+50/50, exec probe legacy byte-identical, `git diff --check` and
+`clang-format` clean.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -2924,6 +3022,7 @@ are route-through LUTs for registers that did not pack).
 | 2026-09-17 | 6f | Measure the router's share before changing its negotiation; land the periodic re-route and the unit wire cost as opt-in options with the per-tile utilisation dump; move the next unit to the placement cost model | On the identical netlist nextpnr uses 2.8 times Quartus's fabric wires with a placement of lower wirelength: LAB lines are fed by row wires (88% of inputs), a vertical hop is a stair, registers seldom pack with their LUTs (16% against 95%); the core sits at 67% fabric use against Quartus's 24%; six negotiation variants move the plateau 13% either way, the unit wire cost halves it, none converges |
 | 2026-09-18 | 6g | Pack a register into its LUT's ALM half as a cluster child behind `--register-packing`; one per LUT; the cluster's registers must pass the LAB control model | Probe: 99% of LUT-driven registers packed, Fmax down a few percent, pairing routes in a third of the time; core: 5,360 registers packed, plateau 13,992 under the delay cost (worse than 12,182) and 1,964 under the unit cost (a third of 5,694) |
 | 2026-09-18 | 6h | Make the spreader and the legaliser weigh a vertical tile like the solver does, behind `--row-cost W` | Probe: sink classes move to Quartus's, fabric wires 9% fewer, router slower to settle, Fmax a few percent down; **core: routes to completion for the first time** (0 overused at iteration 45 with the unit cost and periodic re-routes, at 125 with the delay cost), signoff 9.8 to 11.9 MHz against Quartus's 25.2 |
+| 2026-09-18 | Rust | Reopen the concluded crate for a performance revision at the user's direction: resident LAB snapshots patched one ALM at a time replace the per-query capture in every non-legacy legality mode; the capture path stays as the harness | Probe: the Rust authority at wall parity with legacy with the annealer on the overlay seam (30.6 s against 30.7 s), verify mode zero mismatches over 14.6 million queries; core: placement 1,065 s against 750 s (1.4 times, from 6 times on the first resident build and an order of magnitude on the capture path), byte-identical, 5.36 billion queries; the 59 ns per query that remain are the call, the marshalling, and the rules, which a per-tile query would halve |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

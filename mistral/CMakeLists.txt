@@ -31,6 +31,7 @@ set(SOURCES
     lab_replay.cc
     lab_v2_abi.h
     lab_v2.h
+    lab_resident.cc
     lab_v2.cc
     lab_v2_replay.h
     lab_v2_replay.cc

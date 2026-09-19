@@ -32,8 +32,18 @@ NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 que
 NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
                                       const dict<BelId, CellInfo *> &occupancy, uint64_t request_id = 0,
                                       uint64_t epoch = 0);
+// One bel's facts with net ids as run-stable keys (the net name's index plus one), for the
+// resident path: slot 0 or 1 fills `lut`, 2 to 5 fill `ff`; the other half stays zero.
+void capture_bel_v2_keyed(const Arch &arch, uint32_t lab, uint8_t alm, uint8_t slot, NpnrBelPatchV2 &out);
 NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input);
 bool lab_v2_result_valid(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV2 &result);
+bool lab_v2_result_valid(uint64_t request_id, uint64_t snapshot_epoch, uint32_t query, uint32_t query_alm,
+                         const NpnrLabAssessmentV2 &result);
+// A resident verdict's self-consistency for the query it answers, and its agreement with a
+// capture-path assessment on every verdict field (the control allocation's net ids are keys on the
+// resident path and dense ids on the capture path, so they are not compared).
+bool lab_v2_verdict_valid(uint32_t query, const NpnrLabVerdictV2 &verdict);
+bool lab_v2_verdict_matches(const NpnrLabAssessmentV2 &assessment, const NpnrLabVerdictV2 &verdict);
 bool lab_v2_results_match(const NpnrLabAssessmentV2 &a, const NpnrLabAssessmentV2 &b);
 const char *lab_legality_mode_name(LabLegalityMode mode);
 void require_lab_legality_mode(LabLegalityMode mode);

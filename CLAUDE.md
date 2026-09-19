@@ -114,9 +114,17 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
 - `rust/npnr_mistral_lab` is the pure evaluator (`model.rs`, `rules.rs`, `v2.rs`, wire formats);
   `rust/npnr_mistral_lab_ffi` is the C ABI consumed by `mistral/lab_v2_abi.h` /
   `lab_control_abi.h`. Rust owns only validated values and scratch; C++ owns the live design,
-  all mutation, and signoff. No live C++ pointer may cross FFI or sit in a cache. The crates are
-  **concluded** at this contract (see the tracker's "Rust evaluator concluded" entry): keep them
-  as the parity harness, add no new Rust surface, and reopen only for a rules revision.
+  all mutation, and signoff. No live C++ pointer may cross FFI or sit in a cache. The crates were
+  **concluded** at this contract in Stage 4 (tracker: "Rust evaluator concluded") and reopened
+  once, on 2026-09-18 at the user's direction, for a performance revision: `ResidentLabs`
+  (`rust/npnr_mistral_lab/src/resident.rs`) keeps a snapshot per LAB that the arch patches one bel
+  at a time (`BelPatchV2`, net ids as run-stable keys, trial patches held in view for one
+  evaluation, commits on second sight, the arch's ALM input count carried as a fact and recomputed
+  only in the harness modes) with the control rules on a resident mirror of the control model's
+  snapshot, through `npnr_mistral_resident_v2_*` and `mistral/lab_resident.*` (`Arch::lab_bel_dirty`
+  and `lab_bel_refacts` are marked from the LAB-version hooks); `--lab-legality rust|shadow|verify`
+  all evaluate through it, and the capture path stays as the parity harness in shadow and verify.
+  Add no other Rust surface without a recorded decision.
 - Evaluator authority is opt-in via `nextpnr-mistral --lab-controls` and `--lab-legality`, each
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Legacy is and must stay the default**;
   promotion needs its own recorded evidence.
@@ -128,9 +136,11 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   commits strictly in proposal order. Workers may read the live design only because the owner is
   blocked during the parallel section and the capture path writes no shared state. Results are byte-identical to the
   serial search. On the full core (2026-09-18) the lookahead is byte-identical and 10% slower,
-  and `--lab-legality rust` is an order of magnitude slower than the serial C++ path (byte-identical;
-  the cost is the whole-LAB value capture per check, about 1.6 µs, not Rust), which is the recipe to
-  use. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
+  and `--lab-legality rust` on the capture path was an order of magnitude slower than the serial
+  C++ path (the whole-LAB value capture per check, about 1.6 µs, not Rust); the resident path
+  (2026-09-19, tracker "Rust legality at parity") brings it to the legacy wall time on the probe and
+  1.4 times the legacy placement on the core (59 ns per query over 5.36 billion), byte-identical,
+  and the annealer should run on the overlay seam (`--sa-seam on`) in that mode. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.
 - Stage 5 (1c-A): `--sa-seam off|shadow|on` routes `placer1` refinement swaps through a detached

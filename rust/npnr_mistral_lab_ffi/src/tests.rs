@@ -382,3 +382,192 @@ fn frozen_batch_aggregate_retention_is_bounded() {
         unsafe { npnr_mistral_frozen_batch_v2_destroy(batch) };
     }
 }
+
+#[test]
+fn resident_handle_tracks_patches_and_rejects_bad_envelopes() {
+    let mut handle: *mut NpnrLabResidentV2 = null_mut();
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_create(0, 42, &mut handle) },
+        CALL_BAD_COUNT
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_create(2, 42, null_mut()) },
+        CALL_NULL
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_create(2, 42, &mut handle) },
+        CALL_OK
+    );
+    assert!(!handle.is_null());
+    let mut out = MaybeUninit::<LabVerdictV2>::uninit();
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                null(),
+                0,
+                QUERY_WHOLE_LAB,
+                u32::MAX,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_reset(handle, 2, 0) },
+        CALL_BAD_RANGE
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_reset(handle, 0, 0) },
+        CALL_OK
+    );
+    let mut lut = BelPatchV2 {
+        alm: 3,
+        slot: 0,
+        commit: 1,
+        ..BelPatchV2::default()
+    };
+    lut.lut.occupied = 1;
+    lut.lut.input_count = 2;
+    lut.lut.used_input_count = 2;
+    lut.lut.bits_count = 4;
+    lut.lut.mlab_group = -1;
+    lut.lut.input_net[..2].copy_from_slice(&[4_000_000, 5]);
+    lut.lut.comb_out_net = 6;
+    let mut ff = BelPatchV2 {
+        alm: 3,
+        slot: 2,
+        commit: 1,
+        ..BelPatchV2::default()
+    };
+    ff.ff.occupied = 1;
+    ff.ff.datain_net = 6;
+    ff.ff.control[0].net_id = 9;
+    let patches = [lut, ff];
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                patches.as_ptr(),
+                2,
+                QUERY_FF_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_OK
+    );
+    let result = unsafe { out.assume_init() };
+    assert_eq!(result.status, LAB_LEGAL);
+    assert_eq!(result.recomputed_input_count[3], 2);
+    assert_eq!(result.control_valid, 1);
+    // The same facts through the capture path agree on the verdict.
+    let mut facts = LabFactsV2 {
+        query: QUERY_FF_BEL,
+        query_alm: 3,
+        input_limit: 42,
+        net_count: 4,
+        ..LabFactsV2::default()
+    };
+    facts.alm[3].lut[0] = lut.lut;
+    facts.alm[3].lut[0].input_net[..2].copy_from_slice(&[1, 2]);
+    facts.alm[3].lut[0].comb_out_net = 3;
+    facts.alm[3].ff[0] = ff.ff;
+    facts.alm[3].ff[0].datain_net = 3;
+    facts.alm[3].ff[0].control[0].net_id = 4;
+    let mut reference = MaybeUninit::<LabAssessmentV2>::uninit();
+    assert_eq!(
+        unsafe { npnr_mistral_eval_lab_v2(&facts, 1, reference.as_mut_ptr(), 1) },
+        CALL_OK
+    );
+    let reference = unsafe { reference.assume_init() };
+    assert_eq!(result, LabVerdictV2::from(&reference));
+    // A malformed patch is reported in the verdict and leaves the LAB untouched.
+    let mut bad = lut;
+    bad.lut.used_input_count = 5;
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                &bad,
+                1,
+                QUERY_COMB_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_OK
+    );
+    let result = unsafe { out.assume_init() };
+    assert_eq!((result.status, result.reason), (LAB_MALFORMED, BAD_SHAPE));
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                null(),
+                0,
+                QUERY_COMB_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(unsafe { out.assume_init() }.status, LAB_LEGAL);
+    // Envelope failures.
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                null(),
+                1,
+                QUERY_COMB_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_NULL
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                &lut,
+                61,
+                QUERY_COMB_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_BAD_COUNT
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                5,
+                null(),
+                0,
+                QUERY_COMB_BEL,
+                3,
+                RESIDENT_RECOMPUTE_COUNTS,
+                out.as_mut_ptr(),
+            )
+        },
+        CALL_BAD_RANGE
+    );
+    unsafe { npnr_mistral_resident_v2_destroy(handle) };
+    unsafe { npnr_mistral_resident_v2_destroy(null_mut()) };
+}

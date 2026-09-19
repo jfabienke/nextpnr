@@ -85,6 +85,102 @@ pub struct LabFactsV2 {
     pub alm: [AlmFactsV2; ALMS],
 }
 
+/// One ALM's facts for a resident LAB snapshot (`crate::ResidentLabs`). Net ids
+/// are caller-chosen keys, nonzero and stable for the run; the rules compare
+/// them for equality only. A patch with `commit` 0 holds for the evaluation it
+/// travels with and is undone afterwards (a candidate the placer is trying);
+/// with `commit` 1 it becomes the LAB's state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlmPatchV2 {
+    pub alm: u32,
+    pub commit: u32,
+    pub facts: AlmFactsV2,
+}
+
+/// One bel's facts for a resident LAB snapshot (`crate::ResidentLabs`): slot 0
+/// and 1 are the ALM's LUT halves (`lut` is read), 2 to 5 its registers (`ff`
+/// is read). Net ids are caller-chosen keys, nonzero and stable for the run;
+/// the rules compare them for equality only. A patch with `commit` 0 holds for
+/// the evaluation it travels with and is undone afterwards (a candidate the
+/// placer is trying); with `commit` 1 it becomes the LAB's state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BelPatchV2 {
+    pub alm: u32,
+    pub slot: u32,
+    pub commit: u32,
+    /// The ALM's unique input count as the caller keeps it, with this bel in
+    /// place: the authority mode takes it as a fact like the others, the
+    /// harness modes recompute it and report a difference.
+    pub alm_inputs: i32,
+    pub lut: LabLutV2,
+    pub ff: LabFfV2,
+}
+
+pub const LAB_BELS: usize = ALMS * (LUTS + FFS);
+
+/// The verdict fields of a `LabAssessmentV2` without its control allocation:
+/// what a resident query returns. Field for field it equals the assessment
+/// the capture path would produce over the same facts.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LabVerdictV2 {
+    pub status: u32,
+    pub reason: u32,
+    pub failing_alm: u32,
+    pub failing_slot: u32,
+    pub observed: i32,
+    pub limit: i32,
+    pub control_valid: u32,
+    pub control_status: u32,
+    pub control_reason: u32,
+    pub control_kind: u32,
+    pub control_ff_slot: u32,
+    pub control_resource_mask: u32,
+    pub recomputed_input_count: [i32; ALMS],
+}
+
+impl From<&LabAssessmentV2> for LabVerdictV2 {
+    fn from(a: &LabAssessmentV2) -> Self {
+        Self {
+            status: a.status,
+            reason: a.reason,
+            failing_alm: a.failing_alm,
+            failing_slot: a.failing_slot,
+            observed: a.observed,
+            limit: a.limit,
+            control_valid: a.control_valid,
+            control_status: if a.control_valid != 0 {
+                a.control.status
+            } else {
+                0
+            },
+            control_reason: if a.control_valid != 0 {
+                a.control.reason
+            } else {
+                0
+            },
+            control_kind: if a.control_valid != 0 {
+                a.control.control_kind
+            } else {
+                0
+            },
+            control_ff_slot: if a.control_valid != 0 {
+                a.control.ff_slot
+            } else {
+                0
+            },
+            control_resource_mask: if a.control_valid != 0 {
+                a.control.resource_mask
+            } else {
+                0
+            },
+            recomputed_input_count: a.recomputed_input_count,
+        }
+    }
+}
+
 impl Default for LabFactsV2 {
     fn default() -> Self {
         Self {

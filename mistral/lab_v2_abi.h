@@ -139,6 +139,63 @@ uint32_t npnr_mistral_frozen_batch_v2_evaluate(const NpnrLabFrozenBatchV2 *batch
 uint32_t npnr_mistral_frozen_batch_v2_cancel(NpnrLabFrozenBatchV2 *batch);
 void npnr_mistral_frozen_batch_v2_destroy(NpnrLabFrozenBatchV2 *batch);
 
+/* Resident LAB snapshots patched one bel at a time (Stage 6, parity). The
+ * handle keeps every LAB's facts in Rust; the caller resets a LAB before its
+ * first query and sends the bels that changed since its last query: slots 0
+ * and 1 are the ALM's LUT halves (`lut` is read), 2 to 5 its registers (`ff`
+ * is read). Net ids in a patch are caller-chosen keys, nonzero and stable for
+ * the run; the rules compare them for equality only. A patch with commit 0
+ * holds for the evaluation it travels with (a candidate being tried); with
+ * commit 1 it becomes the LAB's state. One owner thread; a panic poisons the
+ * handle. */
+typedef struct NpnrBelPatchV2
+{
+    uint32_t alm;
+    uint32_t slot;
+    uint32_t commit;
+    int32_t alm_inputs; /* the ALM's unique input count as the arch keeps it, with this bel in place */
+    NpnrLabLutV2 lut;
+    NpnrLabFfV2 ff;
+} NpnrBelPatchV2;
+
+/* Evaluate flag: recompute the ALM input counts from the facts instead of
+ * taking the caller's (the harness modes). */
+#define NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS 1u
+
+typedef struct NpnrLabResidentV2 NpnrLabResidentV2;
+
+/* Trials in view per evaluate call; more changed bels travel as commits. */
+#define NPNR_LAB_RESIDENT_MAX_TRIALS 8
+
+/* The verdict fields of an assessment without its control allocation: what a
+ * resident query returns. Field for field it equals the assessment the capture
+ * path would produce over the same facts. */
+typedef struct NpnrLabVerdictV2
+{
+    uint32_t status;
+    uint32_t reason;
+    uint32_t failing_alm;
+    uint32_t failing_slot;
+    int32_t observed;
+    int32_t limit;
+    uint32_t control_valid;
+    uint32_t control_status;
+    uint32_t control_reason;
+    uint32_t control_kind;
+    uint32_t control_ff_slot;
+    uint32_t control_resource_mask;
+    int32_t recomputed_input_count[NPNR_LAB_V2_ALMS];
+} NpnrLabVerdictV2;
+
+uint32_t npnr_mistral_resident_v2_create(uint32_t lab_count, int32_t input_limit, NpnrLabResidentV2 **output);
+uint32_t npnr_mistral_resident_v2_reset(NpnrLabResidentV2 *handle, uint32_t lab, uint32_t is_mlab);
+/* A malformed patch or query is reported in the result (status MALFORMED) with
+ * the LAB untouched; a LAB that was never reset returns NPNR_LAB_CALL_BAD_SNAPSHOT. */
+uint32_t npnr_mistral_resident_v2_evaluate(NpnrLabResidentV2 *handle, uint32_t lab, const NpnrBelPatchV2 *patches,
+                                           uint32_t patch_count, uint32_t query, uint32_t query_alm, uint32_t flags,
+                                           NpnrLabVerdictV2 *output);
+void npnr_mistral_resident_v2_destroy(NpnrLabResidentV2 *handle);
+
 #ifdef __cplusplus
 }
 #endif

@@ -6,7 +6,8 @@
 compile_error!("LAB FFI requires panic=unwind for its containment boundary");
 
 use npnr_mistral_lab::{
-    ValidatedLabSnapshotV2, evaluate_lab_v2, evaluate_lab_v2_wire_into, evaluate_wire_into,
+    ResidentError, ResidentLabs, ValidatedLabSnapshotV2, evaluate_lab_v2,
+    evaluate_lab_v2_wire_into, evaluate_wire_into, v2_wire::BelPatchV2, v2_wire::LAB_BELS,
     v2_wire::*, wire::*,
 };
 use std::collections::HashMap;
@@ -537,3 +538,214 @@ pub unsafe extern "C" fn npnr_mistral_frozen_batch_v2_destroy(batch: *mut NpnrLa
 
 #[cfg(test)]
 mod tests;
+
+/// Resident LAB snapshots (`npnr_mistral_lab::ResidentLabs`) behind an owner-only
+/// handle. One handle per placement session, one thread at a time; the caller
+/// resets a LAB before its first query and sends the ALMs that changed since
+/// its last query as patches. A Rust panic poisons the handle: every later call
+/// returns `CALL_BAD_SNAPSHOT` until it is destroyed.
+pub struct NpnrLabResidentV2 {
+    labs: ResidentLabs,
+    poisoned: bool,
+}
+
+pub const MAX_RESIDENT_LABS: u32 = 1 << 16;
+/// Evaluate flag: recompute the ALM input counts from the facts instead of
+/// taking the caller's (the harness modes).
+pub const RESIDENT_RECOMPUTE_COUNTS: u32 = 1;
+
+/// # Safety
+/// `output` must be exclusive writable pointer storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_create(
+    lab_count: u32,
+    input_limit: i32,
+    output: *mut *mut NpnrLabResidentV2,
+) -> u32 {
+    if lab_count == 0 || lab_count > MAX_RESIDENT_LABS {
+        return CALL_BAD_COUNT;
+    }
+    if output.is_null() {
+        return CALL_NULL;
+    }
+    if output.addr() % align_of::<*mut NpnrLabResidentV2>() != 0 {
+        return CALL_MISALIGNED;
+    }
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        ResidentLabs::new(lab_count as usize, input_limit).map(|labs| {
+            Box::into_raw(Box::new(NpnrLabResidentV2 {
+                labs,
+                poisoned: false,
+            }))
+        })
+    }));
+    match outcome {
+        Ok(Some(raw)) => {
+            // SAFETY: checked non-null and aligned above.
+            unsafe { output.write(raw) };
+            CALL_OK
+        }
+        Ok(None) => CALL_LIMIT,
+        Err(payload) => {
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            CALL_PANIC
+        }
+    }
+}
+
+fn resident_mut<'a>(handle: *mut NpnrLabResidentV2) -> Result<&'a mut NpnrLabResidentV2, u32> {
+    if handle.is_null() {
+        return Err(CALL_NULL);
+    }
+    if handle.addr() % align_of::<NpnrLabResidentV2>() != 0 {
+        return Err(CALL_MISALIGNED);
+    }
+    // SAFETY: the caller holds the only reference to a live handle from create.
+    let resident = unsafe { &mut *handle };
+    if resident.poisoned {
+        return Err(CALL_BAD_SNAPSHOT);
+    }
+    Ok(resident)
+}
+
+/// # Safety
+/// `handle` must come from `npnr_mistral_resident_v2_create` and not be in use elsewhere.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_reset(
+    handle: *mut NpnrLabResidentV2,
+    lab: u32,
+    is_mlab: u32,
+) -> u32 {
+    let resident = match resident_mut(handle) {
+        Ok(resident) => resident,
+        Err(status) => return status,
+    };
+    if is_mlab > 1 {
+        return CALL_BAD_SNAPSHOT;
+    }
+    match resident.labs.reset(lab as usize, is_mlab != 0) {
+        Ok(()) => CALL_OK,
+        Err(ResidentError::Lab) => CALL_BAD_RANGE,
+        Err(_) => CALL_BAD_SNAPSHOT,
+    }
+}
+
+fn check_resident_evaluate(
+    patches: *const BelPatchV2,
+    patch_count: u32,
+    output: *mut LabVerdictV2,
+) -> Result<(), u32> {
+    if patch_count as usize > LAB_BELS {
+        return Err(CALL_BAD_COUNT);
+    }
+    if output.is_null() || (patches.is_null() && patch_count != 0) {
+        return Err(CALL_NULL);
+    }
+    if output.addr() % align_of::<LabVerdictV2>() != 0
+        || (patch_count != 0 && patches.addr() % align_of::<BelPatchV2>() != 0)
+    {
+        return Err(CALL_MISALIGNED);
+    }
+    if patch_count != 0 {
+        let start = patches.addr();
+        let end = start
+            .checked_add(patch_count as usize * size_of::<BelPatchV2>())
+            .ok_or(CALL_BAD_RANGE)?;
+        let output_start = output.addr();
+        let output_end = output_start
+            .checked_add(size_of::<LabVerdictV2>())
+            .ok_or(CALL_BAD_RANGE)?;
+        if start < output_end && output_start < end {
+            return Err(CALL_OVERLAP);
+        }
+    }
+    Ok(())
+}
+
+/// Applies the commits, evaluates the query with the trials in view, and
+/// writes the verdict. A malformed patch or query is reported inside the
+/// verdict (`LAB_MALFORMED`) with the LAB left as it was; a LAB that was never
+/// reset, or an unknown flag, returns `CALL_BAD_SNAPSHOT`.
+///
+/// # Safety
+/// `handle` as for reset; `patches` must cover `patch_count` initialized
+/// records and `output` exclusive writable storage, non-overlapping.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_evaluate(
+    handle: *mut NpnrLabResidentV2,
+    lab: u32,
+    patches: *const BelPatchV2,
+    patch_count: u32,
+    query: u32,
+    query_alm: u32,
+    flags: u32,
+    output: *mut LabVerdictV2,
+) -> u32 {
+    let resident = match resident_mut(handle) {
+        Ok(resident) => resident,
+        Err(status) => return status,
+    };
+    if let Err(status) = check_resident_evaluate(patches, patch_count, output) {
+        return status;
+    }
+    let patches: &[BelPatchV2] = if patch_count == 0 {
+        &[]
+    } else {
+        // SAFETY: envelope checked above; the caller keeps the records live and unaliased.
+        unsafe { std::slice::from_raw_parts(patches, patch_count as usize) }
+    };
+    if flags & !RESIDENT_RECOMPUTE_COUNTS != 0 {
+        return CALL_BAD_SNAPSHOT;
+    }
+    let recompute = flags & RESIDENT_RECOMPUTE_COUNTS != 0;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        resident
+            .labs
+            .evaluate(lab as usize, patches, query, query_alm, recompute)
+    }));
+    match outcome {
+        Ok(Ok(result)) => {
+            // SAFETY: output checked non-null, aligned, and disjoint from the patches.
+            unsafe { output.write(result) };
+            CALL_OK
+        }
+        Ok(Err(ResidentError::Lab)) => CALL_BAD_RANGE,
+        Ok(Err(ResidentError::Uninitialised)) => CALL_BAD_SNAPSHOT,
+        Ok(Err(error)) => {
+            let result = LabVerdictV2 {
+                status: LAB_MALFORMED,
+                reason: match error {
+                    ResidentError::Query => BAD_QUERY,
+                    _ => BAD_SHAPE,
+                },
+                ..LabVerdictV2::default()
+            };
+            // SAFETY: as above.
+            unsafe { output.write(result) };
+            CALL_OK
+        }
+        Err(payload) => {
+            resident.poisoned = true;
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            CALL_PANIC
+        }
+    }
+}
+
+/// # Safety
+/// `handle` must come from create and must not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_destroy(handle: *mut NpnrLabResidentV2) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: ownership returns to Rust exactly once, per the contract.
+    let resident = unsafe { Box::from_raw(handle) };
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(resident))) {
+        std::mem::forget(payload);
+    }
+}

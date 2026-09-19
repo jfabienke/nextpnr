@@ -6,9 +6,11 @@
 #include <cinttypes>
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <sstream>
 #include <type_traits>
 #include "lab_model.h"
+#include "lab_resident.h"
 #include "lab_v2_replay.h"
 #include "log.h"
 #include "nextpnr.h"
@@ -20,6 +22,11 @@ static_assert(std::is_standard_layout<NpnrLabFactsV2>::value && std::is_triviall
 static_assert(sizeof(NpnrLabLutV2) == 80 && sizeof(NpnrLabFfV2) == 52 && sizeof(NpnrAlmFactsV2) == 376, "V2 fact ABI");
 static_assert(sizeof(NpnrLabFactsV2) == 3808 && offsetof(NpnrLabFactsV2, alm) == 48, "V2 input ABI");
 static_assert(sizeof(NpnrLabAssessmentV2) == 328 && offsetof(NpnrLabAssessmentV2, control) == 112, "V2 result ABI");
+static_assert(sizeof(NpnrBelPatchV2) == 148 && offsetof(NpnrBelPatchV2, lut) == 16 &&
+                      offsetof(NpnrBelPatchV2, ff) == 96,
+              "V2 bel patch ABI");
+static_assert(sizeof(NpnrLabVerdictV2) == 88 && offsetof(NpnrLabVerdictV2, recomputed_input_count) == 48,
+              "V2 verdict ABI");
 
 namespace {
 
@@ -302,6 +309,50 @@ int resolved_lab_input_limit()
 }
 
 namespace {
+// A bel's facts from its bound cell, with the net and control-signal encodings supplied by the
+// caller: the capture path assigns dense first-encounter ids, the resident path run-stable keys.
+template <typename NetId, typename Signal>
+void fill_lut_facts(const CellInfo &cell, NetId &&net_id, Signal &&signal, NpnrLabLutV2 &lut)
+{
+    lut.occupied = 1;
+    lut.input_count = cell.combInfo.lut_input_count;
+    lut.used_input_count = cell.combInfo.used_lut_input_count;
+    lut.bits_count = cell.combInfo.lut_bits_count;
+    lut.chain_shared_input_count = cell.combInfo.chain_shared_input_count;
+    lut.mlab_group = cell.combInfo.mlab_group;
+    lut.constr_z = cell.constr_z;
+    lut.is_carry = cell.combInfo.is_carry;
+    for (unsigned pin = 0; pin < lut.input_count; ++pin)
+        lut.input_net[pin] = net_id(cell.combInfo.lut_in[pin]);
+    lut.comb_out_net = net_id(cell.combInfo.comb_out);
+    lut.wclk = signal(cell.combInfo.wclk);
+    lut.we = signal(cell.combInfo.we);
+}
+
+template <typename NetId, typename Signal>
+void fill_ff_facts(const CellInfo &cell, NetId &&net_id, Signal &&signal, NpnrLabFfV2 &ff)
+{
+    ff.occupied = 1;
+    ff.datain_net = net_id(cell.ffInfo.datain);
+    ff.sdata_net = net_id(cell.ffInfo.sdata);
+    const auto &cs = cell.ffInfo.ctrlset;
+    const std::array<ControlSig, 5> controls{cs.clk, cs.sload, cs.sclr, cs.aclr, cs.ena};
+    for (unsigned kind = 0; kind < controls.size(); ++kind)
+        ff.control[kind] = signal(controls[kind]);
+}
+
+template <typename Bound, typename NetId, typename Signal>
+void fill_alm_facts(const ALMInfo &source, Bound &&bound, NetId &&net_id, Signal &&signal, NpnrAlmFactsV2 &dest)
+{
+    dest.cached_input_count = source.unique_input_count;
+    for (unsigned i = 0; i < 2; ++i)
+        if (const auto *cell = bound(source.lut_bels[i]))
+            fill_lut_facts(*cell, net_id, signal, dest.lut[i]);
+    for (unsigned i = 0; i < 4; ++i)
+        if (const auto *cell = bound(source.ff_bels[i]))
+            fill_ff_facts(*cell, net_id, signal, dest.ff[i]);
+}
+
 NpnrLabFactsV2 capture_lab_v2_impl(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
                                    const dict<BelId, CellInfo *> *occupancy, uint64_t request_id, uint64_t epoch)
 {
@@ -342,43 +393,8 @@ NpnrLabFactsV2 capture_lab_v2_impl(const Arch &arch, uint32_t lab, NpnrLabQueryV
         }
         return arch.getBoundBelCell(bel);
     };
-    for (unsigned alm = 0; alm < 10; ++alm) {
-        auto &dest = input.alm[alm];
-        const auto &source = lab_data.alms[alm];
-        dest.cached_input_count = source.unique_input_count;
-        for (unsigned i = 0; i < 2; ++i) {
-            const auto *cell = bound(source.lut_bels[i]);
-            if (!cell)
-                continue;
-            auto &lut = dest.lut[i];
-            lut.occupied = 1;
-            lut.input_count = cell->combInfo.lut_input_count;
-            lut.used_input_count = cell->combInfo.used_lut_input_count;
-            lut.bits_count = cell->combInfo.lut_bits_count;
-            lut.chain_shared_input_count = cell->combInfo.chain_shared_input_count;
-            lut.mlab_group = cell->combInfo.mlab_group;
-            lut.constr_z = cell->constr_z;
-            lut.is_carry = cell->combInfo.is_carry;
-            for (unsigned pin = 0; pin < lut.input_count; ++pin)
-                lut.input_net[pin] = net_id(cell->combInfo.lut_in[pin]);
-            lut.comb_out_net = net_id(cell->combInfo.comb_out);
-            lut.wclk = signal(cell->combInfo.wclk);
-            lut.we = signal(cell->combInfo.we);
-        }
-        for (unsigned i = 0; i < 4; ++i) {
-            const auto *cell = bound(source.ff_bels[i]);
-            if (!cell)
-                continue;
-            auto &ff = dest.ff[i];
-            ff.occupied = 1;
-            ff.datain_net = net_id(cell->ffInfo.datain);
-            ff.sdata_net = net_id(cell->ffInfo.sdata);
-            const auto &cs = cell->ffInfo.ctrlset;
-            const std::array<ControlSig, 5> controls{cs.clk, cs.sload, cs.sclr, cs.aclr, cs.ena};
-            for (unsigned kind = 0; kind < controls.size(); ++kind)
-                ff.control[kind] = signal(controls[kind]);
-        }
-    }
+    for (unsigned alm = 0; alm < 10; ++alm)
+        fill_alm_facts(lab_data.alms[alm], bound, net_id, signal, input.alm[alm]);
     return input;
 }
 } // namespace
@@ -393,6 +409,25 @@ NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQue
                                       const dict<BelId, CellInfo *> &occupancy, uint64_t request_id, uint64_t epoch)
 {
     return capture_lab_v2_impl(arch, lab, query, query_alm, &occupancy, request_id, epoch);
+}
+
+void capture_bel_v2_keyed(const Arch &arch, uint32_t lab, uint8_t alm, uint8_t slot, NpnrBelPatchV2 &out)
+{
+    out.lut = NpnrLabLutV2{};
+    out.ff = NpnrLabFfV2{};
+    auto net_id = [](const NetInfo *net) { return net ? uint32_t(net->name.index) + 1u : 0u; };
+    auto signal = [&](ControlSig value) {
+        return NpnrControlSignalV1{net_id(value.net),
+                                   (value.inverted ? uint32_t(NPNR_CONTROL_INVERTED) : 0u) |
+                                           ((value.net && value.net->is_global) ? uint32_t(NPNR_CONTROL_GLOBAL) : 0u)};
+    };
+    const ALMInfo &info = arch.labs[lab].alms[alm];
+    if (slot < 2) {
+        if (const CellInfo *cell = arch.getBoundBelCell(info.lut_bels[slot]))
+            fill_lut_facts(*cell, net_id, signal, out.lut);
+    } else if (const CellInfo *cell = arch.getBoundBelCell(info.ff_bels[slot - 2])) {
+        fill_ff_facts(*cell, net_id, signal, out.ff);
+    }
 }
 
 NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input)
@@ -449,10 +484,16 @@ NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input)
 
 bool lab_v2_result_valid(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV2 &result)
 {
+    return lab_v2_result_valid(input.request_id, input.snapshot_epoch, input.query, input.query_alm, result);
+}
+
+bool lab_v2_result_valid(uint64_t request_id, uint64_t snapshot_epoch, uint32_t query, uint32_t query_alm,
+                         const NpnrLabAssessmentV2 &result)
+{
     if (result.abi_version != NPNR_LAB_ABI_V2 || result.struct_size != sizeof(result) ||
-        result.request_id != input.request_id || result.snapshot_epoch != input.snapshot_epoch ||
-        result.query != input.query || result.query_alm != input.query_alm || result.reserved ||
-        result.status > NPNR_LAB_V2_MALFORMED || result.control_valid > 1)
+        result.request_id != request_id || result.snapshot_epoch != snapshot_epoch || result.query != query ||
+        result.query_alm != query_alm || result.reserved || result.status > NPNR_LAB_V2_MALFORMED ||
+        result.control_valid > 1)
         return false;
     if (result.status == NPNR_LAB_V2_MALFORMED)
         return result.reason >= NPNR_LAB_V2_BAD_HEADER && result.reason <= NPNR_LAB_V2_BAD_SHAPE &&
@@ -462,7 +503,7 @@ bool lab_v2_result_valid(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV2 
     if (result.status == NPNR_LAB_V2_LEGAL)
         return result.reason == NPNR_LAB_V2_OK && result.failing_alm == UINT32_MAX &&
                result.failing_slot == UINT32_MAX && result.observed == 0 && result.limit == 0 &&
-               result.control_valid == (input.query != NPNR_LAB_QUERY_COMB_BEL);
+               result.control_valid == (query != NPNR_LAB_QUERY_COMB_BEL);
     switch (result.reason) {
     case NPNR_LAB_V2_ALM_BITS:
     case NPNR_LAB_V2_ALM_INPUTS:
@@ -479,10 +520,57 @@ bool lab_v2_result_valid(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV2 
                result.control.status == NPNR_CONTROL_ILLEGAL;
     case NPNR_LAB_V2_MLAB_GROUP:
     case NPNR_LAB_V2_MLAB_FF:
-        return result.failing_alm < 10 && result.control_valid == (input.query != NPNR_LAB_QUERY_COMB_BEL);
+        return result.failing_alm < 10 && result.control_valid == (query != NPNR_LAB_QUERY_COMB_BEL);
     default:
         return false;
     }
+}
+
+bool lab_v2_verdict_valid(uint32_t query, const NpnrLabVerdictV2 &v)
+{
+    if (v.status > NPNR_LAB_V2_MALFORMED || v.control_valid > 1)
+        return false;
+    if (v.status == NPNR_LAB_V2_MALFORMED)
+        return v.reason >= NPNR_LAB_V2_BAD_HEADER && v.reason <= NPNR_LAB_V2_BAD_SHAPE && !v.control_valid;
+    if (v.status == NPNR_LAB_V2_LEGAL)
+        return v.reason == NPNR_LAB_V2_OK && v.failing_alm == UINT32_MAX && v.failing_slot == UINT32_MAX &&
+               v.observed == 0 && v.limit == 0 && v.control_valid == (query != NPNR_LAB_QUERY_COMB_BEL);
+    switch (v.reason) {
+    case NPNR_LAB_V2_ALM_BITS:
+    case NPNR_LAB_V2_ALM_INPUTS:
+    case NPNR_LAB_V2_CARRY_MIX:
+    case NPNR_LAB_V2_ODD_FF:
+    case NPNR_LAB_V2_FF_CONTROL:
+    case NPNR_LAB_V2_SDATA_PATH:
+    case NPNR_LAB_V2_DATAIN_PATH:
+        return v.failing_alm < 10 && !v.control_valid;
+    case NPNR_LAB_V2_LAB_INPUT_LIMIT:
+        return v.failing_alm == UINT32_MAX && v.failing_slot == UINT32_MAX && !v.control_valid;
+    case NPNR_LAB_V2_CONTROL_CONFLICT:
+        return v.control_valid && v.failing_alm < 10 && v.failing_slot < 4 && v.control_status == NPNR_CONTROL_ILLEGAL;
+    case NPNR_LAB_V2_MLAB_GROUP:
+    case NPNR_LAB_V2_MLAB_FF:
+        return v.failing_alm < 10 && v.control_valid == (query != NPNR_LAB_QUERY_COMB_BEL);
+    default:
+        return false;
+    }
+}
+
+bool lab_v2_verdict_matches(const NpnrLabAssessmentV2 &a, const NpnrLabVerdictV2 &v)
+{
+    if (a.status != v.status || a.reason != v.reason || a.failing_alm != v.failing_alm ||
+        a.failing_slot != v.failing_slot || a.observed != v.observed || a.limit != v.limit ||
+        a.control_valid != v.control_valid)
+        return false;
+    if (a.status != NPNR_LAB_V2_MALFORMED)
+        for (unsigned i = 0; i < 10; ++i)
+            if (a.recomputed_input_count[i] != v.recomputed_input_count[i])
+                return false;
+    if (!a.control_valid)
+        return true;
+    return a.control.status == v.control_status && a.control.reason == v.control_reason &&
+           a.control.control_kind == v.control_kind && a.control.ff_slot == v.control_ff_slot &&
+           a.control.resource_mask == v.control_resource_mask;
 }
 
 bool lab_v2_results_match(const NpnrLabAssessmentV2 &a, const NpnrLabAssessmentV2 &b)
@@ -551,17 +639,23 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
     auto &stats = arch.lab_legality_stats;
     const auto request = stats.evaluations.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto revision = arch.placement_revision.stamp();
-    const auto input = capture_lab_v2(arch, lab, query, query_alm, request, revision.revision);
-    const bool live = live_lab_query(arch, lab, query, query_alm);
 #ifndef NO_RUST
-    NpnrLabAssessmentV2 candidate{};
-    const auto call = npnr_mistral_eval_lab_v2(&input, 1, &candidate, 1);
-    const bool valid = call == NPNR_LAB_CALL_OK && lab_v2_result_valid(input, candidate);
+    // The Rust verdict comes from the resident session (the ALMs changed since its last query,
+    // patched in), in every non-legacy mode. Shadow and verify also run the capture path, C++ and
+    // Rust, as the parity harness: the three verdicts and the live check must agree.
+    if (!arch.lab_resident)
+        arch.lab_resident = std::make_shared<ResidentLabLegality>(arch);
+    NpnrLabVerdictV2 candidate{};
+    const uint32_t call =
+            arch.lab_resident->evaluate(arch, lab, query, query_alm, mode != LabLegalityMode::Rust, candidate);
+    const bool valid = call == NPNR_LAB_CALL_OK && lab_v2_verdict_valid(query, candidate);
     const bool stale_revision = !arch.placement_revision.is_current(revision);
     bool stale = false;
-    if (valid && candidate.recomputed_valid_mask == 0x3ffu) {
+    // The authority mode takes the arch's counts as facts; the harness modes recompute them.
+    if (valid && candidate.status != NPNR_LAB_V2_MALFORMED && mode != LabLegalityMode::Rust) {
+        const auto &alms = arch.labs.at(lab).alms;
         for (unsigned i = 0; i < 10; ++i)
-            stale |= candidate.recomputed_input_count[i] != input.alm[i].cached_input_count;
+            stale |= candidate.recomputed_input_count[i] != alms[i].unique_input_count;
     }
     if (stale)
         stats.stale_cache.fetch_add(1, std::memory_order_relaxed);
@@ -573,11 +667,19 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
         stats.illegal.fetch_add(1, std::memory_order_relaxed);
 
     bool mismatch = !valid;
+    bool live = false;
+    std::optional<NpnrLabFactsV2> input;
     std::optional<NpnrLabAssessmentV2> cpp;
     if (mode != LabLegalityMode::Rust) {
-        cpp = evaluate_lab_v2_cpp(input);
-        mismatch |= !lab_v2_results_match(*cpp, candidate);
+        input = capture_lab_v2(arch, lab, query, query_alm, request, revision.revision);
+        live = live_lab_query(arch, lab, query, query_alm);
+        cpp = evaluate_lab_v2_cpp(*input);
+        NpnrLabAssessmentV2 captured{};
+        const auto captured_call = npnr_mistral_eval_lab_v2(&*input, 1, &captured, 1);
+        mismatch |= captured_call != NPNR_LAB_CALL_OK || !lab_v2_result_valid(*input, captured) ||
+                    !lab_v2_results_match(*cpp, captured);
         mismatch |= (cpp->status == NPNR_LAB_V2_LEGAL) != live;
+        mismatch |= !lab_v2_verdict_matches(*cpp, candidate);
     }
     if (mismatch)
         stats.mismatches.fetch_add(1, std::memory_order_relaxed);
@@ -586,12 +688,13 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
     if (mismatch || stale || stale_revision) {
         if (stats.diagnostics.fetch_add(1, std::memory_order_relaxed) < 4) {
             std::ostringstream replay;
-            const auto reference = cpp ? *cpp : evaluate_lab_v2_cpp(input);
-            write_lab_v2_replay(replay, input, reference, "live LAB " + std::to_string(lab));
-            log_warning("LAB legality %s: LAB %u request %" PRIu64
-                        ", call %u, valid %u, mismatch %u, stale-cache %u, stale-revision %u.\nReplay: %s\n",
+            const auto facts = input ? *input : capture_lab_v2(arch, lab, query, query_alm, request, revision.revision);
+            const auto reference = cpp ? *cpp : evaluate_lab_v2_cpp(facts);
+            write_lab_v2_replay(replay, facts, reference, "live LAB " + std::to_string(lab));
+            log_warning("LAB legality %s: LAB %u request %" PRIu64 ", call %u, valid %u, mismatch %u, stale-cache %u, "
+                        "stale-revision %u, resident status %u reason %u, reference status %u reason %u.\nReplay: %s\n",
                         lab_legality_mode_name(mode), lab, request, call, valid, mismatch, stale, stale_revision,
-                        replay.str().c_str());
+                        candidate.status, candidate.reason, reference.status, reference.reason, replay.str().c_str());
         }
         if (mode != LabLegalityMode::Shadow) {
             report_lab_legality_stats(arch);
@@ -602,7 +705,9 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
         return live;
     return candidate.status == NPNR_LAB_V2_LEGAL;
 #else
-    return live;
+    (void)request;
+    (void)revision;
+    return live_lab_query(arch, lab, query, query_alm);
 #endif
 }
 
@@ -617,6 +722,11 @@ void report_lab_legality_stats(const Arch &arch)
              lab_legality_mode_name(arch.args.lab_legality), get(s.evaluations), get(s.legal), get(s.illegal),
              get(s.errors), get(s.mismatches), get(s.stale_cache), get(s.stale_revision),
              std::min(get(s.diagnostics), uint64_t(4)));
+    if (arch.lab_resident)
+        log_info("LAB legality resident: evaluations=%" PRIu64 " resets=%" PRIu64 " trials=%" PRIu64 " commits=%" PRIu64
+                 " restored=%" PRIu64 ".\n",
+                 arch.lab_resident->evaluations, arch.lab_resident->resets, arch.lab_resident->trials,
+                 arch.lab_resident->commits, arch.lab_resident->restored);
 }
 
 NEXTPNR_NAMESPACE_END

@@ -68,7 +68,7 @@ impl FfSlot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Polarity {
+pub(crate) enum Polarity {
     Normal,
     Inverted,
 }
@@ -79,13 +79,32 @@ pub(crate) struct ControlSignal {
     polarity: Polarity,
 }
 
+impl NetId {
+    pub(crate) fn from_index(index: u16) -> Option<Self> {
+        NonZeroU16::new(index).map(Self)
+    }
+}
+
 impl ControlSignal {
     pub(crate) const EMPTY: Self = Self {
         net: None,
         polarity: Polarity::Normal,
     };
+    pub(crate) fn new(net: Option<NetId>, inverted: bool) -> Self {
+        Self {
+            net,
+            polarity: if inverted {
+                Polarity::Inverted
+            } else {
+                Polarity::Normal
+            },
+        }
+    }
     pub(crate) fn connected(self) -> bool {
         self.net.is_some()
+    }
+    pub(crate) fn net_id_u16(self) -> Option<u16> {
+        self.net.map(|id| id.0.get())
     }
 
     pub(crate) fn to_wire(self, snapshot: &ControlLabSnapshot) -> wire::ControlSignalV1 {
@@ -113,10 +132,35 @@ pub struct ControlLabSnapshot {
     pub(crate) ffs: [Option<[ControlSignal; CONTROL_COUNT]>; FF_COUNT],
     // Zero is unseen, one is local, and two is global. Retaining the validated
     // class avoids constructing a second temporary array during decoding.
-    classes: [u8; MAX_NETS + 1],
+    pub(crate) classes: [u8; MAX_NETS + 1],
 }
 
 impl ControlLabSnapshot {
+    /// A copy for the resident mirror, which owns its snapshot and patches it
+    /// in place; the public type stays without `Clone`.
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            request_id: self.request_id,
+            snapshot_epoch: self.snapshot_epoch,
+            ffs: self.ffs,
+            classes: self.classes,
+        }
+    }
+
+    /// A snapshot from parts the crate built itself from validated facts (the
+    /// resident mirror), so the transport checks of `try_from` do not apply.
+    pub(crate) fn from_parts(
+        ffs: [Option<[ControlSignal; CONTROL_COUNT]>; FF_COUNT],
+        classes: [u8; MAX_NETS + 1],
+    ) -> Self {
+        Self {
+            request_id: 0,
+            snapshot_epoch: 0,
+            ffs,
+            classes,
+        }
+    }
+
     pub(crate) fn is_global(&self, signal: ControlSignal) -> bool {
         signal
             .net

@@ -737,6 +737,16 @@ struct Arch : BaseArch<ArchRanges>
     mutable LabControlStats lab_control_stats;
     mutable LabControlProfile lab_control_profile;
     mutable LabLegalityStats lab_legality_stats;
+    // Stage 6 (parity): the resident LAB snapshot session of the Rust legality modes, created on
+    // the first non-legacy dispatch, and per LAB the bels changed since it last saw them. Empty until a session exists,
+    // so the hooks below cost one test on the legacy path.
+    mutable std::shared_ptr<struct ResidentLabLegality> lab_resident;
+    mutable std::vector<uint64_t> lab_bel_dirty;   // per LAB, a bit per bel (alm * 6 + slot); bit 60: reset
+    mutable std::vector<uint64_t> lab_bel_refacts; // as above, for a facts change of a bound cell
+    static uint64_t lab_bel_bit(const BelInfo &data)
+    {
+        return uint64_t(1) << (data.lab_data.alm * 6 + (data.type == id_MISTRAL_FF ? 2 : 0) + data.lab_data.idx);
+    }
     mutable PlacementRevisionState placement_revision;
 
     // Stage 4E-1 reuse state (lab_reuse.cc). Active only inside place().
@@ -748,6 +758,8 @@ struct Arch : BaseArch<ArchRanges>
     mutable LabReuseStats lab_reuse_stats;
     void note_lab_binding(const BelInfo &data) const
     {
+        if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && !lab_bel_dirty.empty())
+            lab_bel_dirty[data.lab_data.lab] |= lab_bel_bit(data);
         if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && data.lab_data.lab < lab_versions.size()) {
             ++lab_versions[data.lab_data.lab];
             if (lab_reuse_active)
@@ -771,6 +783,10 @@ struct Arch : BaseArch<ArchRanges>
             return;
         }
         const auto &data = bel_data(cell->bel);
+        if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && !lab_bel_dirty.empty())
+            lab_bel_dirty[data.lab_data.lab] |= lab_bel_bit(data);
+        if (!lab_bel_refacts.empty())
+            lab_bel_refacts[data.lab_data.lab] |= lab_bel_bit(data);
         if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && data.lab_data.lab < lab_versions.size()) {
             ++lab_versions[data.lab_data.lab];
             if (lab_reuse_active)
@@ -786,6 +802,10 @@ struct Arch : BaseArch<ArchRanges>
             if (cell == nullptr || cell->bel == BelId())
                 return;
             const auto &data = bel_data(cell->bel);
+            if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) && !lab_bel_dirty.empty())
+                lab_bel_dirty[data.lab_data.lab] |= lab_bel_bit(data);
+            if (!lab_bel_refacts.empty())
+                lab_bel_refacts[data.lab_data.lab] |= lab_bel_bit(data);
             if (data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF) &&
                 data.lab_data.lab < lab_versions.size()) {
                 ++lab_versions[data.lab_data.lab];
