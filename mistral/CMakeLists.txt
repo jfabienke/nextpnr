@@ -53,6 +53,7 @@ set(SOURCES
     route_reuse.cc
     alm_pairing.cc
     register_packing.cc
+    telemetry.cc
     reuse_plan.h
     reuse_plan.cc
     build_state.h

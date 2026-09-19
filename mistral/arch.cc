@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 
@@ -25,6 +26,7 @@
 #include "log.h"
 #include "nextpnr.h"
 #include "register_packing.h"
+#include "telemetry.h"
 
 #include <memory>
 
@@ -715,7 +717,10 @@ bool Arch::place()
     // Stage 5 (3a): adopt the context in the phase this step needs and run
     // the typed transition; the phase check catches a second placement or a
     // placement of an unpacked design at the legacy boundary.
+    const auto started = std::chrono::steady_clock::now();
     place_build(Build<BuildPhase::Packed>::adopt(*getCtx()));
+    telemetry_placement_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    write_mistral_telemetry(*this, "placed");
     return true;
 }
 
@@ -1082,6 +1087,7 @@ bool Arch::run_placement()
     // from where it actually landed, here, after placement and before routing.
     fixup_pllclk_placement();
 
+    telemetry_checksum = getCtx()->checksum();
     getCtx()->attrs[id_step] = std::string("place");
     archInfoToAttributes();
     return true;
@@ -1117,6 +1123,7 @@ bool Arch::route()
 
 bool Arch::run_router_phase()
 {
+    const auto started = std::chrono::steady_clock::now();
     // Stage 6 (6f) diagnostic: MISTRAL_DUMP_LAB_LINES=x,y prints, for LAB (x,y), every input line's
     // sources by wire type and every LAB output's destinations by type, with the column wires named.
     if (const char *e = getenv("MISTRAL_DUMP_LAB_LINES")) {
@@ -1253,10 +1260,13 @@ bool Arch::run_router_phase()
         }
         report_route_reuse(reuse);
     }
+    telemetry_checksum = getCtx()->checksum();
     note_routing_complete();
     report_lab_states();
     getCtx()->attrs[id_step] = std::string("route");
     archInfoToAttributes();
+    telemetry_routing_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    write_mistral_telemetry(*this, "routed");
     return result;
 }
 

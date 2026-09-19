@@ -90,6 +90,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                                             "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
+    specific.add_options()("telemetry", po::value<std::string>(),
+                           "write the run's counters (LAB legality, resident session, control sets), options, "
+                           "checksum, and phase times as JSON to this file after placement and after routing");
     specific.add_options()("row-cost", po::value<float>(),
                            "weight of a vertical tile against a horizontal one in placement (solver, spreader, "
                            "legaliser); the fabric enters LABs through row wires (off by default; experimental)");
@@ -221,6 +224,8 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
     chipArgs.register_packing = vm.count("register-packing") != 0;
+    if (vm.count("telemetry"))
+        chipArgs.telemetry_path = vm["telemetry"].as<std::string>();
     if (vm.count("row-cost")) {
         chipArgs.row_cost = vm["row-cost"].as<float>();
         if (chipArgs.row_cost <= 0.0f)

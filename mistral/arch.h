@@ -65,6 +65,7 @@ struct ArchArgs
     bool router2_reroute_contested = false; // Stage 6 (6f): that re-route queues only nets on wires with history
     bool router2_unit_cost = false;         // Stage 6 (6f): router2 costs every wire one unit instead of its delay
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
+    std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
     float row_cost = 0.0f; // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
     SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
     int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
@@ -743,6 +744,10 @@ struct Arch : BaseArch<ArchRanges>
     mutable std::shared_ptr<struct ResidentLabLegality> lab_resident;
     mutable std::vector<uint64_t> lab_bel_dirty;   // per LAB, a bit per bel (alm * 6 + slot); bit 60: reset
     mutable std::vector<uint64_t> lab_bel_refacts; // as above, for a facts change of a bound cell
+    // For `--telemetry`: wall time of the placement and routing phases, and the design checksum
+    // taken where the placer and router log theirs (before the arch attributes are written).
+    mutable double telemetry_placement_seconds = 0.0, telemetry_routing_seconds = 0.0;
+    mutable uint32_t telemetry_checksum = 0;
     static uint64_t lab_bel_bit(const BelInfo &data)
     {
         return uint64_t(1) << (data.lab_data.alm * 6 + (data.type == id_MISTRAL_FF ? 2 : 0) + data.lab_data.idx);

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -16,6 +17,7 @@
 #include "build_state.h"
 #include "checkpoint.h"
 #include "gtest/gtest.h"
+#include "json11.hpp"
 #include "lab_control_edits.h"
 #include "lab_control_plan.h"
 #include "lab_preparation.h"
@@ -35,6 +37,7 @@
 #include "register_packing.h"
 #include "reuse_plan.h"
 #include "route_reuse.h"
+#include "telemetry.h"
 
 USING_NEXTPNR_NAMESPACE
 
@@ -2834,6 +2837,46 @@ TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
     }
     for (NetInfo *n : nets)
         ctx->nets.erase(n->name);
+}
+
+TEST_F(LabControlCaptureTest, TelemetryFileCarriesThePhaseChecksumAndCounters)
+{
+    // `--telemetry`: nothing is written without a path; with one, the file parses, names the
+    // phase and the checksum the flow captured, and carries every counter block the record reads.
+    const auto path = std::filesystem::temp_directory_path() / "npnr_mistral_telemetry_test.json";
+    std::filesystem::remove(path);
+    ctx->args.telemetry_path.clear();
+    write_mistral_telemetry(*ctx, "placed");
+    EXPECT_FALSE(std::filesystem::exists(path));
+
+    ctx->args.telemetry_path = path.string();
+    ctx->telemetry_checksum = 0x12345678u;
+    ctx->telemetry_placement_seconds = 1.5;
+    write_mistral_telemetry(*ctx, "placed");
+    std::ifstream in(path);
+    ASSERT_TRUE(in.good());
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string err;
+    const json11::Json doc = json11::Json::parse(text, err);
+    ASSERT_TRUE(err.empty()) << err;
+    EXPECT_EQ(doc["phase"].string_value(), "placed");
+    EXPECT_EQ(doc["checksum"].string_value(), "0x12345678");
+    EXPECT_EQ(doc["device"].string_value(), ctx->args.device);
+    EXPECT_EQ(doc["phases"]["placement_s"].number_value(), 1.5);
+    EXPECT_EQ(doc["phases"]["routing_s"].number_value(), 0.0);
+    for (const char *block : {"options", "legality", "controls", "resident", "phases"})
+        EXPECT_TRUE(doc[block].is_object()) << block;
+    EXPECT_EQ(doc["options"]["lab_legality"].string_value(), "legacy");
+    EXPECT_EQ(doc["options"]["lab_controls"].string_value(), "legacy");
+    EXPECT_TRUE(doc["legality"]["evaluations"].is_number());
+    EXPECT_TRUE(doc["controls"]["fallbacks"].is_number());
+    EXPECT_EQ(size_t(doc["cells"].number_value()), ctx->cells.size());
+    EXPECT_EQ(size_t(doc["nets"].number_value()), ctx->nets.size());
+
+    std::filesystem::remove(path);
+    ctx->args.telemetry_path.clear();
+    ctx->telemetry_checksum = 0;
+    ctx->telemetry_placement_seconds = 0.0;
 }
 
 TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllows)
