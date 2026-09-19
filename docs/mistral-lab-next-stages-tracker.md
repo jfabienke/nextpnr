@@ -2890,7 +2890,7 @@ Full core, milestone recipe, four runs in parallel:
 | resident, per-bel patches and the control mirror | iteration 7 at 16 min, the same pace | | | stopped | |
 | resident, in-place trials and the arch's counts | 1,103 s | 90 s | 97 s | 1,303 s | identical; 5,356,364,659 queries (26.5 million legal), zero mismatches, zero errors; the same with the seam: 1,104 s, 85 s, 97 s, 1,299 s |
 | the final build: trial rows in place, the batch off the stack, no count comparison in the authority mode | 1,065 s | 106 s | 95 s | 1,278 s | identical; 5,356,364,659 queries, zero mismatches, zero errors; the same with the seam: 1,057 s, 95 s, 94 s, 1,260 s (legacy in this round: 750 s, 67 s, 96 s, 926 s) |
-| `--lab-legality verify` on the core (the harness: capture C++, capture Rust, resident Rust, and the live check on every query) | running at this commit (three paths per query on five billion queries); its count lands in a follow-up |
+| `--lab-legality verify` on the core (the harness: capture C++, capture Rust, resident Rust, and the live check on every query) | 13,875 s | 173 s | 86 s | 14,147 s | identical; 5,356,364,659 queries, **zero mismatches, zero errors, zero stale counts**: the capture C++, the capture Rust, and the resident Rust agreed on every verdict of the core's placement |
 
 Reading. On the exec probe the Rust legality authority now runs at the
 legacy path's wall time (30.6 s against 30.7 s with the annealer on the
