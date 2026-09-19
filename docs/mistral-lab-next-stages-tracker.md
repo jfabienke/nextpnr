@@ -66,7 +66,7 @@ preflights an ordered physical edit list, and applies it with an undo journal.
 `legacy` applies C++; `shadow` compares edit lists and applies C++; `verify`
 applies Rust only after exact C++ result and edit-list agreement; `rust` applies
 a host-validated Rust plan and falls back to a freshly evaluated C++ plan only
-for the explicit unsupported-rules status. Legacy remains the default.
+for the explicit unsupported-rules status. Legacy remained the default until the 2026-09-19 promotion of the complete evaluator (entry "Promotion").
 
 Stage 2 is closed. Reduced decoder temporaries and direct caller-buffer output
 were accepted independently. Cold outlining and verdict-only capture scratch
@@ -3031,6 +3031,44 @@ second after the parity revision, recorded here and in CLAUDE.md
 | `--monitor` on the Rust-disabled build | "needs the Rust build; running without the monitor" |
 | `mistral/tests/gate.sh` | Passed in 39 s with the monitor crate in the cargo scope |
 
+### 2026-09-19: Promotion: the Rust LAB evaluator is the default authority
+
+The user directed the default to the Rust version and asked which
+concurrency paths to enable with it. What changed:
+
+- `--lab-legality` defaults to `rust` in Rust builds and to `legacy` in
+  Rust-disabled builds (`kDefaultEvaluator` in `mistral/main.cc`, the
+  same in `ArchArgs`); `--lab-legality legacy` selects the C++ rules in
+  any build. Shadow and verify remain the harness.
+- `--sa-seam` defaults to `on` in every build: byte-identical (1c-A,
+  Fabi386 twice each way), 8% faster annealing, and the configuration
+  the Rust authority's parity was measured with.
+- `--lab-controls` stays `legacy`. The complete evaluator owns the
+  control check and `main.cc` refuses a second Rust authority beside it
+  ("--lab-legality owns its internal control check"); the Stage 1
+  control-plan modes remain available with `--lab-legality legacy`.
+  `--verify-lab-controls` selects the legacy control mode unless one is
+  named.
+- The gate's probe runs the default path as it now is (no explicit
+  `--lab-controls`), against the unchanged identity constants.
+
+Concurrency: nothing is enabled. The benchmark entry above is the
+evidence: `--threads 8` equals `--threads 1` on the default path
+because router2 partitions its nets across its own workers regardless
+and placement has no parallel section without the lookahead; the
+lookahead is byte-identical, 10% slower, and 1.8 times the CPU on the
+core, bounded by the 0.77 useful commits per batch; `--sa-batch` is not
+byte-identical and is owner-bound past two workers. Each stays opt-in.
+
+| Check | Result |
+| --- | --- |
+| Rust-enabled binary, default options, exec probe | Checksums `0xbb18ede9` / `0xbc1365c6`, report SHA-256 `56e3b75e84be78a3…` (the recorded identity), 29.4 s wall; `LAB legality rust: evaluations=5570583 ... mismatches=0`, resident totals 5,570,583 / 4,191 / 4,699,227 / 1,053,914 / 4,940,434; telemetry options `legacy` / `rust` / `on`, placement 15.4 s, routing 9.2 s |
+| Rust-disabled binary, default options, exec probe | Same checksums and report hash, 30.0 s wall, `Annealer swap seam: on` |
+| Both Rust authorities by default (first attempt) | Refused by the existing guard two seconds in; the controls default was returned to legacy |
+| gtest | 64 pass in `build/rust-enabled`, 52 in `build` |
+| `mistral/tests/gate.sh` on the new default path | Passed in 44 s, probe identical |
+| Full core | Not rerun: the parity entry records the Rust authority byte-identical to legacy on the core at 1,065 s placement against 750 s (1.4 times), verify harness zero mismatches over 5.36 billion queries; that cost is now the default's |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3127,6 +3165,8 @@ second after the parity revision, recorded here and in CLAUDE.md
 | 2026-09-18 | Rust | Reopen the concluded crate for a performance revision at the user's direction: resident LAB snapshots patched one ALM at a time replace the per-query capture in every non-legacy legality mode; the capture path stays as the harness | Probe: the Rust authority at wall parity with legacy with the annealer on the overlay seam (30.6 s against 30.7 s), verify mode zero mismatches over 14.6 million queries; core: placement 1,065 s against 750 s (1.4 times, from 6 times on the first resident build and an order of magnitude on the capture path), byte-identical, 5.36 billion queries; the 59 ns per query that remain are the call, the marshalling, and the rules, which a per-tile query would halve |
 | 2026-09-19 | rules | Five coding rules, each with its check: the crates deny `unwrap`, `expect`, `panic`, and `unreachable` outside tests; the oracle generates every patch shape the arch sends; `--telemetry` writes the counters as JSON beside the unchanged `--report`; the fixture fails a test that leaks cells or nets; `mistral/tests/gate.sh` runs before every commit | One `expect` removed from the FFI; the leak check found two tests to fix; telemetry on the probe leaves the report and both checksums byte-identical; the gate runs in 58 s |
 | 2026-09-19 | monitor | Add the live dashboard as Rust surface at the user's direction: a pure renderer crate and a monitor module in the existing FFI crate (a second static library would carry a second Rust runtime); the session owns the terminal, keeps the `--log` stream, and reads only atomics and the phase clock off the owner thread | Probe byte-identical with and without it; the resident totals of a Rust-mode run equal the run without it; 96 frames over the 24 s probe |
+| 2026-09-19 | promotion | The complete LAB evaluator defaults to the Rust authority in Rust builds, with the annealer on the overlay seam; legacy stays the fallback in every build and the default where Rust is not built; the control-plan authority stays legacy because the complete evaluator owns the control check | User's direction on the recorded evidence: byte-identical on the probe and the core, verify harness zero mismatches on both, probe wall at parity (29.4 s against 30.0 s), core placement 1.4 times legacy; the gate's probe identity unchanged on the new default path |
+| 2026-09-19 | concurrency | Enable no concurrency path with the promotion: `--threads` for placement, `--placer-lookahead`, and `--sa-batch` stay off | Threads change nothing on the default path (router2 partitions on its own; placement has no parallel section); the lookahead is byte-identical, 10% slower, 1.8 times the CPU; the batched annealer is not byte-identical and owner-bound past two workers |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
@@ -3135,9 +3175,9 @@ second after the parity revision, recorded here and in CLAUDE.md
 
 | Gate | Status | Promotion state |
 | --- | --- | --- |
-| Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode |
+| Stage 1: Rust preparation plans | Complete | Legacy default; Rust preparation authority available only by explicit mode, and only with `--lab-legality legacy` (the complete evaluator owns the control check) |
 | Stage 2: boundary optimization | Complete (2C performance target rejected) | Single-search capture, reduced decoder temporaries, and direct output promoted |
-| Stage 3: complete LAB evaluation | Complete | Explicit shadow, verify, and Rust authority modes; legacy remains default |
+| Stage 3: complete LAB evaluation | Complete; **promoted 2026-09-19** | The Rust authority is the default in Rust builds (`--lab-legality rust`), legacy in Rust-disabled builds and by `--lab-legality legacy`; shadow and verify remain the harness |
 | Stage 4: transactions and reuse | Complete for the Stage 4 scope (4A–4E); cross-build checkpoints and artifact provenance are the next design | Serial transaction authority and owned frozen batches enabled; `--placer-lookahead`, `--lab-reuse`, and `--reuse-placement` available, all off by default and not promoted |
-| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam`, `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, all off by default; nothing promoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
+| Stage 5: seams and checkpoints | Candidate list complete: 1c, 4b (retired), 2a, 2b, 3c, 3b, 3a; closing measurement recorded; 3c-2 (router2 bind order), 3c-3 (route survival), and 3c-4 (history seeding) landed from it | `--sa-seam on` is the default since 2026-09-19 (byte-identical, 8% faster annealing); `--sa-batch`, `--checkpoint`, `--resume`, `--route-prepare-only`, `--reuse-routes`, `--reuse-routes-history`, `--reuse-plan-out`, `--reuse-dry-run` available, off by default, unpromoted; 3c-2 is a default-path fix that is byte-identical for the clean flow |
 | Stage 6: density | 6a (legaliser stall exit), 6b (ALM pairing), 6c (demand-weighted spreading), 6e (congestion-driven spreading), 6f (the router's share measured; re-route and unit cost), 6g (register packing), and 6h (the row cost) complete; 6d (line pre-assignment) built, measured negative, removed; the crate stays concluded; **the full core places and routes to completion** (2026-09-18, 15 minutes wall, 9.8 to 11.9 MHz signoff against Quartus's 25.2), and the next units are a hybrid base cost, the LAB-level assignment, and timing-driven placement quality | `--alm-pairing`, `--spread-demand`, `--spread-congestion`, `--router2-reroute`, `--router2-unit-cost`, `--register-packing`, `--row-cost` available, off by default, unpromoted; the stall exit is on the default path and byte-identical for designs that fit |

@@ -129,9 +129,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   FFI crate) is the one other Rust surface, added 2026-09-19 at the user's direction; it reads
   counters and renders, and never touches the netlist. Add no other Rust surface without a
   recorded decision.
-- Evaluator authority is opt-in via `nextpnr-mistral --lab-controls` and `--lab-legality`, each
-  `legacy|shadow|verify|rust` (`mistral/main.cc`). **Legacy is and must stay the default**;
-  promotion needs its own recorded evidence.
+- Evaluator authority is selected by `nextpnr-mistral --lab-controls` and `--lab-legality`, each
+  `legacy|shadow|verify|rust` (`mistral/main.cc`). **Since 2026-09-19 the complete LAB evaluator
+  defaults to `rust` in Rust builds** (promoted at the user's direction; tracker entry
+  "Promotion": byte-identical to legacy on the probe and the core, verify harness zero mismatches
+  on both, 1.4 times the legacy placement time on the core) and to `legacy` in Rust-disabled
+  builds; `--lab-legality legacy` selects the C++ rules in any build. `--lab-controls` stays
+  `legacy`: the complete evaluator owns the control check and refuses a second Rust authority
+  beside it, so the Stage 1 control-plan modes are usable only with `--lab-legality legacy`.
+  Shadow and verify remain the harness. Any other promotion needs its own recorded evidence.
 - Stage 4D parallel evaluation is opt-in via `--placer-lookahead N` (candidates speculated per
   clustered HeAP move) with `--threads W` workers. HeAP generates candidates in serial order and
   restores its RNG/radius state after a commit (`legalise_cluster_lookahead` in `placer_heap.cc`);
@@ -144,10 +150,11 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   C++ path (the whole-LAB value capture per check, about 1.6 µs, not Rust); the resident path
   (2026-09-19, tracker "Rust legality at parity") brings it to the legacy wall time on the probe and
   1.4 times the legacy placement on the core (59 ns per query over 5.36 billion), byte-identical,
-  and the annealer should run on the overlay seam (`--sa-seam on`) in that mode. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
+  and the annealer runs on the overlay seam (`--sa-seam on`, the default since the promotion) in that mode. The option travels in `ArchArgs`, not `ctx->settings`, on purpose: interning a
   new settings key shifts `IdString` indices and changes both the log checksums and the routed
   JSON net numbering, which would break A/B comparisons against retained artifacts.
-- Stage 5 (1c-A): `--sa-seam off|shadow|on` routes `placer1` refinement swaps through a detached
+- Stage 5 (1c-A): `--sa-seam off|shadow|on` (on by default since 2026-09-19: byte-identical, 8%
+  faster annealing) routes `placer1` refinement swaps through a detached
   assessment (`Arch::overlay_bels_legal` on a `BelOverlay`, cost delta from the annealer's position
   overlay). Do not assess swaps by freezing V2 records: measured 3.8x slower. Shadow mode is the
   oracle for this path. `--sa-batch N` (1c-B) is the batched, deterministic-across-workers policy;
@@ -290,7 +297,9 @@ reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved rout
 (`--spread-congestion`), 6f (the router's share measured; `--router2-reroute`,
 `--router2-unit-cost`), 6g (`--register-packing`), and 6h (`--row-cost`) done; 6d (LAB input-line pre-assignment) was built, measured negative, and
 removed, its record and landing commit in the tracker. Every new capability
-is off by default and unpromoted. Hard rules that still apply: the
+is off by default and unpromoted, except the Rust legality authority and the annealer's overlay
+seam, promoted on 2026-09-19 (tracker entry "Promotion"); the concurrency paths (`--threads` for
+placement, `--placer-lookahead`, `--sa-batch`) stay off by a recorded decision. Hard rules that still apply: the
 serial search order and RNG stream are the reference, every reuse path must be validated against
 full recomputation, and nothing may silently certify a partial result.
 

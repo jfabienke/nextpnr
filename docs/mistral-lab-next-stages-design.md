@@ -53,7 +53,9 @@ Cross-cutting invariants:
 3. A legal FF-control plan is not a complete LAB, move, prepared-state, or routing
    certificate. Each has a distinct type and validation gate.
 4. No cached result or worker-owned value contains a live C++ object pointer.
-5. Default behavior stays legacy during rollout. Unsupported capabilities select
+5. Default behavior stays legacy during rollout (ended 2026-09-19 for the complete
+   LAB evaluator, which defaults to the Rust authority in Rust builds; the legacy
+   rules remain the fallback and the harness reference). Unsupported capabilities select
    an explicit reference path before mutation; malformed data and internal errors
    fail the operation and cannot silently become placement rejection.
 
