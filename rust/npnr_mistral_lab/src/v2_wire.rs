@@ -266,4 +266,9 @@ const _: () = {
     assert!(offset_of!(LabFactsV2, alm) == 48);
     assert!(size_of::<LabAssessmentV2>() == 328);
     assert!(offset_of!(LabAssessmentV2, control) == 112);
+    assert!(size_of::<BelPatchV2>() == 148);
+    assert!(offset_of!(BelPatchV2, lut) == 16);
+    assert!(offset_of!(BelPatchV2, ff) == 96);
+    assert!(size_of::<LabVerdictV2>() == 88);
+    assert!(offset_of!(LabVerdictV2, recomputed_input_count) == 48);
 };
