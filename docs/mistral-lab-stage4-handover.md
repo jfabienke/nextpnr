@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `8db93cbe` (Stage 6 through 6h, the Rust legality authority at parity, the coding rules and their gate)
+- Commit: `6aeaea47` (Stage 6 through 6h, the Rust legality authority at parity, the coding rules and their gate, the live monitor)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -365,6 +365,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `733693a0` | The lab crates deny panics outside tests; the resident oracle generates every patch shape the arch sends |
 | `75bb5dc2` | `--telemetry`: the run's counters, checksum, options, and phase times as JSON (`mistral/telemetry.*`) |
 | `8db93cbe` | The fixture fails a leaking test; `mistral/tests/gate.sh`; the coding rules in CLAUDE.md, the tracker, and design section 11 |
+| `dfae9b8d` | The live monitor's renderer (`rust/npnr_mistral_monitor`) and its C ABI (the FFI crate's `monitor` module) |
+| `ac23a858` | `--monitor`: the session that owns the terminal, feeds the log tail, and renders from atomics and the phase clock (`mistral/monitor.*`) |
+| `6aeaea47` | The monitor recorded: tracker entry, decision row, design section 12; the gate and CLAUDE.md cover the monitor crate |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
