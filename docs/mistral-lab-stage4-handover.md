@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `e5699589` (Stage 6 through 6h, the Rust legality authority at parity on the probe)
+- Commit: `8db93cbe` (Stage 6 through 6h, the Rust legality authority at parity, the coding rules and their gate)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -312,20 +312,19 @@ routes without it.
 
 ## Validation before changing status
 
-At minimum, run:
+At minimum, run the gate (58 s; export `SDKROOT` first on this machine):
 
 ```sh
-cmake --build build/rust-enabled --target nextpnr-mistral-test -j4
-./build/rust-enabled/nextpnr-mistral-test
-cargo test --manifest-path rust/Cargo.toml --offline --workspace
-cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi --all-targets -- -D warnings
-cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-git diff --check
+mistral/tests/gate.sh
 ```
 
-Run the equivalent Rust-disabled native tests for changes that affect common C++
-or fallback behavior. Run Fabi386 in all relevant modes and compare normalized
-reports and routed JSON. Exact historical commands, hashes, pass counts, and
+It runs the scoped cargo test, clippy, and fmt, both gtest suites in both
+trees, the exec probe on the default path against its recorded checksums and
+report hash, `git diff --check`, and clang-format on the changed C++ files.
+A change on a legality path also records a verify-mode placement of the
+probe, or of the core when the resident protocol changed, in the tracker. Run
+Fabi386 in all relevant modes and compare normalized reports and routed JSON;
+`--telemetry` writes the counters and phase times of a run as JSON. Exact historical commands, hashes, pass counts, and
 known creator-line differences are in the tracker.
 
 Update the tracker in the same change that changes a unit status. Do not mark 4D
@@ -363,6 +362,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `0f9abd87` | Stage 6 unit 6g: register packing (`--register-packing`), the spreader's per-bucket cluster weight, the packer's control-set check |
 | `d0689a6f` | Stage 6 unit 6h: the row-aware placement cost (`--row-cost`); the full core routes to completion |
 | `e5699589` | The Rust legality authority at parity: resident LAB snapshots (`ResidentLabs`, `BelPatchV2`, `mistral/lab_resident.*`), the capture path kept as the harness |
+| `733693a0` | The lab crates deny panics outside tests; the resident oracle generates every patch shape the arch sends |
+| `75bb5dc2` | `--telemetry`: the run's counters, checksum, options, and phase times as JSON (`mistral/telemetry.*`) |
+| `8db93cbe` | The fixture fails a leaking test; `mistral/tests/gate.sh`; the coding rules in CLAUDE.md, the tracker, and design section 11 |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
