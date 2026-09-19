@@ -50,9 +50,15 @@ struct ArchArgs
 {
     std::string device;
     bool verify_lab_controls = false;
-    LabControlMode lab_controls = LabControlMode::Legacy;
+    LabControlMode lab_controls = LabControlMode::Legacy; // the complete evaluator owns the control check
     std::string lab_control_profile_path;
+    // The complete LAB evaluator defaults to the Rust authority where it is built (promoted
+    // 2026-09-19) and to the legacy rules otherwise; main.cc's command-line default is the same.
+#ifdef NO_RUST
     LabLegalityMode lab_legality = LabLegalityMode::Legacy;
+#else
+    LabLegalityMode lab_legality = LabLegalityMode::Rust;
+#endif
     int placer_lookahead = 0;                   // Stage 4D: candidates speculated per HeAP cluster batch (0 = serial)
     LabReuseMode lab_reuse = LabReuseMode::Off; // Stage 4E: same-session LAB assessment reuse
     std::string reuse_placement_path;           // Stage 4E-2: previous output JSON to transplant BELs from
@@ -69,9 +75,9 @@ struct ArchArgs
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
     float row_cost = 0.0f; // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
-    SwapSeamMode sa_seam = SwapSeamMode::Off; // Stage 5 (1c): annealer swap seam
-    int sa_batch = 0;                         // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
-    bool route_prepare_only = false;          // Stage 5 (2b): stop route() after preparation, before the router
+    SwapSeamMode sa_seam = SwapSeamMode::On; // Stage 5 (1c): annealer swap seam; on by default since 2026-09-19
+    int sa_batch = 0;                        // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
+    bool route_prepare_only = false;         // Stage 5 (2b): stop route() after preparation, before the router
 };
 
 // These structures are used for fast ALM validity checking

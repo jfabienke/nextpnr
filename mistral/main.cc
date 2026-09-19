@@ -30,6 +30,17 @@
 
 USING_NEXTPNR_NAMESPACE
 
+// The complete LAB evaluator's default authority: Rust where it is built (promoted 2026-09-19 at
+// the user's direction; tracker entry "Promotion"), the legacy C++ rules otherwise;
+// `--lab-legality legacy` selects the C++ rules in any build. The Stage 1 control-plan authority
+// (`--lab-controls`) stays legacy: the complete evaluator owns the control check, and the two
+// Rust authorities cannot be combined.
+#ifdef NO_RUST
+static const char *const kDefaultEvaluator = "legacy";
+#else
+static const char *const kDefaultEvaluator = "rust";
+#endif
+
 class MistralCommandHandler : public CommandHandler
 {
   public:
@@ -58,18 +69,20 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("compress-rbf", "deprecated, no-op: compressed output is now the default");
     specific.add_options()("verify-lab-controls", "verify LAB FF-control checks against the detached C++ evaluator");
     specific.add_options()("lab-controls", po::value<std::string>()->default_value("legacy"),
-                           "FF-control evaluator: legacy, shadow, verify, or rust (experimental)");
+                           "FF-control preparation evaluator: legacy (default; the complete LAB evaluator owns "
+                           "the control check), shadow, verify, or rust (with --lab-legality legacy only)");
     specific.add_options()("lab-controls-profile", po::value<std::string>(),
                            "write a bounded sample of live FF-control queries as JSONL for profiling");
-    specific.add_options()("lab-legality", po::value<std::string>()->default_value("legacy"),
-                           "complete LAB evaluator: legacy, shadow, verify, or rust (experimental)");
+    specific.add_options()("lab-legality", po::value<std::string>()->default_value(kDefaultEvaluator),
+                           "complete LAB evaluator: legacy, shadow, verify, or rust (default rust with BUILD_RUST, "
+                           "legacy otherwise)");
     specific.add_options()(
             "lab-reuse", po::value<std::string>()->default_value("off"),
             "same-session reuse of LAB-level legality sub-results: off, shadow, on, or content (experimental)");
-    specific.add_options()("sa-seam", po::value<std::string>()->default_value("off"),
+    specific.add_options()("sa-seam", po::value<std::string>()->default_value("on"),
                            "annealer swap evaluation: off (live bind/check/revert), shadow (detached assessment "
                            "compared against live), or on (detached decides; identical results, no provisional "
-                           "binding) (experimental)");
+                           "binding; the default)");
     specific.add_options()("route-prepare-only",
                            "run LAB and global routing preparation, then stop before the router (for --checkpoint)");
     specific.add_options()("sa-batch", po::value<int>(),
@@ -156,7 +169,11 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.verify_lab_controls = vm.count("verify-lab-controls") != 0;
     if (vm.count("lab-controls-profile"))
         chipArgs.lab_control_profile_path = vm["lab-controls-profile"].as<std::string>();
-    const auto mode = vm["lab-controls"].as<std::string>();
+    // --verify-lab-controls is the C++-only check: it selects the legacy evaluator unless a mode
+    // was named on the command line.
+    const auto mode = chipArgs.verify_lab_controls && vm["lab-controls"].defaulted()
+                              ? std::string("legacy")
+                              : vm["lab-controls"].as<std::string>();
     if (mode == "legacy")
         chipArgs.lab_controls = LabControlMode::Legacy;
     else if (mode == "shadow")

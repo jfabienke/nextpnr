@@ -6,7 +6,8 @@
 #
 #   mistral/tests/gate.sh [--no-build] [--no-probe]
 #
-# The probe identity is the default path's: a deliberate change to it updates the three constants
+# The probe identity is the default path's (the Rust authority in this tree, the annealer on the
+# overlay seam): a deliberate change to it updates the three constants
 # below and the tracker's record in the same commit. Logs go under build/gate/ (never committed).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -78,7 +79,7 @@ if [ "$probe" = 1 ]; then
         ./build/rust-enabled/nextpnr-mistral --device 5CSEBA6U23I7 \
             --json build/fabi386-inputs/f386_exec_probe_nodsp.json --qsf build/fabi386-inputs/exec_probe.qsf \
             --seed 1 --threads 1 --placer heap --router router2 --freq 12 --router2-max-iter 100 \
-            --lab-controls legacy --report build/gate/probe.report.json --log build/gate/probe.log \
+            --report build/gate/probe.report.json --log build/gate/probe.log \
             >/dev/null 2>&1 || fail "probe run" build/gate/probe.log
         sums=$(grep -o 'Checksum: 0x[0-9a-f]*' build/gate/probe.log | awk '{print $2}' | tr '\n' ' ')
         sha=$(shasum -a 256 build/gate/probe.report.json | awk '{print $1}')
