@@ -1,0 +1,10 @@
+[package]
+name = "npnr_mistral_monitor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "ISC"
+description = "The live monitor frame of a nextpnr-mistral run, rendered from a counter snapshot and the log tail"
+
+[lib]
+crate-type = ["rlib"]

@@ -571,3 +571,182 @@ fn resident_handle_tracks_patches_and_rejects_bad_envelopes() {
     unsafe { npnr_mistral_resident_v2_destroy(handle) };
     unsafe { npnr_mistral_resident_v2_destroy(null_mut()) };
 }
+
+mod monitor_tests {
+    use crate::*;
+    use std::mem::MaybeUninit;
+
+    fn string(text: &str) -> NpnrMonitorStringV1 {
+        NpnrMonitorStringV1 {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+
+    fn snapshot(phase: u32) -> NpnrMonitorSnapshotV1 {
+        NpnrMonitorSnapshotV1 {
+            phase,
+            columns: 80,
+            rows: 40,
+            checksum: 0xbb18_ede9,
+            run_seconds: 22.0,
+            phase_seconds: [0.0, 0.5, 0.8, 13.9, 0.2, 6.6, 0.0, 0.0, 0.0],
+            legality: [5_570_583, 1_156_345, 4_414_238, 0, 0, 0, 0],
+            resident: [5_570_583, 4_191, 4_699_227, 1_053_914, 4_940_434],
+            controls: [0; 7],
+            cells: 12_169,
+            nets: 13_396,
+        }
+    }
+
+    #[test]
+    fn monitor_round_trip_renders_the_frame_into_the_caller_buffer() {
+        let options = [
+            string("lab-legality rust   sa-seam on"),
+            string("row-cost 0"),
+        ];
+        let config = NpnrMonitorConfigV1 {
+            design: string("f386_exec_probe_nodsp"),
+            device: string("5CSEBA6U23I7"),
+            log_path: string("/tmp/run.log"),
+            legality_mode: string("rust"),
+            controls_mode: string("legacy"),
+            options: options.as_ptr(),
+            option_count: options.len(),
+        };
+        let mut handle: *mut NpnrMonitor = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_create(&config, MONITOR_DRY, &mut handle) },
+            CALL_OK
+        );
+        assert!(!handle.is_null());
+        let line = b"Info:     iter=3 wires=455000 overused=12 overuse=20 archfail=NA\n";
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_log(handle, line.as_ptr(), line.len()) },
+            CALL_OK
+        );
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_log(handle, std::ptr::null(), 0) },
+            CALL_OK
+        );
+        let mut buffer = vec![0u8; 16 * 1024];
+        let mut len = 0usize;
+        let wire = snapshot(5);
+        assert_eq!(
+            unsafe {
+                npnr_mistral_monitor_render(
+                    handle,
+                    &wire,
+                    0,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &mut len,
+                )
+            },
+            CALL_OK
+        );
+        let frame = String::from_utf8_lossy(&buffer[..len]).into_owned();
+        assert!(frame.contains("phase: ROUTE"));
+        assert!(frame.contains("LAB LEGALITY (rust)   evaluations 5,570,583"));
+        assert!(frame.contains("ROUTER  #3  wires 455,000  overused 12"));
+        assert!(frame.contains("lab-legality rust   sa-seam on"));
+        assert!(frame.contains("Info:     iter=3 wires=455000"));
+        for line in frame.lines() {
+            assert_eq!(line.chars().count(), 80, "{line:?}");
+        }
+        // A truncating buffer copies what fits and says so.
+        let mut small = [0u8; 10];
+        let mut small_len = 0usize;
+        assert_eq!(
+            unsafe {
+                npnr_mistral_monitor_render(
+                    handle,
+                    &wire,
+                    0,
+                    small.as_mut_ptr(),
+                    10,
+                    &mut small_len,
+                )
+            },
+            CALL_OK
+        );
+        assert_eq!(small_len, 10);
+        assert_eq!(&small, b"+---------");
+        // Envelope errors.
+        assert_eq!(
+            unsafe {
+                npnr_mistral_monitor_render(
+                    handle,
+                    &snapshot(99),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                )
+            },
+            CALL_BAD_RANGE
+        );
+        assert_eq!(
+            unsafe {
+                npnr_mistral_monitor_render(
+                    std::ptr::null_mut(),
+                    &wire,
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                )
+            },
+            CALL_NULL
+        );
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_log(handle, std::ptr::null(), 4) },
+            CALL_NULL
+        );
+        unsafe { npnr_mistral_monitor_destroy(handle) };
+        unsafe { npnr_mistral_monitor_destroy(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn monitor_create_rejects_bad_envelopes() {
+        let mut handle: *mut NpnrMonitor = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_create(std::ptr::null(), MONITOR_DRY, &mut handle) },
+            CALL_NULL
+        );
+        let config = NpnrMonitorConfigV1 {
+            design: string(""),
+            device: string(""),
+            log_path: string(""),
+            legality_mode: string(""),
+            controls_mode: string(""),
+            options: std::ptr::null(),
+            option_count: MAX_OPTION_LINES + 1,
+        };
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_create(&config, MONITOR_DRY, &mut handle) },
+            CALL_BAD_COUNT
+        );
+        let config = NpnrMonitorConfigV1 {
+            options: std::ptr::null(),
+            option_count: 1,
+            ..config
+        };
+        assert_eq!(
+            unsafe { npnr_mistral_monitor_create(&config, MONITOR_DRY, &mut handle) },
+            CALL_NULL
+        );
+        assert!(handle.is_null());
+        let mut slot = MaybeUninit::<*mut NpnrMonitor>::uninit();
+        assert_eq!(
+            unsafe {
+                npnr_mistral_monitor_create(
+                    &config,
+                    MONITOR_DRY,
+                    slot.as_mut_ptr().cast::<u8>().add(1).cast(),
+                )
+            },
+            CALL_MISALIGNED
+        );
+    }
+}
