@@ -1143,3 +1143,46 @@ identity checked against the recorded checksums and report hash, in
 58 seconds; a deliberate change to the default path updates those
 constants in the same commit, which makes such a change visible in the
 diff.
+
+## 12. The live monitor
+
+The telemetry file gave the record its numbers at the end of a run;
+the monitor gives them during it. The core's strict legaliser runs
+twelve minutes without a log line, and the router's plateau argument
+of unit 6h was made by reading iteration lines after the fact; an
+operator, or an agent watching a run, wants the query rate, the phase
+clock, and the overused-wire curve while they happen. `--monitor` is
+that view, and it is the user's request that it be Rust.
+
+The renderer is a pure crate: a snapshot of counters and the log tail
+in, lines of text out, so every panel is asserted line by line in the
+crate's tests and the terminal is not part of the tested surface. Its C
+ABI lives in the existing FFI crate as a module rather than in a
+second static library, because two Rust static libraries linked into
+one binary each carry the runtime and collide; the module keeps the
+crate's rules, a locked handle poisoned by a panic, envelope checks on
+every pointer, and layout asserts on both sides of the two records.
+
+The terminal cannot carry both nextpnr's log and a frame. The session
+removes the log's terminal streams for the run and keeps the file
+stream, so `--log` keeps the text and the tail panel replaces the
+scroll; every message reaches the tail through the log hook, warnings
+and errors included, and the last frame stays on the terminal when the
+run ends, with the cursor handed back below it. No alternate screen,
+for that reason: the frame is the run's summary.
+
+The ticker thread reads nothing of the netlist. The legality and
+control-set counters were atomics already; the resident session's five
+were plain and are now single-writer atomics bumped with a relaxed
+load and store, which is the plain add the hot path paid before, and
+the resident pointer is read with `atomic_load` because the owner
+assigns it once on the first dispatch. Cell and net counts are
+snapshotted on the owner thread at each phase entry, and the phase
+clock is the owner's report. The run is therefore unchanged by being
+watched: the probe's checksums and report are byte-identical with and
+without the monitor, and a Rust-mode run's resident totals are the
+same either way.
+
+The monitor does not replace the telemetry file. It shows this run;
+the file, one per run, is the record across runs, and a recent-runs
+view would read the files, not the process.

@@ -2977,6 +2977,60 @@ with the check that enforces it (design section 11):
 | Telemetry files | Placement-only run: phase `placed`, checksum `0xbb18ede9`; full run: phase `routed`, checksum `0xbc1365c6`, placement 16.2 s, routing 8.2 s, 12,169 cells, 13,396 nets |
 | `mistral/tests/gate.sh` end to end | Passed in 58 s (cargo 3 s, builds up to date, both suites 20 s, probe 25 s) |
 
+### 2026-09-19: The live monitor (`--monitor`)
+
+The user asked for the telemetry as a live dashboard, in Rust, behind a
+`--monitor` parameter. It is a directed addition of Rust surface, the
+second after the parity revision, recorded here and in CLAUDE.md
+(design section 12 has the rationale). What landed:
+
+- `rust/npnr_mistral_monitor`: a pure renderer. A `Snapshot` (phase,
+  terminal size, checksum, run and phase seconds, the legality,
+  resident, and control-set counters, cell and net counts) and the log
+  tail go in; lines of exactly the terminal's width come out, with the
+  panels chosen by priority when the terminal is short. The placer's
+  and router's progress is read from their log lines (HeAP iterations,
+  the annealer's, router2's `iter= ... overused=` lines, drawn as a
+  sparkline). `#![forbid(unsafe_code)]`, the no-panic lints, nine tests
+  (width and height at every clamp, panel contents, the small-terminal
+  drop order, bars, number and clock formats, the three progress lines,
+  the bounded tail, the rate, the phase round trip).
+- The `monitor` module of `npnr_mistral_lab_ffi`:
+  `npnr_mistral_monitor_{create,log,render,destroy}` over a handle with
+  an internal lock (the log hook and the ticker are different threads),
+  poisoned by a panic like the LAB handles; envelope checks on every
+  pointer; layout asserts on the 264-byte snapshot and the 96-byte
+  config on both sides; a dry flag for tests and callers that take the
+  frame through the buffer. Two FFI tests (a round trip into the
+  caller's buffer, the envelope errors).
+- `mistral/monitor.*`: the session. Started by the command handler after
+  the netlist is loaded (so the design name is the JSON's), refused with
+  a warning when stdout is not a terminal or the build has no Rust. It
+  removes the log's terminal streams, keeps the file stream, and feeds
+  every message to the tail through `log_write_function`; a ticker
+  thread renders every 250 ms from the arch's atomics, the phase clock,
+  and cell and net counts snapshotted at each phase entry, and never
+  reads the netlist. The resident session's five counters became
+  single-writer atomics (a relaxed load and store, a plain add on the
+  hot path) and the resident pointer is read with `atomic_load`; the
+  telemetry checksum became atomic. `Arch::monitor_phase` marks pack,
+  place, route preparation, route, and signoff; the destructor marks
+  done or, during unwinding, failed, draws the last frame, and hands
+  the cursor back below it.
+- Tests: the log chunk splitter (both trees), and a dry session that
+  collects the phase clock and counters and renders the frame
+  (Rust-enabled tree).
+
+| Check | Result |
+| --- | --- |
+| `cargo test --workspace` | monitor crate 9, lab crate 12, FFI crate 13 (two new); clippy `-D warnings` and fmt clean with the monitor crate in scope |
+| gtest | 64 pass in `build/rust-enabled` (two new), 52 in `build` (one new) |
+| Probe with `--monitor` under a 100x42 pseudo-terminal (legacy modes) | 96 frames over the 24 s run; checksums `0xbb18ede9` / `0xbc1365c6`, `--report` byte-identical to the run without the monitor; the final frame shows phases pack 0.0 s, place 14.6 s, route prep 0.1 s, route 9.1 s, signoff 0.2 s, router2 at iteration 20 with 0 overused, cursor restored, "Program finished normally" below it |
+| Probe with `--monitor --lab-legality rust --sa-seam on` | Live panels mid-placement: 5,198,769 queries at 38,207/s in the annealer, legal 15.2%, trials 0.90 and restored 0.93 per evaluation; the run's resident totals equal the run without the monitor (5,570,583 / 4,191 / 4,699,227 / 1,053,914 / 4,940,434); placement 14.9 s, routing 8.7 s |
+| `--monitor` with stdout redirected | "stdout is not a terminal; running without the monitor", checksums unchanged |
+| `--monitor` on the Rust-disabled build | "needs the Rust build; running without the monitor" |
+| `mistral/tests/gate.sh` | Passed in 39 s with the monitor crate in the cargo scope |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3072,6 +3126,7 @@ with the check that enforces it (design section 11):
 | 2026-09-18 | 6h | Make the spreader and the legaliser weigh a vertical tile like the solver does, behind `--row-cost W` | Probe: sink classes move to Quartus's, fabric wires 9% fewer, router slower to settle, Fmax a few percent down; **core: routes to completion for the first time** (0 overused at iteration 45 with the unit cost and periodic re-routes, at 125 with the delay cost), signoff 9.8 to 11.9 MHz against Quartus's 25.2 |
 | 2026-09-18 | Rust | Reopen the concluded crate for a performance revision at the user's direction: resident LAB snapshots patched one ALM at a time replace the per-query capture in every non-legacy legality mode; the capture path stays as the harness | Probe: the Rust authority at wall parity with legacy with the annealer on the overlay seam (30.6 s against 30.7 s), verify mode zero mismatches over 14.6 million queries; core: placement 1,065 s against 750 s (1.4 times, from 6 times on the first resident build and an order of magnitude on the capture path), byte-identical, 5.36 billion queries; the 59 ns per query that remain are the call, the marshalling, and the rules, which a per-tile query would halve |
 | 2026-09-19 | rules | Five coding rules, each with its check: the crates deny `unwrap`, `expect`, `panic`, and `unreachable` outside tests; the oracle generates every patch shape the arch sends; `--telemetry` writes the counters as JSON beside the unchanged `--report`; the fixture fails a test that leaks cells or nets; `mistral/tests/gate.sh` runs before every commit | One `expect` removed from the FFI; the leak check found two tests to fix; telemetry on the probe leaves the report and both checksums byte-identical; the gate runs in 58 s |
+| 2026-09-19 | monitor | Add the live dashboard as Rust surface at the user's direction: a pure renderer crate and a monitor module in the existing FFI crate (a second static library would carry a second Rust runtime); the session owns the terminal, keeps the `--log` stream, and reads only atomics and the phase clock off the owner thread | Probe byte-identical with and without it; the resident totals of a Rust-mode run equal the run without it; 96 frames over the 24 s probe |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

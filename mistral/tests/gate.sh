@@ -45,12 +45,12 @@ grep -E '^test result' build/gate/cargo-test.log | sort | uniq -c
 
 step "cargo clippy (lab crates, -D warnings)"
 cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi \
-    --all-targets --quiet -- -D warnings >build/gate/cargo-clippy.log 2>&1 ||
+    -p npnr_mistral_monitor --all-targets --quiet -- -D warnings >build/gate/cargo-clippy.log 2>&1 ||
     fail "cargo clippy" build/gate/cargo-clippy.log
 echo clean
 
 step "cargo fmt (lab crates)"
-cargo fmt --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -- --check
+cargo fmt --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -p npnr_mistral_monitor -- --check
 echo clean
 
 for tree in build/rust-enabled build; do

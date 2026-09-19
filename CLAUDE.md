@@ -50,10 +50,10 @@ cmake --build build/rust-enabled --target nextpnr-mistral-test -j4
 ./build/rust-enabled/nextpnr-mistral-test --gtest_filter='LabControlModel.*'   # one suite / test
 ctest --test-dir build --output-on-failure                    # same tests via ctest
 
-# Rust workspace (rust/Cargo.toml: nextpnr, example_printnets, npnr_mistral_lab, npnr_mistral_lab_ffi)
+# Rust workspace (rust/Cargo.toml: nextpnr, example_printnets, npnr_mistral_lab, npnr_mistral_lab_ffi, npnr_mistral_monitor)
 cargo test   --manifest-path rust/Cargo.toml --offline --workspace
-cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi --all-targets -- -D warnings
-cargo fmt    --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -- --check  # not --all: it reformats upstream rust/nextpnr
+cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p npnr_mistral_lab_ffi -p npnr_mistral_monitor --all-targets -- -D warnings
+cargo fmt    --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -p npnr_mistral_monitor -- --check  # not --all: it reformats upstream rust/nextpnr
 git diff --check
 mistral/tests/gate.sh   # all of the above, both gtest suites, the probe identity, clang-format on changed files; 58 s
 
@@ -125,7 +125,10 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   snapshot, through `npnr_mistral_resident_v2_*` and `mistral/lab_resident.*` (`Arch::lab_bel_dirty`
   and `lab_bel_refacts` are marked from the LAB-version hooks); `--lab-legality rust|shadow|verify`
   all evaluate through it, and the capture path stays as the parity harness in shadow and verify.
-  Add no other Rust surface without a recorded decision.
+  The live monitor (`rust/npnr_mistral_monitor`, a pure renderer, and the `monitor` module of the
+  FFI crate) is the one other Rust surface, added 2026-09-19 at the user's direction; it reads
+  counters and renders, and never touches the netlist. Add no other Rust surface without a
+  recorded decision.
 - Evaluator authority is opt-in via `nextpnr-mistral --lab-controls` and `--lab-legality`, each
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Legacy is and must stay the default**;
   promotion needs its own recorded evidence.
@@ -248,6 +251,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   counts, and the placement and routing wall times as JSON after placement and again after
   routing (`mistral/telemetry.*`, an `ArchArgs` option). It is the machine-readable record;
   `--report` is untouched by it.
+- `--monitor` is the live dashboard of a run (needs a terminal on stdout and the Rust build; it
+  warns and runs without itself otherwise): phases with their clock, the LAB legality, resident,
+  and control-set counters with the query rate, the placer's and router's progress read from
+  their log lines (router2's overused wires as a sparkline), and the log tail. The session
+  (`mistral/monitor.*`) replaces the log's terminal streams with a hook, keeps the `--log` file
+  stream, and renders four times a second from a ticker thread that reads only atomics and the
+  phase clock; the frame is Rust (`rust/npnr_mistral_monitor`). The last frame stays on the
+  terminal when the run ends. The run itself is unchanged: the probe's checksums and report are
+  byte-identical with and without it.
 
 ## Current work and its documents
 
