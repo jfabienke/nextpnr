@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `a7da2d98` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled and six hot paths designed, design 16)
+- Commit: `9c3b7606` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled and six hot paths designed, design 16)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -386,6 +386,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `97ba4bb1` | The option removed; a test keeps the fact that the second register bel of every half refuses a register |
 | `9c57bf9f` | Unit 16.4: a scan oracle over hostile control LABs; the scan's legality check split; the control shortcut not kept |
 | `a7da2d98` | Unit 16.4 recorded: the first form was wrong and the core's checksum caught it; the rule for evaluator shortcuts |
+| `b45cc0fb` | Unit 16.6: the tile scan's bookkeeping in constant time (occupancy mask, candidate beside the trials, `check_alm` generic over its rejection sink); 12 s on the core |
+| `32166b5d` | Unit 16.2: the strict legaliser's tile scan evaluates its filters once; 7 s on the core |
+| `9c3b7606` | Units 16.6 and 16.2 recorded at their measured size |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
