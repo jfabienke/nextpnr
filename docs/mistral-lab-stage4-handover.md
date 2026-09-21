@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `8adb09f8` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor)
+- Commit: `3c3a00cb` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -374,6 +374,8 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `6aeaea47` | The monitor recorded: tracker entry, decision row, design section 12; the gate and CLAUDE.md cover the monitor crate |
 | `79e977f5` | The Rust LAB evaluator promoted to the default authority in Rust builds; `--sa-seam on` default; the gate's probe on the real default path |
 | `8adb09f8` | The promotion and the concurrency decision recorded |
+| `b03b3e37` | Pack-time admission: the placer's LAB legality authority admits every cluster the pairing and register packers commit (`mistral/pack_admission.*`) |
+| `3c3a00cb` | Pack-time admission designed (section 13) and recorded |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
