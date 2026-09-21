@@ -1632,6 +1632,112 @@ TEST_F(LabControlCaptureTest, V2EveryDetachedSubcheckHasRustParity)
     check(input, NPNR_LAB_V2_BAD_SHAPE);
 }
 
+TEST_F(LabControlCaptureTest, WireAndPipBindingsLiveOnTheWireAndKeepTheBaseContract)
+{
+    // Design section 16.5: the arch records a wire's net and driving pip on the wire itself and
+    // answers the binding API from that record. The contract is the base arch's: a pip is bound
+    // or not by itself, its destination wire is bound with it, a second pip into that wire is not
+    // thereby bound, unbinding the wire unbinds the pip that drove it, and a blocked wire refuses.
+    NetInfo *net = nets[0], *other = nets[1];
+    PipId pip, rival;
+    for (PipId candidate : ctx->getPips()) {
+        const WireId dst = ctx->getPipDstWire(candidate);
+        if (!ctx->checkPipAvail(candidate) || !ctx->checkWireAvail(dst) ||
+            !ctx->checkWireAvail(ctx->getPipSrcWire(candidate)))
+            continue;
+        PipId second;
+        for (PipId uphill : ctx->getPipsUphill(dst))
+            if (uphill != candidate && ctx->checkPipAvail(uphill)) {
+                second = uphill;
+                break;
+            }
+        if (second != PipId()) {
+            pip = candidate;
+            rival = second;
+            break;
+        }
+    }
+    ASSERT_NE(pip, PipId());
+    const WireId dst = ctx->getPipDstWire(pip), src = ctx->getPipSrcWire(pip);
+
+    ctx->bindWire(src, net, STRENGTH_WEAK);
+    EXPECT_EQ(ctx->getBoundWireNet(src), net);
+    EXPECT_FALSE(ctx->checkWireAvail(src));
+    EXPECT_EQ(net->wires.at(src).pip, PipId());
+
+    ctx->bindPip(pip, net, STRENGTH_STRONG);
+    EXPECT_EQ(ctx->getBoundPipNet(pip), net);
+    EXPECT_EQ(ctx->getConflictingPipNet(pip), net);
+    EXPECT_EQ(ctx->getBoundWireNet(dst), net);
+    EXPECT_EQ(net->wires.at(dst).pip, pip);
+    EXPECT_EQ(net->wires.at(dst).strength, STRENGTH_STRONG);
+    EXPECT_FALSE(ctx->checkPipAvail(pip));
+    EXPECT_TRUE(ctx->checkPipAvailForNet(pip, net));
+    EXPECT_FALSE(ctx->checkPipAvailForNet(pip, other));
+    // Another pip into the bound wire is not itself bound; the wire's availability says the rest.
+    EXPECT_EQ(ctx->getBoundPipNet(rival), nullptr);
+    EXPECT_TRUE(ctx->checkPipAvail(rival));
+    EXPECT_FALSE(ctx->checkWireAvail(dst));
+
+    ctx->unbindPip(pip);
+    EXPECT_EQ(ctx->getBoundPipNet(pip), nullptr);
+    EXPECT_EQ(ctx->getBoundWireNet(dst), nullptr);
+    EXPECT_EQ(net->wires.count(dst), 0u);
+    EXPECT_TRUE(ctx->checkPipAvail(pip));
+
+    // Unbinding the wire unbinds the pip that drove it.
+    ctx->bindPip(pip, net, STRENGTH_WEAK);
+    ctx->unbindWire(dst);
+    EXPECT_EQ(ctx->getBoundPipNet(pip), nullptr);
+    EXPECT_TRUE(ctx->checkWireAvail(dst));
+    EXPECT_EQ(net->wires.count(dst), 0u);
+
+    // A blocked wire refuses every pip into it, bound or not.
+    const uint64_t flags = ctx->wires.at(dst).flags;
+    ctx->wires.at(dst).flags = flags | WireInfo::BLOCKED;
+    EXPECT_FALSE(ctx->checkPipAvail(pip));
+    EXPECT_FALSE(ctx->checkPipAvailForNet(pip, net));
+    ctx->wires.at(dst).flags = flags;
+    EXPECT_TRUE(ctx->checkPipAvail(pip));
+
+    ctx->unbindWire(src);
+    EXPECT_TRUE(net->wires.empty());
+    EXPECT_EQ(ctx->getBoundWireNet(WireId()), nullptr);
+    EXPECT_EQ(ctx->getBoundPipNet(PipId()), nullptr);
+}
+
+TEST_F(LabControlCaptureTest, TheSecondRegisterBelOfEveryHalfRefusesALoneRegister)
+{
+    // A fact the record rests on (tracker, "The register capacity the rules admit"; the tile
+    // scan's shortcut; design 15): on an empty LAB a lone register is legal at the first register
+    // bel of each ALM half and refused at the second, under the legacy rules and the Rust
+    // evaluator alike, so twenty of a LAB's forty register bels never hold a register.
+    auto &lab0 = ctx->labs.at(0);
+    cells[0]->ffInfo.ctrlset.clk = {nets[0], false};
+    for (auto mode : {LabLegalityMode::Legacy,
+#ifndef NO_RUST
+                      LabLegalityMode::Rust
+#endif
+         }) {
+        ctx->args.lab_legality = mode;
+        ctx->lab_resident.reset();
+        ctx->lab_bel_dirty.clear();
+        ctx->lab_bel_refacts.clear();
+        unsigned refused = 0;
+        for (unsigned alm = 0; alm < 10; ++alm)
+            for (unsigned i = 0; i < 4; ++i) {
+                const BelId bel = lab0.alms[alm].ff_bels[i];
+                ctx->bindBel(bel, cells[0], STRENGTH_WEAK);
+                const bool legal = ctx->isBelLocationValid(bel);
+                ctx->unbindBel(bel);
+                EXPECT_EQ(legal, i % 2 == 0) << "alm " << alm << " register bel " << i;
+                refused += !legal;
+            }
+        EXPECT_EQ(refused, 20u);
+    }
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
+}
+
 #ifndef NO_RUST
 #ifndef NO_RUST
 TEST_F(LabControlCaptureTest, ResidentLegalityPatchesChangedAlmsAndMatchesTheCapturePath)
@@ -1725,38 +1831,6 @@ TEST_F(LabControlCaptureTest, ResidentLegalityPatchesChangedAlmsAndMatchesTheCap
     ctx->lab_bel_refacts.clear();
 }
 #endif
-
-TEST_F(LabControlCaptureTest, TheSecondRegisterBelOfEveryHalfRefusesALoneRegister)
-{
-    // A fact the record rests on (tracker, "The register capacity the rules admit"; the tile
-    // scan's shortcut; design 15): on an empty LAB a lone register is legal at the first register
-    // bel of each ALM half and refused at the second, under the legacy rules and the Rust
-    // evaluator alike, so twenty of a LAB's forty register bels never hold a register.
-    auto &lab0 = ctx->labs.at(0);
-    cells[0]->ffInfo.ctrlset.clk = {nets[0], false};
-    for (auto mode : {LabLegalityMode::Legacy,
-#ifndef NO_RUST
-                      LabLegalityMode::Rust
-#endif
-         }) {
-        ctx->args.lab_legality = mode;
-        ctx->lab_resident.reset();
-        ctx->lab_bel_dirty.clear();
-        ctx->lab_bel_refacts.clear();
-        unsigned refused = 0;
-        for (unsigned alm = 0; alm < 10; ++alm)
-            for (unsigned i = 0; i < 4; ++i) {
-                const BelId bel = lab0.alms[alm].ff_bels[i];
-                ctx->bindBel(bel, cells[0], STRENGTH_WEAK);
-                const bool legal = ctx->isBelLocationValid(bel);
-                ctx->unbindBel(bel);
-                EXPECT_EQ(legal, i % 2 == 0) << "alm " << alm << " register bel " << i;
-                refused += !legal;
-            }
-        EXPECT_EQ(refused, 20u);
-    }
-    ctx->args.lab_legality = LabLegalityMode::Legacy;
-}
 
 TEST_F(LabControlCaptureTest, TileScanNamesTheFirstBelThePerBelCheckAccepts)
 {

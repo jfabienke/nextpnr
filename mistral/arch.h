@@ -211,6 +211,14 @@ struct WireInfo
     // muxes are programmed by raw CRAM writes at bitstream time, so any fabric net routed through
     // them is silently clobbered -- measured as a wrong answer on silicon (MISTRAL_GAPS G2/G4).
     static const uint64_t BLOCKED = 0x200;
+
+    // Design section 16.5: the wire's binding lives with the wire. The base arch keeps two hash
+    // maps, wire to net and pip to net, and the router asks about a pip for every wire it visits,
+    // a lookup beside the one of this record that the blocked-pip test makes anyway. A wire is
+    // bound to at most one net, through at most one pip, whose destination is the wire: that pip
+    // is recorded by its source, and a wire bound directly has none.
+    NetInfo *bound_net = nullptr;
+    CycloneV::rnode_t bound_src = invalid_rnode;
 };
 
 // This transforms a WireIds, and adds the mising half of the pair to create a PipId
@@ -532,29 +540,80 @@ struct Arch : BaseArch<ArchRanges>
     DelayQuad getWireDelay(WireId wire) const override { return DelayQuad(0); }
     const std::vector<BelPin> &getWireBelPins(WireId wire) const override { return wires.at(wire).bel_pins; }
     AllWireRange getWires() const override { return AllWireRange(wires); }
+    // The binding API over the wire records (design section 16.5), each function the base arch's
+    // line for line with its two maps replaced by WireInfo::bound_net and bound_src. The base
+    // maps are not written.
     void bindWire(WireId wire, NetInfo *net, PlaceStrength strength) override
     {
-        BaseArch<ArchRanges>::bindWire(wire, net, strength);
+        NPNR_ASSERT(wire != WireId());
+        WireInfo &data = wires.at(wire);
+        NPNR_ASSERT(data.bound_net == nullptr);
+        net->wires[wire].pip = PipId();
+        net->wires[wire].strength = strength;
+        data.bound_net = net;
+        data.bound_src = invalid_rnode;
+        refreshUiWire(wire);
         ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void unbindWire(WireId wire) override
     {
-        BaseArch<ArchRanges>::unbindWire(wire);
+        NPNR_ASSERT(wire != WireId());
+        WireInfo &data = wires.at(wire);
+        NPNR_ASSERT(data.bound_net != nullptr);
+        auto &net_wires = data.bound_net->wires;
+        auto it = net_wires.find(wire);
+        NPNR_ASSERT(it != net_wires.end());
+        net_wires.erase(it);
+        data.bound_net = nullptr;
+        data.bound_src = invalid_rnode; // a pip that drove the wire is unbound with it
+        refreshUiWire(wire);
         ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void bindPip(PipId pip, NetInfo *net, PlaceStrength strength) override
     {
-        BaseArch<ArchRanges>::bindPip(pip, net, strength);
+        NPNR_ASSERT(pip != PipId());
+        const WireId dst(pip.dst);
+        WireInfo &data = wires.at(dst);
+        NPNR_ASSERT(data.bound_net == nullptr); // neither this pip nor another drives the wire
+        data.bound_net = net;
+        data.bound_src = pip.src;
+        net->wires[dst].pip = pip;
+        net->wires[dst].strength = strength;
         ++lab_routing_epoch;
         placement_revision.note_mutation(PlacementMutation::Routing);
     }
     void unbindPip(PipId pip) override
     {
         ++lab_routing_epoch;
-        BaseArch<ArchRanges>::unbindPip(pip);
+        NPNR_ASSERT(pip != PipId());
+        const WireId dst(pip.dst);
+        WireInfo &data = wires.at(dst);
+        NPNR_ASSERT(data.bound_net != nullptr && data.bound_src == pip.src);
+        data.bound_net->wires.erase(dst);
+        data.bound_net = nullptr;
+        data.bound_src = invalid_rnode;
         placement_revision.note_mutation(PlacementMutation::Routing);
+    }
+    bool checkWireAvail(WireId wire) const override { return getBoundWireNet(wire) == nullptr; }
+    NetInfo *getBoundWireNet(WireId wire) const override
+    {
+        auto found = wires.find(wire);
+        return found == wires.end() ? nullptr : found->second.bound_net;
+    }
+    NetInfo *getConflictingWireNet(WireId wire) const override { return getBoundWireNet(wire); }
+    NetInfo *getBoundPipNet(PipId pip) const override
+    {
+        auto found = wires.find(WireId(pip.dst));
+        return found == wires.end() ? nullptr : pip_net(pip, found->second);
+    }
+    NetInfo *getConflictingPipNet(PipId pip) const override { return getBoundPipNet(pip); }
+    // The net bound through `pip`, given its destination wire's record: the wire's net when this
+    // pip is the one that drives it.
+    static NetInfo *pip_net(PipId pip, const WireInfo &dst_data)
+    {
+        return dst_data.bound_src == pip.src ? dst_data.bound_net : nullptr;
     }
 
     bool wires_connected(WireId src, WireId dst) const;
@@ -580,10 +639,10 @@ struct Arch : BaseArch<ArchRanges>
         return UpDownhillPipRange(wires.at(wire).wires_uphill, wire, true);
     }
 
-    bool is_pip_blocked(PipId pip) const
+    bool is_pip_blocked(PipId pip) const { return is_pip_blocked(pip, wires.at(WireId(pip.dst))); }
+    // The same with the destination wire's record in hand, for a caller that needs it anyway.
+    bool is_pip_blocked(PipId pip, const WireInfo &dst_data) const
     {
-        WireId dst(pip.dst);
-        const auto &dst_data = wires.at(dst);
         if ((dst_data.flags & WireInfo::BLOCKED) != 0)
             return true;
         {
@@ -598,19 +657,21 @@ struct Arch : BaseArch<ArchRanges>
         return false;
     }
 
+    // One lookup of the destination wire answers both halves: reserved and blocked routes, and
+    // whether the pip is bound (design section 16.5).
     bool checkPipAvail(PipId pip) const override
     {
-        // Check reserved routes
-        if (is_pip_blocked(pip))
-            return false;
-        return BaseArch::checkPipAvail(pip);
+        const WireInfo &dst_data = wires.at(WireId(pip.dst));
+        return !is_pip_blocked(pip, dst_data) && pip_net(pip, dst_data) == nullptr;
     }
 
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override
     {
-        if (is_pip_blocked(pip))
+        const WireInfo &dst_data = wires.at(WireId(pip.dst));
+        if (is_pip_blocked(pip, dst_data))
             return false;
-        return BaseArch::checkPipAvailForNet(pip, net);
+        const NetInfo *bound = pip_net(pip, dst_data);
+        return bound == nullptr || bound == net;
     }
 
     // -------------------------------------------------
