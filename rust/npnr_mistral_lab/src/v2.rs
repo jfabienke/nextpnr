@@ -135,7 +135,28 @@ impl<'a> AlmView<'a> {
     }
 }
 
-pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessmentV2) -> bool {
+/// Where a rule records a refusal. A verdict keeps the reason; a scan needs only the answer.
+pub(crate) trait Reject {
+    fn reject(&mut self, reason: u32, alm: u32, slot: u32, observed: i32, limit: i32) -> bool;
+}
+
+impl Reject for LabAssessmentV2 {
+    fn reject(&mut self, reason: u32, alm: u32, slot: u32, observed: i32, limit: i32) -> bool {
+        reject(self, reason, alm, slot, observed, limit)
+    }
+}
+
+/// Discards the reason: the refusing branch of a rule is then a return.
+pub(crate) struct Discard;
+
+impl Reject for Discard {
+    #[inline]
+    fn reject(&mut self, _: u32, _: u32, _: u32, _: i32, _: i32) -> bool {
+        false
+    }
+}
+
+pub(crate) fn check_alm<R: Reject>(alm: &AlmView, alm_index: usize, result: &mut R) -> bool {
     let mut bits = 0i32;
     let mut inputs = 0i32;
     for lut in alm.lut.iter().filter(|lut| lut.occupied != 0) {
@@ -143,7 +164,7 @@ pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessm
         bits += lut.bits_count as i32;
     }
     if bits > 64 {
-        return reject(result, ALM_BITS, alm_index as u32, u32::MAX, bits, 64);
+        return result.reject(ALM_BITS, alm_index as u32, u32::MAX, bits, 64);
     }
     if inputs > 8 {
         let mut shared = 0;
@@ -153,14 +174,7 @@ pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessm
             }
         }
         if inputs - shared > 8 {
-            return reject(
-                result,
-                ALM_INPUTS,
-                alm_index as u32,
-                u32::MAX,
-                inputs - shared,
-                8,
-            );
+            return result.reject(ALM_INPUTS, alm_index as u32, u32::MAX, inputs - shared, 8);
         }
     }
     let carry = (alm.lut[0].occupied != 0 && alm.lut[0].is_carry != 0)
@@ -169,7 +183,7 @@ pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessm
         && alm.lut[1].occupied != 0
         && alm.lut[0].is_carry != alm.lut[1].is_carry
     {
-        return reject(result, CARRY_MIX, alm_index as u32, u32::MAX, 0, 0);
+        return result.reject(CARRY_MIX, alm_index as u32, u32::MAX, 0, 0);
     }
     for half in 0..2 {
         let mut route_thru = alm.lut[half].occupied == 0 && !carry && inputs < 8 && bits < 64;
@@ -183,15 +197,15 @@ pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessm
                 continue;
             }
             if j == 1 {
-                return reject(result, ODD_FF, alm_index as u32, slot as u32, 0, 0);
+                return result.reject(ODD_FF, alm_index as u32, slot as u32, 0, 0);
             }
             if first.is_some_and(|old| !same_ctrlset(old, ff)) {
-                return reject(result, FF_CONTROL, alm_index as u32, slot as u32, 0, 0);
+                return result.reject(FF_CONTROL, alm_index as u32, slot as u32, 0, 0);
             }
             first.get_or_insert(ff);
             if ff.sdata_net != 0 {
                 if !ef_available {
-                    return reject(result, SDATA_PATH, alm_index as u32, slot as u32, 0, 0);
+                    return result.reject(SDATA_PATH, alm_index as u32, slot as u32, 0, 0);
                 }
                 ef_available = false;
             }
@@ -203,7 +217,7 @@ pub(crate) fn check_alm(alm: &AlmView, alm_index: usize, result: &mut LabAssessm
                 } else if ef_available {
                     ef_available = false;
                 } else {
-                    return reject(result, DATAIN_PATH, alm_index as u32, slot as u32, 0, 0);
+                    return result.reject(DATAIN_PATH, alm_index as u32, slot as u32, 0, 0);
                 }
             }
         }

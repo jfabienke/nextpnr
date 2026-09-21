@@ -34,8 +34,8 @@
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
 use crate::v2::{
-    AlmView, check_alm, check_mlab, evaluate_facts, ff_shape_valid, lut_shape_valid, query_valid,
-    recompute_inputs, reject,
+    AlmView, Discard, check_alm, check_mlab, evaluate_facts, ff_shape_valid, lut_shape_valid,
+    query_valid, recompute_inputs, reject,
 };
 use crate::v2_wire::*;
 use crate::wire::{CONTROL_COUNT, FF_COUNT, GLOBAL, INVERTED, LEGAL, MAX_NETS};
@@ -270,6 +270,9 @@ impl ControlSignal {
 #[derive(Clone)]
 struct ResidentLab {
     facts: LabFactsV2,
+    /// Which of the sixty bels the committed facts occupy (bit `alm * 6 + slot`), kept beside
+    /// the facts so a scan decides "free" with a bit test instead of reading forty records.
+    occupied: u64,
     alm_inputs: [i32; ALMS],
     total_inputs: i32,
     mirror: ControlMirror,
@@ -319,6 +322,7 @@ impl ResidentLabs {
                 input_limit,
                 ..LabFactsV2::default()
             },
+            occupied: 0,
             alm_inputs: [0; ALMS],
             total_inputs: 0,
             mirror: ControlMirror::empty(),
@@ -345,6 +349,7 @@ impl ResidentLabs {
             is_mlab: u32::from(is_mlab),
             ..LabFactsV2::default()
         };
+        lab.occupied = 0;
         lab.alm_inputs = [0; ALMS];
         lab.total_inputs = 0;
         lab.mirror = ControlMirror::empty();
@@ -464,32 +469,27 @@ impl ResidentLabs {
         }
         // One slot of the trials in view is the candidate's.
         Self::validate(patches, MAX_TRIALS - 1)?;
+        // The bels taken in the state the patches describe: the committed ones, with each
+        // patch's bel set or cleared. The bels of the order must be free, distinct, and of the
+        // candidate's kind.
+        let mut taken = lab.occupied;
+        for patch in patches {
+            let (bit, occupied) = Self::bel_bit(patch);
+            taken = if occupied { taken | bit } else { taken & !bit };
+        }
         let mut seen = 0u64;
         for &bel in order {
             let (alm, slot) = (bel as usize / (LUTS + FFS), bel as usize % (LUTS + FFS));
             let bit = 1u64.checked_shl(u32::from(bel)).unwrap_or(0);
-            if alm >= ALMS || (slot < LUTS) != is_lut || seen & bit != 0 {
+            if alm >= ALMS || (slot < LUTS) != is_lut || (seen | taken) & bit != 0 {
                 return Err(ResidentError::Query);
             }
             seen |= bit;
-            // Free in the state the patches describe: the patch for the bel, or the held facts.
-            let patched = patches
-                .iter()
-                .find(|p| p.alm as usize == alm && p.slot as usize == slot);
-            let taken = match (patched, slot < LUTS) {
-                (Some(patch), true) => patch.lut.occupied,
-                (Some(patch), false) => patch.ff.occupied,
-                (None, true) => lab.facts.alm[alm].lut[slot].occupied,
-                (None, false) => lab.facts.alm[alm].ff[slot - LUTS].occupied,
-            };
-            if taken != 0 {
-                return Err(ResidentError::Query);
-            }
         }
         let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
         let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
         let is_mlab = lab.facts.is_mlab != 0;
-        let mut scratch = LabAssessmentV2::empty(&lab.facts);
+        let trials = &trials[..trial_count];
         let mut at = shaped;
         for (index, &bel) in order.iter().enumerate() {
             at.alm = u32::from(bel) / (LUTS + FFS) as u32;
@@ -500,22 +500,31 @@ impl ResidentLabs {
                 // test `the_second_register_bel_of_a_half_is_always_refused` ties this to it).
                 continue;
             }
-            let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = trials;
-            in_view[trial_count] = Some(&at);
-            let in_view = &in_view[..trial_count + 1];
+            // `verdict` takes its trials as one array; only the rare paths that need it build it.
             let full = |lab: &mut ResidentLab| {
-                Self::verdict(lab, limit, in_view, query, at.alm, true).status == LAB_LEGAL
+                let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = [None; MAX_TRIALS];
+                in_view[..trials.len()].copy_from_slice(trials);
+                in_view[trials.len()] = Some(&at);
+                Self::verdict(
+                    lab,
+                    limit,
+                    &in_view[..trials.len() + 1],
+                    query,
+                    at.alm,
+                    true,
+                )
+                .status
+                    == LAB_LEGAL
             };
-            let legal =
-                match Self::bel_passes_alm_and_total(lab, limit, in_view, at.alm, &mut scratch) {
-                    false => false,
-                    true if is_lut => !is_mlab || full(lab),
-                    true => match Self::control_legal(lab, in_view) {
-                        Some(legal) => legal && (!is_mlab || full(lab)),
-                        // More control nets than the mirror holds: `verdict` decides.
-                        None => full(lab),
-                    },
-                };
+            let legal = match Self::bel_passes_alm_and_total(lab, limit, trials, &at) {
+                false => false,
+                true if is_lut => !is_mlab || full(lab),
+                true => match Self::control_legal(lab, trials, &at) {
+                    Some(legal) => legal && (!is_mlab || full(lab)),
+                    // More control nets than the mirror holds: `verdict` decides.
+                    None => full(lab),
+                },
+            };
             if legal {
                 return Ok(Some(index));
             }
@@ -523,31 +532,36 @@ impl ResidentLabs {
         Ok(None)
     }
 
-    /// For the scan, which needs the answer and not the reason: whether the queried bel's ALM
-    /// passes the ALM rule and the LAB stays within its input limit, with the trials in view.
-    /// These are `verdict`'s first two predicates asked in order of cost: on a crowded LAB three
-    /// bels in four fail the ALM rule alone, so the input counts are recomputed only for a bel
-    /// that has passed it. `scratch` receives the ALM rule's rejection record and is otherwise
-    /// unused.
+    /// For the scan, which needs the answer and not the reason: whether the candidate's ALM passes
+    /// the ALM rule and the LAB stays within its input limit, with the trials and the candidate
+    /// (at the bel its `alm` and `slot` name) in view. These are `verdict`'s first two predicates
+    /// asked in order of cost: on a crowded LAB three bels in four fail the ALM rule alone, so the
+    /// input counts are recomputed only for a bel that has passed it, and the rule's rejection
+    /// record is discarded.
     fn bel_passes_alm_and_total(
         lab: &ResidentLab,
         limit: i32,
         trials: &[Option<&BelPatchV2>],
-        query_alm: u32,
-        scratch: &mut LabAssessmentV2,
+        candidate: &BelPatchV2,
     ) -> bool {
         let facts = &lab.facts;
-        let index = query_alm as usize;
-        if !check_alm(&Self::view(facts, trials, index), index, scratch) {
+        let index = candidate.alm as usize;
+        let with = Some(candidate);
+        if !check_alm(
+            &Self::view_with(facts, trials, with, index),
+            index,
+            &mut Discard,
+        ) {
             return false;
         }
         let mut touched = 0u32;
         let mut total = lab.total_inputs;
-        for patch in trials.iter().flatten() {
+        for patch in trials.iter().flatten().copied().chain(with) {
             let alm = patch.alm as usize;
             if touched & (1 << alm) == 0 {
                 touched |= 1 << alm;
-                total += recompute_inputs(&Self::view(facts, trials, alm)) - lab.alm_inputs[alm];
+                total += recompute_inputs(&Self::view_with(facts, trials, with, alm))
+                    - lab.alm_inputs[alm];
             }
         }
         total <= limit
@@ -559,11 +573,15 @@ impl ResidentLabs {
     /// sit in, not of the LAB: the rules' second walk gives data lines by first fit over lists
     /// that overlap between kinds, so a net that serves two kinds may fit at one bel and not at
     /// another (design 16.4, and the hostile scan oracle below).
-    fn control_legal(lab: &mut ResidentLab, trials: &[Option<&BelPatchV2>]) -> Option<bool> {
+    fn control_legal(
+        lab: &mut ResidentLab,
+        trials: &[Option<&BelPatchV2>],
+        candidate: &BelPatchV2,
+    ) -> Option<bool> {
         let ResidentLab { facts, mirror, .. } = lab;
         let mut rows: [(usize, &LabFfV2); MAX_TRIALS] = [(0, &facts.alm[0].ff[0]); MAX_TRIALS];
         let mut row_count = 0;
-        for patch in trials.iter().flatten() {
+        for patch in trials.iter().flatten().copied().chain(Some(candidate)) {
             if patch.slot as usize >= LUTS {
                 rows[row_count] = (
                     patch.alm as usize * FFS + (patch.slot as usize - LUTS),
@@ -637,6 +655,12 @@ impl ResidentLabs {
                 }
             }
             Self::apply_bel(&mut lab.facts.alm[index], patch);
+            let (bit, taken) = Self::bel_bit(patch);
+            lab.occupied = if taken {
+                lab.occupied | bit
+            } else {
+                lab.occupied & !bit
+            };
             let inputs = if recompute || trial_mask & (1 << index) != 0 {
                 recompute_inputs(&AlmView::of(&lab.facts.alm[index]))
             } else {
@@ -649,13 +673,35 @@ impl ResidentLabs {
     }
 
     /// An ALM's slots with the trials that touch it substituted, by reference.
+    /// The committed bel a patch names, as its occupancy bit, and whether the patch occupies it.
+    fn bel_bit(patch: &BelPatchV2) -> (u64, bool) {
+        let bit = 1u64 << (patch.alm as usize * (LUTS + FFS) + patch.slot as usize);
+        let taken = if (patch.slot as usize) < LUTS {
+            patch.lut.occupied != 0
+        } else {
+            patch.ff.occupied != 0
+        };
+        (bit, taken)
+    }
+
     fn view<'a>(
         facts: &'a LabFactsV2,
         trials: &[Option<&'a BelPatchV2>],
         index: usize,
     ) -> AlmView<'a> {
+        Self::view_with(facts, trials, None, index)
+    }
+
+    /// An ALM as the trials leave it, with one more patch in view beside them: the scan's
+    /// candidate, which moves from bel to bel while the trials stay.
+    fn view_with<'a>(
+        facts: &'a LabFactsV2,
+        trials: &[Option<&'a BelPatchV2>],
+        extra: Option<&'a BelPatchV2>,
+        index: usize,
+    ) -> AlmView<'a> {
         let mut view = AlmView::of(&facts.alm[index]);
-        for patch in trials.iter().flatten() {
+        for patch in trials.iter().flatten().copied().chain(extra) {
             if patch.alm as usize != index {
                 continue;
             }
@@ -1039,6 +1085,21 @@ mod tests {
                 resident.facts(lab).unwrap().alm,
                 shadow[lab].alm,
                 "step {step}"
+            );
+            let mut from_facts = 0u64;
+            for (index, alm) in shadow[lab].alm.iter().enumerate() {
+                for slot in 0..(LUTS + FFS) {
+                    let taken = if slot < LUTS {
+                        alm.lut[slot].occupied
+                    } else {
+                        alm.ff[slot - LUTS].occupied
+                    };
+                    from_facts |= u64::from(taken != 0) << (index * (LUTS + FFS) + slot);
+                }
+            }
+            assert_eq!(
+                resident.labs[lab].occupied, from_facts,
+                "occupancy at step {step}"
             );
             assert_eq!(
                 resident.reference(lab, &in_view, query, query_alm).unwrap(),
