@@ -1344,6 +1344,18 @@ LUT bels, which themselves file under `MISTRAL_COMB`), because a new
 identifier would be interned ahead of the netlist and shift every net
 index of the default path.
 
+**Outcome (2026-09-21): negative, removed.** On the probe the option is
+inside the seed spread. On the core it halves what the scans ask and
+nothing else improves: the legaliser is slower on two seeds of three,
+the router needs half again as many iterations, and one seed no longer
+routes. The overstated capacity appears to do useful work: it lets the
+spreader leave a register beside its logic and leaves the choice of
+the real bel to the legaliser. The argument above, that telling the
+placer the truth can only help, was wrong for this placer, and the
+record of it is the tracker's entry. The scanning cost that motivated
+the unit is addressed where it arises, in the scan (section 14.1) and
+in the legaliser's loop (section 16.2).
+
 ## 16. Six hot paths of the full core flow
 
 A Time Profiler recording of the whole core flow under the recipe

@@ -263,8 +263,10 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   previous tile was refused (`scan_prev_refused`: the batch equals the live check, so when it is
   asked changes cost, never the result). Core placement 530 s, against 1,092 s on the per-bel
   Rust path and 781 s under the legacy C++ authority, byte-identical (checksum `0x2d44a02e`).
-  Known and not yet acted on: HeAP's spreader takes a tile's register capacity as 40 bels where
-  the rules admit 20 (tracker, "The tile scan, refined").
+  HeAP's spreader takes a tile's register capacity as 40 bels where the rules admit 20; hiding
+  the 20 never-legal bels from the placer (`--usable-register-bels`, design 15) was built,
+  measured negative on the core (slower on two seeds of three, one seed unrouted), and removed.
+  Do not retry it without a new idea; and never size a placer change from one seed.
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

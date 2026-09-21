@@ -105,6 +105,10 @@ po::options_description MistralCommandHandler::getArchOptions()
                                             "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
+    specific.add_options()("usable-register-bels",
+                           "offer the placer only the register bels the ALM rule admits (the second register bel "
+                           "of each ALM half is refused for any register): twenty per LAB for the spreader's "
+                           "capacity, the legaliser, and the annealer; changes the placement");
     specific.add_options()("no-lab-tile-scan",
                            "ask the LAB legality authority per bel even where the tile scan applies (the scan is "
                            "on in the rust, shadow, and verify modes; results are identical either way)");
@@ -253,6 +257,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     if (vm.count("telemetry"))
         chipArgs.telemetry_path = vm["telemetry"].as<std::string>();
     chipArgs.lab_tile_scan = vm.count("no-lab-tile-scan") == 0;
+    chipArgs.usable_register_bels = vm.count("usable-register-bels") != 0;
     if (vm.count("row-cost")) {
         chipArgs.row_cost = vm["row-cost"].as<float>();
         if (chipArgs.row_cost <= 0.0f)

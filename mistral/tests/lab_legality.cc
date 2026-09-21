@@ -1726,6 +1726,53 @@ TEST_F(LabControlCaptureTest, ResidentLegalityPatchesChangedAlmsAndMatchesTheCap
 }
 #endif
 
+TEST_F(LabControlCaptureTest, UnusableRegisterBelsAreExactlyTheOnesTheRuleAlwaysRefuses)
+{
+    // Design section 15: `--usable-register-bels` hides a register bel from the placer when no
+    // register can ever be legal there. The predicate must name exactly those bels: on an empty
+    // LAB a lone register is legal at every other register bel and refused at each of these, under
+    // the legacy rules and the Rust evaluator alike.
+    auto &lab0 = ctx->labs.at(0);
+    cells[0]->ffInfo.ctrlset.clk = {nets[0], false};
+    for (auto mode : {LabLegalityMode::Legacy,
+#ifndef NO_RUST
+                      LabLegalityMode::Rust
+#endif
+         }) {
+        ctx->args.lab_legality = mode;
+        ctx->lab_resident.reset();
+        ctx->lab_bel_dirty.clear();
+        ctx->lab_bel_refacts.clear();
+        unsigned hidden = 0;
+        for (unsigned alm = 0; alm < 10; ++alm)
+            for (unsigned i = 0; i < 4; ++i) {
+                const BelId bel = lab0.alms[alm].ff_bels[i];
+                ctx->bindBel(bel, cells[0], STRENGTH_WEAK);
+                const bool legal = ctx->isBelLocationValid(bel);
+                ctx->unbindBel(bel);
+                EXPECT_EQ(ctx->is_unusable_register_bel(bel), !legal) << "alm " << alm << " register bel " << i;
+                hidden += ctx->is_unusable_register_bel(bel);
+            }
+        EXPECT_EQ(hidden, 20u);
+    }
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
+    EXPECT_FALSE(ctx->is_unusable_register_bel(lab0.alms[0].lut_bels[1]));
+
+    // Off, the buckets are upstream's; on, the hidden bels leave the register bucket and are no
+    // bel for a register, and nothing else moves.
+    const BelId usable = lab0.alms[3].ff_bels[2], hidden_bel = lab0.alms[3].ff_bels[3];
+    EXPECT_EQ(ctx->getBelBucketForBel(hidden_bel), id_MISTRAL_FF);
+    EXPECT_TRUE(ctx->isValidBelForCellType(id_MISTRAL_FF, hidden_bel));
+    ctx->args.usable_register_bels = true;
+    EXPECT_EQ(ctx->getBelBucketForBel(usable), id_MISTRAL_FF);
+    EXPECT_TRUE(ctx->isValidBelForCellType(id_MISTRAL_FF, usable));
+    EXPECT_NE(ctx->getBelBucketForBel(hidden_bel), id_MISTRAL_FF);
+    EXPECT_NE(ctx->getBelBucketForBel(hidden_bel), ctx->getBelBucketForCellType(id_MISTRAL_MLAB));
+    EXPECT_FALSE(ctx->isValidBelForCellType(id_MISTRAL_FF, hidden_bel));
+    EXPECT_EQ(ctx->getBelBucketForBel(lab0.alms[3].lut_bels[0]), id_MISTRAL_COMB);
+    ctx->args.usable_register_bels = false;
+}
+
 TEST_F(LabControlCaptureTest, TileScanNamesTheFirstBelThePerBelCheckAccepts)
 {
     // Design section 14: the legaliser's scan of a tile as one call. For an unbound cell and free

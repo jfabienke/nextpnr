@@ -3285,6 +3285,61 @@ control verdict is the same at every bel of a LAB, was checked by a
 property test before the design was written down (3,000 random LABs,
 more than 50,000 bels compared, no difference).
 
+### 2026-09-21: The register capacity the rules admit: built, measured negative, removed
+
+The finding of the refined tile scan's entry, acted on and recorded as
+unit 6d was. Twenty of a LAB's forty register bels are never legal for a
+register, the legaliser scans them at every visit, and HeAP's spreader
+counts them as capacity. `--usable-register-bels` (design section 15)
+filed those bels under a bucket no cell type maps to and refused them in
+`isValidBelForCellType`, so the bel lists, the spreader's capacity, the
+scans, and the annealer's proposals saw twenty register bels per LAB. A
+test held the predicate to the rule: on an empty LAB, under the legacy
+rules and the Rust evaluator, a lone register is refused at exactly the
+twenty bels the option hides.
+
+Exec probe, full flow, three seeds, without and with the option:
+
+| Options | Fmax, seeds 1 to 3 (MHz) | Mean | Wires | router2 iterations |
+| --- | --- | ---: | --- | --- |
+| Default, all bels | 35.87 / 34.98 / 32.96 | 34.60 | 149,576 / 149,154 / 150,377 | 20 / 46 / 18 |
+| Default, usable only | 34.75 / 30.12 / 33.95 | 32.94 | 148,144 / 148,771 / 147,914 | 88 / 23 / 16 |
+| Recipe, all bels | 32.32 / 33.64 / 34.73 | 33.56 | 131,026 / 132,126 / 129,728 | 9 / 16 / 13 |
+| Recipe, usable only | 34.93 / 35.25 / 32.41 | 34.20 | 130,093 / 130,431 / 130,606 | 15 / 10 / 12 |
+
+Inside the seed spread on the probe, which is not crowded. The full
+core, recipe options, full flow:
+
+| Seed | Register bels | Strict legalisation | Placement | Bels asked in scans | router2 | Wires | Fmax |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |
+| 1 | all | 379 s | 534 s | 5.29 billion | 45 iterations | 767,087 | 11.39 MHz |
+| 1 | usable only | 319 s | 442 s | 1.91 billion | 48 iterations | 773,142 | 11.05 MHz |
+| 2 | all | 374 s | 522 s | 4.49 billion | 51 iterations | 778,792 | 10.94 MHz |
+| 2 | usable only | 412 s | 559 s | 2.69 billion | 78 iterations | 766,253 | 10.89 MHz |
+| 3 | all | 331 s | 499 s | 4.26 billion | 64 iterations | 770,569 | 11.87 MHz |
+| 3 | usable only | 392 s | 543 s | 2.36 billion | **not routed**: 1,387 overused at the cap of 100 | 819,557 | - |
+
+The scans ask about half as many bels, and that is all the option
+delivers. Seed 1, the first measured, was the flattering one: on seeds
+2 and 3 the legaliser is slower, not faster, the router needs half
+again as many iterations, and seed 3 does not route at all where the
+default routes it in 64 iterations. The default runs of seed 1
+reproduce the recorded core result (placement `0xe0b15557`, routing
+`0x681553a4`). A reading, not measured further: the overstated
+capacity lets the spreader leave a register beside the logic it
+belongs to and the legaliser then finds the nearest real bel, while the
+true capacity makes the spreader move registers out before the
+legaliser has a say, which costs wires (6% more on seed 3) where the
+core has none to spare.
+
+The option is removed in the commit after this one. What stays: the
+finding, the design section with its outcome, and a test that the
+second register bel of every half refuses a register under both
+authorities, which is the fact the tile scan's shortcut and any later
+attempt rest on. The cost of scanning those bels is already mostly
+gone: the refined scan skips them in Rust without evaluating, and
+design 16.2 removes the loop's share.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3388,6 +3443,7 @@ more than 50,000 bels compared, no difference).
 | 2026-09-21 | tile scan | On by default in the Rust legality modes, advisory in shadow and verify, absent in legacy; `--no-lab-tile-scan` keeps the per-bel path for comparison | Byte-identical placements on the probe under both option sets and on the core; verify mode zero mismatches on the probe; core placement 669 s against 1,092 s per bel; the legacy authority takes 781 s on the same binary the same day |
 | 2026-09-21 | tile scan | Inside the scan, ask the predicates cheapest first, skip the second register bel of a half under a property test, keep MLABs on the cheap path, and ask the batch before the first bind after a refused tile | 55% of the bels a scan evaluates on the core are second-in-half register bels and 76% fail the ALM rule alone; the batch equals the live check, so its timing is a cost choice; core placement 530 s against 669 s, byte-identical, 0.68 of the legacy authority's 781 s |
 | 2026-09-21 | profile | Size further work from a whole-run Time Profiler recording of the core, never from the probe; six hot paths designed before any is built (design 16), ordered small Rust changes first, the cluster path next, upstream's files last | Strict legalisation 54% of the core's 715 s, router2 20%, annealer 11.5%, solver 10.5%; the probe is 47% annealer and 3% legaliser; estimates are for ordering only and each unit is measured by the same recording when it lands |
+| 2026-09-21 | register capacity | Hiding the never-legal register bels from the placer (`--usable-register-bels`) is a negative result; landed for the record, then removed; never size a change from one seed | Probe inside the seed spread; core: the legaliser slower on two seeds of three, router2 iterations up by half, and seed 3 unrouted at the cap where the default routes in 64 iterations |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

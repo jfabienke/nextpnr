@@ -482,6 +482,8 @@ bool Arch::isValidBelForCellType(IdString cell_type, BelId bel) const
     // (An attempt to pin the FPLL to (0,0) here made placement unreachable — the heap placer's
     // radius search never offers that corner tile. Position pinning therefore remains OPEN; see
     // PLL_OUTCLK_DESIGN.md B2. The emission adapts to wherever the placer lands instead.)
+    if (args.usable_register_bels && bel_type == id_MISTRAL_FF && is_unusable_register_bel(bel))
+        return false; // design 15
     if (bel_type == id_MISTRAL_COMB)
         return is_comb_cell(cell_type);
     else if (bel_type == id_MISTRAL_MCOMB)
@@ -511,8 +513,18 @@ BelBucketId Arch::getBelBucketForBel(BelId bel) const
     IdString bel_type = getBelType(bel);
     if (bel_type == id_MISTRAL_MCOMB)
         return id_MISTRAL_COMB;
-    else
-        return bel_type;
+    // Design 15: a register bel no register may take files under a bucket no cell type maps to.
+    // MISTRAL_MCOMB is that bucket because it exists already (its own bels file under
+    // MISTRAL_COMB above): a new identifier would be interned ahead of the netlist.
+    if (args.usable_register_bels && bel_type == id_MISTRAL_FF && is_unusable_register_bel(bel))
+        return id_MISTRAL_MCOMB;
+    return bel_type;
+}
+
+bool Arch::is_unusable_register_bel(BelId bel) const
+{
+    const auto &data = bel_data(bel);
+    return data.type == id_MISTRAL_FF && (data.lab_data.idx & 1) != 0;
 }
 
 BelId Arch::bel_by_block_idx(int x, int y, IdString type, int block_index) const
