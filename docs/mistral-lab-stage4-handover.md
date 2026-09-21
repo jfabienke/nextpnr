@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `3c3a00cb` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission)
+- Commit: `ef0f3460` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -376,6 +376,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `8adb09f8` | The promotion and the concurrency decision recorded |
 | `b03b3e37` | Pack-time admission: the placer's LAB legality authority admits every cluster the pairing and register packers commit (`mistral/pack_admission.*`) |
 | `3c3a00cb` | Pack-time admission designed (section 13) and recorded |
+| `51bb6f58` | The tile scan in the resident session (`ResidentLabs::evaluate_scan`, `npnr_mistral_resident_v2_scan`), oracle extended |
+| `ed6ebc2f` | The strict legaliser asks for a tile's first legal bel in one call (`PlacerHeapCfg::scan_tile_first_legal`, `scan_lab_tile`); core placement 669 s against 1,092 s per bel and 781 s legacy, byte-identical |
+| `ef0f3460` | The tile scan designed (section 14), measured, and recorded; the core's verify-mode run pending |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
