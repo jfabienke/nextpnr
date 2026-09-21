@@ -3100,6 +3100,72 @@ new Rust surface.
 | Unit tests | Both packers' tests assert, in legacy, shadow, verify, and Rust modes, that the gate admits the clusters the packers form (a pair, a pair with a register on each half, a single LUT with its register) and refuses a pair forced against the input rule and a register forced against the control rules, with zero mismatches and the cluster left as it was |
 | gtest, gate | 64 pass in `build/rust-enabled`, 52 in `build`; `mistral/tests/gate.sh` passed, default-path probe identity unchanged |
 
+### 2026-09-21: The tile scan: the legaliser's scan of a tile as one question
+
+The second target of the port evaluation was the per-tile query the
+parity entry had named. The design (section 14) began with a
+measurement, a temporary run-length counter in the legality dispatch
+(not landed): how long are the runs of consecutive queries on one LAB,
+and how do they end?
+
+| Placement | Queries | Refusals | Mean run | Queries in runs of 17+ | Calls if batched per tile |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Exec probe, default options | 5,570,583 | 79.2% | 4.5 | 71.4% | 25.3% |
+| Exec probe, recipe options | 4,287,045 | 8.5% | 1.1 | 7.0% | 92.5% |
+| Full core, recipe options | 5,348,124,234 | 99.55% | 29.8 | 96.1% | 6.2% |
+
+The probe under the recipe said not to build it; the core said the
+opposite, and said what to build. Its queries are an unclustered cell,
+mostly a register, bound, asked about, and unbound at every free bel of
+a crowded LAB, tile after tile. The scan always ends at the first bel
+the arch accepts, so the batch question is the scan itself, the first
+legal bel in scan order, which evaluates the rules no more often than
+the per-bel scan; and it is asked only after a first live refusal, so
+an uncrowded tile costs what it cost. What landed:
+
+- `ResidentLabs::evaluate_scan` (crate): the patches bring the LAB up to
+  date through the sync step now shared with `evaluate`; the candidate's
+  facts are held in view at each bel of the order as a trial would be,
+  with recomputed counts, and the first legal index comes back. Patch
+  shape 8 in the module's list; the oracle compares 2,000 and more scans
+  with the capture path answering bel by bel, asserting that scans
+  finding a later bel and scans finding none both occur.
+- `npnr_mistral_resident_v2_scan` (FFI): envelope checks, the poisoned
+  handle, a malformed scan answers `BAD_SNAPSHOT` with the LAB untouched
+  so the caller asks per bel. One test.
+- `ResidentLabLegality::scan`, `scan_lab_tile`, `capture_cell_v2_keyed`
+  (arch): facts for a cell bound nowhere, the batch builder shared with
+  `evaluate`, and a hook that declines what it does not cover (legacy
+  mode, carry and LUTRAM cells, bels of two LABs or of the wrong kind).
+- `PlacerHeapCfg::scan_tile_first_legal` (HeAP): in `try_place_cell`
+  the filters became a pure predicate, the batch is asked once per tile
+  scan after a first refusal of an available bel, refused bels ahead of
+  the named one are skipped, the named bel is bound and certified by
+  `isBelLocationValid` as before, and the ripup draw for occupied bels is
+  where it was. In shadow and verify nothing is skipped and every
+  prediction is compared with the live answer (`scan_tile_advisory`,
+  `note_lab_tile_prediction`; a mismatch is fatal in verify).
+- On by default in the Rust legality modes; `--no-lab-tile-scan` for the
+  A/B. `scans`, `scan-bels`, and `scan-hits` on the resident stats line
+  and in the telemetry file.
+
+| Check | Result |
+| --- | --- |
+| Probe placement, default options, scan on against off | Checksum `0x7f9f8105` both; per-bel queries 1,489,160 against 5,570,583; 307,568 scans over 5,959,604 bels; strict legalisation 0.78 s against 1.10 s (the solver dominates the probe's placement, which does not move) |
+| Probe placement, recipe options, scan on against off | Checksum `0xa99e0f68` both and equal to the run before the change; 31,854 scans; strict legalisation 1.40 s against 1.36 s, as the run lengths predicted |
+| Probe placement, `--lab-legality verify` (advisory scan) | Same checksum; 307,568 scans, every prediction compared with the live check of the same bel: `mismatches=0 errors=0` |
+| Full core placement, recipe options, scan on against the per-bel Rust path | Checksum `0x2d44a02e` both; strict legalisation 538.7 s against 964.7 s, HeAP 595.1 s against 1,020.1 s, placement 669.4 s against 1,092.4 s; per-bel queries 256,042,738 against 5,348,124,234; 167,119,070 scans over 5,119,980,450 bels, of which 572,943 named a bel; legal answers 23,986,231 in both |
+| Full core placement, legacy C++ authority, same binary, same day | Checksum `0x2d44a02e`; strict legalisation 662.1 s, HeAP 717.6 s, placement 781.1 s: the Rust default with the scan places the core in 0.86 of the legacy time, where the per-bel path took 1.40 |
+| Default-path probe identity (the gate) | `0xbb18ede9` / `0xbc1365c6`, report hash unchanged, with the scan on |
+| gtest | 65 in `build/rust-enabled` (the scan against bind, check, and unbind on a filling LAB, what it declines, the mismatch path), 52 in `build` |
+| Verify-mode placement of the core | Pending: a run of several hours, to be recorded in a follow-up entry as the conventions allow |
+
+What remains in the core's strict legalisation is 167 million scans at
+about 3.2 microseconds, a hundred nanoseconds per bel evaluated, and
+99.7% of them find nothing. The next lever is inside the scan: a
+LAB-wide refusal (the input limit, a control set no slot can take)
+decided once instead of per bel. It is not started.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3199,6 +3265,8 @@ new Rust surface.
 | 2026-09-19 | promotion | The complete LAB evaluator defaults to the Rust authority in Rust builds, with the annealer on the overlay seam; legacy stays the fallback in every build and the default where Rust is not built; the control-plan authority stays legacy because the complete evaluator owns the control check | User's direction on the recorded evidence: byte-identical on the probe and the core, verify harness zero mismatches on both, probe wall at parity (29.4 s against 30.0 s), core placement 1.4 times legacy; the gate's probe identity unchanged on the new default path |
 | 2026-09-19 | concurrency | Enable no concurrency path with the promotion: `--threads` for placement, `--placer-lookahead`, and `--sa-batch` stay off | Threads change nothing on the default path (router2 partitions on its own; placement has no parallel section); the lookahead is byte-identical, 10% slower, 1.8 times the CPU; the batched annealer is not byte-identical and owner-bound past two workers |
 | 2026-09-21 | admission | The pack-time rules are not ported: they stay as search filters, and the placer's LAB legality authority admits each cluster before the packer commits it, through the overlay seams, with no new Rust surface | The pairing rule equals the checker's input rule on plain LUTs and runs millions of times per pack; one admission per committed cluster costs 20,541 evaluations on the core; zero refusals, zero verify mismatches, packing and results byte-identical |
+| 2026-09-21 | tile scan | Measure the query stream before designing the per-tile query; build the scan as "first legal bel in scan order, asked after a first live refusal" rather than a mask over the tile | The probe under the recipe is 91% single legal answers, the core 99.55% refusals in runs of 30; the scan ends at the first legal bel, so a mask would evaluate bels the scan never reaches, and an unconditional batch would double the cost of uncrowded tiles |
+| 2026-09-21 | tile scan | On by default in the Rust legality modes, advisory in shadow and verify, absent in legacy; `--no-lab-tile-scan` keeps the per-bel path for comparison | Byte-identical placements on the probe under both option sets and on the core; verify mode zero mismatches on the probe; core placement 669 s against 1,092 s per bel; the legacy authority takes 781 s on the same binary the same day |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

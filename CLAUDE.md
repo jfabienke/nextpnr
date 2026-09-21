@@ -133,7 +133,8 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Since 2026-09-19 the complete LAB evaluator
   defaults to `rust` in Rust builds** (promoted at the user's direction; tracker entry
   "Promotion": byte-identical to legacy on the probe and the core, verify harness zero mismatches
-  on both, 1.4 times the legacy placement time on the core) and to `legacy` in Rust-disabled
+  on both, 1.4 times the legacy placement time on the core then, 0.86 times since the tile scan)
+  and to `legacy` in Rust-disabled
   builds; `--lab-legality legacy` selects the C++ rules in any build. `--lab-controls` stays
   `legacy`: the complete evaluator owns the control check and refuses a second Rust authority
   beside it, so the Stage 1 control-plan modes are usable only with `--lab-legality legacy`.
@@ -245,6 +246,19 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   as search filters: the pairing search evaluates its rule millions of times on the core, the
   admission once per committed cluster. Zero refusals and zero verify mismatches over the core's
   20,541 clusters; packing and results byte-identical. No new Rust surface.
+- The tile scan (2026-09-21, design section 14): in the Rust legality modes the strict legaliser
+  asks, after a first live refusal in a tile, for the first legal bel among the free bels that
+  remain, in scan order, in one call (`PlacerHeapCfg::scan_tile_first_legal`, `scan_lab_tile`,
+  `ResidentLabLegality::scan`, `ResidentLabs::evaluate_scan`, `npnr_mistral_resident_v2_scan`). The
+  candidate is held in view at each bel as a trial would be and never bound; the bel the scan
+  names is still bound and certified by `isBelLocationValid`, and the bels before it are skipped
+  instead of bound, checked, and unbound. The scan order, filters, and ripup draws are unchanged,
+  so the placement is byte-identical; shadow and verify skip nothing and compare every
+  prediction with the live answer. On by default in the Rust modes (`--no-lab-tile-scan` turns
+  it off); legacy is untouched. Measured first: on the core 99.55% of 5.35 billion queries were
+  refusals in runs averaging 30 per LAB. Core placement
+  669 s against 1,092 s on the per-bel Rust path and 781 s under the legacy C++ authority,
+  byte-identical (checksum `0x2d44a02e`).
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

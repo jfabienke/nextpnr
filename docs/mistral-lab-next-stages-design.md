@@ -1230,3 +1230,55 @@ the register packings, and the results after them are byte-identical
 to those before it; if a future rules revision makes the two
 disagree, the run says so in its pack report instead of in a
 placement that never finishes.
+
+## 14. The tile scan query
+
+The parity entry left the Rust authority at 59 ns per query over the
+full core's 5.3 billion and named a per-tile query as what would halve
+it. The design began with a measurement of how those queries cluster,
+and the measurement decided both whether to build it and what to
+build. On the exec probe under the recipe's options nine queries in
+ten are a single legal answer, and a per-tile batch would save
+nothing. On the core itself 99.55% of the 5,348,124,234 queries are
+refusals, in runs on one LAB that average thirty queries, 96% of them
+in runs of seventeen or more: an unclustered cell, usually a register,
+bound to bel after bel of a crowded LAB, asked about, and unbound,
+forty times per tile visit. The cost of that pattern is not mainly the
+call. It is the bind, the dirty marks, the patch, the restore, and the
+unbind around each of the forty questions.
+
+The strict legaliser's scan of a tile ends at the first available bel
+the arch accepts; refused bels are skipped, and the one random draw in
+the loop is made only for occupied bels. So the batch question is not
+a mask over the tile but the scan itself: given this cell's facts and
+these free bels in this order, which is the first the rules accept?
+The session answers by holding the candidate in view at each bel in
+turn, exactly as a trial patch would put it there, and stops at the
+first legal one, so it evaluates the rules no more often than the
+per-bel scan would and never binds anything. Counts for the
+candidate's ALM are recomputed from the facts, as the harness modes
+always did, since the arch keeps a count only for what is bound. The
+answer is equal by construction to the per-bel answers, and the
+crate's oracle asserts it against them.
+
+The placer uses the answer without changing its search. The scan
+order, the filters, the ripup draws for occupied bels, and the
+acceptance of a bel are as before: the bel the batch names is still
+bound and still certified by the ordinary validity check, which stays
+the only thing that accepts a placement. What the batch removes is
+the bind, check, and unbind of the bels before it, which the same
+rules have just refused. The batch is asked only after a first live
+refusal in the tile, for the bels that remain, so a tile whose first
+free bel is legal, the common case on an uncrowded design, costs what
+it costs today. In the shadow and verify modes the batch is advisory:
+nothing is skipped, every bel is checked live as before, and each
+prediction is compared with the live answer, which is the harness for
+this path. The legacy mode does not use it and is untouched.
+
+The hook is one optional callback in HeAP's configuration, like the
+cluster transaction before it, and one call in the FFI beside the
+resident evaluate. The serial search order and the RNG stream are the
+reference: the exit criterion is a byte-identical placement on the
+probe under both option sets and on the core, with the verify harness
+at zero mismatches, and the measured placement time of the core
+against both the per-bel Rust path and the legacy path.
