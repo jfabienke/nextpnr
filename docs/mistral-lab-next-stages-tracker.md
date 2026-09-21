@@ -3566,6 +3566,56 @@ Step A is about 10 s of router2, 10%, measured twice under equal
 conditions; it also makes every bind, unbind, and availability test in
 the other phases one lookup cheaper, which was not measured apart.
 
+### 2026-09-21: The six hot-path units closed: the core flow's profile before and after
+
+A second Time Profiler recording of the full core flow under the recipe,
+with the tree at `a1ac20e9`, against the one the six units were designed
+from (`e0e1cdac`). Routed result unchanged: placement `0xe0b15557`,
+routing `0x681553a4`. Artefacts in `build/stage6-fullcore/profile/`
+(`after.trace`, `after_profile.txt`, `after_legaliser_inclusive.txt`).
+
+| Phase | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| HeAP strict legalisation | 389.4 s | 279.7 s | -109.7 s |
+| router2 | 143.3 s | 120.0 s | -23.3 s |
+| Annealer refinement | 82.1 s | 79.8 s | -2.3 s |
+| HeAP solver | 74.8 s | 71.6 s | -3.2 s |
+| HeAP cut spreading and other | 20.1 s | 18.8 s | -1.3 s |
+| Loads, pack, the rest | 5.7 s | 5.4 s | - |
+| Whole run | 715.4 s | 575.2 s | -140.2 s, 19.6% |
+
+| Unit | Outcome | What the profile shows of it |
+| --- | --- | --- |
+| 16.4 control rules in scans | Negative: the first form wrong and caught by the core's checksum, the sound form no gain; the hostile scan oracle kept | `control_legal` still 50.7 s inside scans |
+| 16.6 scan bookkeeping | Kept, 12 s | `evaluate_scan` self 38.1 s to 17.1 s |
+| 16.2 scan loop flags | Kept, 7 s | `checkBelAvail` 35.0 s to 15.5 s |
+| 16.1 clusters through the resident session | Kept, 88 s | `try_place_cluster` 90.9 s to 18.0 s |
+| 16.3 equation system | Negative: bit-identical, no gain | `build_solve_direction` 33.8 s to 31.7 s, which is noise |
+| 16.5 bindings on the wire | The arch step kept, about 10 s of router2; the flat wire index slower, dropped | `dict<PipId, NetInfo *>` lookups gone from router2's top entries; `dict<WireId, int>::at` still 14.1 s |
+
+Three kept, three negative, and the design's sum of estimates (200 s)
+against 140 s measured. The estimates that held were inclusive times of
+functions that stopped running (16.1, 16.5's first step); those that
+did not were shares of a loop's self time (16.2) or a reading of what a
+hot function was doing (16.3, 16.4).
+
+What the profile names next, none of it started:
+
+- The tile scan is still 152 s, and it is now the rules themselves:
+  the ALM rule and the input total 59.6 s (`check_alm` 37.5 s), the
+  control rules 50.7 s (`rules::evaluate` 39.8 s, the mirror's trial
+  rows 14.8 s). Unit 16.4 showed the control rules cannot be asked less
+  often; they can be made cheaper to ask, for instance by evaluating the
+  mirror incrementally instead of walking forty registers per bel.
+- `try_place_cell`'s own loop, 53.5 s of self time: forty bels per tile
+  visit, 167 million visits.
+- router2: the priority queue 33.9 s, `route_arc` 18.1 s, its wire
+  index 14.1 s, where a replacement must keep the locality upstream's
+  hash has.
+- The solver's system building, 48 s, which unit 16.3 showed is the walk
+  and the arithmetic and not the container.
+- The annealer, 80 s with nothing above 1.5% of the run.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3675,6 +3725,7 @@ the other phases one lookup cheaper, which was not measured apart.
 | 2026-09-21 | 16.1 | In the Rust legality mode a cluster candidate is answered by the resident session and that answer decides; the detached C++ evaluation of frozen records stays the authority in legacy, the harness in shadow and verify, and the path for what the session declines; one crate function and one FFI call of new surface | The frozen path captured a whole LAB per edited bel and evaluated it twice, 91 s of the core's legaliser, with the C++ verdict deciding even after the promotion; core placement 426 s against 503 s, byte-identical with the same candidates accepted and rejected; verify mode zero mismatches on the probe over 250,504 candidates |
 | 2026-09-21 | 16.3 | The equation system keeps upstream's sorted insert; append-and-merge is bit-identical and no faster | Core HeAP 342.40 s against 342.41 s with the checksum unchanged; the columns are small because contributions merge on arrival, which the design's reading of the profile missed |
 | 2026-09-21 | 16.5 | The arch records a wire's binding on the wire and answers the binding API from it (kept); router2 keeps upstream's dict for its wire index (a flat mixed-hash table was slower) | Routed identity on the probe and the core in every variant; router2 90.8 s against 99.2 s with step A and 99.8 s with both, side by side; a hash that preserves the fabric's locality beats one that avoids collisions |
+| 2026-09-21 | closing | The six hot-path units are closed at three kept and three negative; further legaliser work is on the cost of the rules per bel, not on how often they are asked | Core flow 715 s to 575 s of CPU with every checksum unchanged; strict legalisation 389 s to 280 s, router2 143 s to 120 s; estimates held only where they were inclusive times of functions that stopped running |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
