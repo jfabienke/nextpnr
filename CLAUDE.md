@@ -133,7 +133,7 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Since 2026-09-19 the complete LAB evaluator
   defaults to `rust` in Rust builds** (promoted at the user's direction; tracker entry
   "Promotion": byte-identical to legacy on the probe and the core, verify harness zero mismatches
-  on both, 1.4 times the legacy placement time on the core then, 0.86 times since the tile scan)
+  on both, 1.4 times the legacy placement time on the core then, 0.68 times since the tile scan)
   and to `legacy` in Rust-disabled
   builds; `--lab-legality legacy` selects the C++ rules in any build. `--lab-controls` stays
   `legacy`: the complete evaluator owns the control check and refuses a second Rust authority
@@ -256,9 +256,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   so the placement is byte-identical; shadow and verify skip nothing and compare every
   prediction with the live answer. On by default in the Rust modes (`--no-lab-tile-scan` turns
   it off); legacy is untouched. Measured first: on the core 99.55% of 5.35 billion queries were
-  refusals in runs averaging 30 per LAB. Core placement
-  669 s against 1,092 s on the per-bel Rust path and 781 s under the legacy C++ authority,
-  byte-identical (checksum `0x2d44a02e`).
+  refusals in runs averaging 30 per LAB. Inside the scan the predicates are asked cheapest first
+  (`ResidentLabs::bel_legal`; 76% of the bels a scan evaluates on the core fail the ALM rule
+  alone, 55% being the second register bel of a half, which no register may take and which a
+  property test lets the scan skip), and the legaliser asks before its first bind when the
+  previous tile was refused (`scan_prev_refused`: the batch equals the live check, so when it is
+  asked changes cost, never the result). Core placement 530 s, against 1,092 s on the per-bel
+  Rust path and 781 s under the legacy C++ authority, byte-identical (checksum `0x2d44a02e`).
+  Known and not yet acted on: HeAP's spreader takes a tile's register capacity as 40 bels where
+  the rules admit 20 (tracker, "The tile scan, refined").
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

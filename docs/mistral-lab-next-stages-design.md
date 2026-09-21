@@ -1282,3 +1282,28 @@ reference: the exit criterion is a byte-identical placement on the
 probe under both option sets and on the core, with the verify harness
 at zero mismatches, and the measured placement time of the core
 against both the per-bel Rust path and the legacy path.
+
+### 14.1 The scan asks cheapest first
+
+The first build of the scan held the candidate in view at each bel and
+took the session's full verdict there. A profile of the core's
+legaliser showed the scan's own evaluation at three fifths of the
+time, the control rules only an eighth of that, and the recomputation
+of input counts, which the verdict does before anything else, as
+large as the ALM rule. A count of the refusal reasons inside the scans
+said why: of the bels a scan evaluates on the core, 55% are the second
+register bel of an ALM half, which the ALM rule refuses for any
+register (upstream's checker carries the note "why are these FFs
+broken?"), 21% have no path left for the register's data, and the
+LAB's input limit and the control rules refuse 12% each. Three bels in
+four fail the ALM rule alone.
+
+A scan needs the answer and not the reason, and the verdict's
+predicates are independent, so inside the scan they are asked in order
+of cost and the first refusal ends the bel: the ALM rule on the view,
+then the input total with counts recomputed only for the trial ALMs,
+then the control rules on the mirror. An MLAB, or a control set larger
+than the mirror, takes the full verdict as before. The per-bel path
+and its verdicts, reasons included, are untouched. The oracle that
+holds every scan against the capture path bel by bel is the proof
+that the order changes nothing.

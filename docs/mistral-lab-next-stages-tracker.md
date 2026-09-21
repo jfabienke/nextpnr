@@ -3166,6 +3166,58 @@ about 3.2 microseconds, a hundred nanoseconds per bel evaluated, and
 LAB-wide refusal (the input limit, a control set no slot can take)
 decided once instead of per bel. It is not started.
 
+### 2026-09-21: The tile scan, refined: cheapest first, asked first after a refused tile
+
+The entry above left 167 million scans at a hundred nanoseconds per bel
+evaluated. A profile of the core's legaliser with the scan on and a
+temporary count of the refusal reasons inside the scans (not landed)
+said where that went (design section 14.1):
+
+| Refusal of a bel evaluated in a scan, first 805 million on the core | Share |
+| --- | ---: |
+| `ODD_FF`: the second register bel of an ALM half, refused for any register | 55.4% |
+| `DATAIN_PATH`: no route-through LUT or E/F input left for the register's data | 21.0% |
+| `LAB_INPUT_LIMIT` | 11.9% |
+| `CONTROL_CONFLICT` | 11.8% |
+| Legal | 0.001% |
+
+Three bels in four fail the ALM rule alone, and the verdict recomputed
+the input counts before asking it. Four refinements, none of which
+changes an answer:
+
+- The scan asks the verdict's predicates in order of cost and stops at
+  the first refusal (`ResidentLabs::bel_legal`): the ALM rule, then the
+  input total with counts recomputed for the trial ALMs only, then the
+  control rules on the mirror. The per-bel path and its reasons are
+  untouched.
+- An MLAB-capable LAB takes the same path, and the full verdict, which
+  owns the MLAB group rule, is asked only for a bel the cheaper
+  predicates have passed; before, every bel of such a LAB took it.
+- A register is not evaluated at the second register bel of a half.
+  The shortcut is a fact of `check_alm`, and a property test holds it to
+  the rule: 8,000 random ALMs with a register there, all refused.
+- The legaliser asks the batch before its first bind when the previous
+  tile's first available bel was refused
+  (`StrictLegaliser::scan_prev_refused`). The batch answers what the
+  live check would, so when it is asked changes cost and never the
+  result; on the core nine tile visits in ten follow a refused one.
+
+| Check | Result |
+| --- | --- |
+| Crate tests | 13 (the scan oracle unchanged and passing, the property test new); clippy and fmt clean |
+| Full core placement, recipe options | Checksum `0x2d44a02e`, legal answers 23,986,231, as before. Strict legalisation 391.3 s, HeAP 451.5 s, placement 529.6 s, against 538.7 / 595.1 / 669.4 s for the first scan build (486.6 / 545.1 / 624.1 s with the cheapest-first order alone) and 662.1 / 717.6 / 781.1 s under the legacy C++ authority; per-bel queries 88,799,779 against 256,042,738; 167,516,520 scans. Measured with the verify-mode run sharing the machine |
+| Probe placement, default and recipe options, against the first scan build | Checksums `0x7f9f8105` and `0xa99e0f68`, unchanged; in `--lab-legality verify` under both option sets every prediction compared with the live check of the same bel, 355,103 scans over 7,076,786 bels and 41,220 over 831,854: `mismatches=0 errors=0` |
+| Default-path probe identity, gtest, gate | `0xbb18ede9` / `0xbc1365c6` and the report hash unchanged; 65 tests in `build/rust-enabled`, 52 in `build`; `mistral/tests/gate.sh` passed |
+
+The finding behind the first row of the reasons table is larger than
+the scan. Twenty of a LAB's forty register bels are never legal for a
+register (upstream's checker refuses them with "TODO: why are these FFs
+broken?"), they are always free, so the legaliser scans them at every
+tile visit, and HeAP's cut spreader takes a tile's capacity from the
+number of bels in its bucket, so it spreads registers as if a LAB held
+forty. Correcting the capacity changes placements and is a unit of its
+own, opt-in, with its own quality evidence; it is the next one.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3267,6 +3319,7 @@ decided once instead of per bel. It is not started.
 | 2026-09-21 | admission | The pack-time rules are not ported: they stay as search filters, and the placer's LAB legality authority admits each cluster before the packer commits it, through the overlay seams, with no new Rust surface | The pairing rule equals the checker's input rule on plain LUTs and runs millions of times per pack; one admission per committed cluster costs 20,541 evaluations on the core; zero refusals, zero verify mismatches, packing and results byte-identical |
 | 2026-09-21 | tile scan | Measure the query stream before designing the per-tile query; build the scan as "first legal bel in scan order, asked after a first live refusal" rather than a mask over the tile | The probe under the recipe is 91% single legal answers, the core 99.55% refusals in runs of 30; the scan ends at the first legal bel, so a mask would evaluate bels the scan never reaches, and an unconditional batch would double the cost of uncrowded tiles |
 | 2026-09-21 | tile scan | On by default in the Rust legality modes, advisory in shadow and verify, absent in legacy; `--no-lab-tile-scan` keeps the per-bel path for comparison | Byte-identical placements on the probe under both option sets and on the core; verify mode zero mismatches on the probe; core placement 669 s against 1,092 s per bel; the legacy authority takes 781 s on the same binary the same day |
+| 2026-09-21 | tile scan | Inside the scan, ask the predicates cheapest first, skip the second register bel of a half under a property test, keep MLABs on the cheap path, and ask the batch before the first bind after a refused tile | 55% of the bels a scan evaluates on the core are second-in-half register bels and 76% fail the ALM rule alone; the batch equals the live check, so its timing is a cost choice; core placement 530 s against 669 s, byte-identical, 0.68 of the legacy authority's 781 s |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
