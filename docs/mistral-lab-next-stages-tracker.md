@@ -3236,7 +3236,10 @@ The refined scan (`e0e1cdac`) changed the scan's evaluation after this
 run had started. It has verify-mode evidence on the probe under both
 option sets; its own core run was started on 2026-09-21 in
 `build/stage6-fullcore/verify-scan-refined/` and is to be recorded when
-it ends.
+it ends. (It did not end: it was stopped after 31 of 105 iterations with
+no mismatch when the run over units 16.6, 16.2, and 16.1 superseded it;
+that run covers the refined scan and is recorded below, "The refined
+scan and the units of design 16 certified on the core in verify mode".)
 
 ### 2026-09-21: Time Profiler run of the full core flow
 
@@ -3692,6 +3695,30 @@ none designed:
 | The annealer's per-move reads: `dict<IdString, ArchPinInfo>` by port name, the timing analyser's `dict<CellPortKey, PerPort>`, net bounds through `CellInfo` records spread over the heap | Annealer, 44 s | Dense per-cell and per-port arrays beside the dicts; bit-identical by construction |
 | Cell positions in a dense array indexed per cell for the solver's system building | Solver, 23 s | Upstream's file; the same arithmetic in the same order |
 | A free-bel mask per tile kept on bind and unbind, read once per tile visit instead of sixty 88-byte bel records for one pointer each | Strict legalisation, a share of 38 s | Small, and the measurement says the phase is not memory bound, so expect little |
+
+### 2026-09-21: The refined scan and the units of design 16 certified on the core in verify mode
+
+The follow-up the plan left pending: one verify-mode placement of the
+core for everything that changed how the Rust session answers since the
+first scan build. The core's placement under the recipe's options with
+`--lab-legality verify`, tree at `fa67bc80` (the refined scan, unit 16.6's
+scan bookkeeping, unit 16.2's scan loop flags, unit 16.1's cluster
+candidates; unit 16.4 is not in it, having been reverted), binary and
+artefacts in `build/stage6-fullcore/verify-units-16/`:
+
+| Check | Result |
+| --- | --- |
+| Placement | Checksum `0x2d44a02e`, the Rust authority's and the legacy authority's; HeAP 13,193 s, strict legalisation 13,136 s, the harness's price |
+| Per-bel evaluations | 5,348,124,234, of which 23,986,231 legal (the baseline's count), each compared across the resident session, the capture path in C++ and in Rust, and the live check: `mismatches=0 errors=0 stale-cache=0 stale-revision=0` |
+| Advisory scans | 167,516,520 over 5,289,619,878 bels, 661,994 naming a bel, nothing skipped, every prediction compared with the live answer of the same bel, a difference fatal: the run finished normally |
+| Cluster candidates | 19,561,195 attempted, 668,514 committed, 18,892,681 rejected, none unsupported: the baseline's counters exactly. 19,528,999 of them answered by the resident session over 56,087,279 edited bels and each compared with the frozen evaluation, which decides in this mode; a difference fatal |
+| Pack admission in verify | 15,181 pairs and 5,360 registers, `refused=0 mismatches=0 errors=0` |
+
+The refined scan's own run (`verify-scan-refined/`) was stopped after 31
+of 105 iterations with no mismatch when this run superseded it. Unit
+16.5's arch step landed after this binary; it moves the storage of wire
+and pip bindings and touches no legality path, and the gate's routed
+identity covers it.
 
 ## Decision log
 
