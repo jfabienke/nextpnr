@@ -1560,6 +1560,11 @@ class HeAPPlacer
         // Batch answer for the scan of one tile (PlacerHeapCfg::scan_tile_first_legal).
         std::vector<BelId> scan_bels;
         std::vector<size_t> scan_positions;
+        // Whether the previous tile scan found its first available bel refused. The batch answers
+        // what the live check would, so when it is asked changes cost and never the result: after
+        // a refused tile the next is likely crowded too, and the batch is asked before the first
+        // bind instead of after a first live refusal.
+        bool scan_prev_refused = false;
 
         void try_place_cell(CellInfo *ci, int nx, int ny, int ctrl_set_group = -1)
         {
@@ -1589,7 +1594,7 @@ class HeAPPlacer
                 // or occasionally trigger a tiebreaker
                 const bool avail = ctx->checkBelAvail(sz);
                 if (avail || (ctrl_set_group == -1 && (radius > ripup_radius || ctx->rng(20000) < 10))) {
-                    if (avail && refused_live && !scan_asked && p->cfg.scan_tile_first_legal) {
+                    if (avail && (refused_live || scan_prev_refused) && !scan_asked && p->cfg.scan_tile_first_legal) {
                         scan_asked = true;
                         scan_bels.clear();
                         scan_positions.clear();
@@ -1677,6 +1682,7 @@ class HeAPPlacer
                     }
                 }
             }
+            scan_prev_refused = refused_live || (scan_valid && scan_named != scan_from);
         }
 
         // Build the clustered move rooted at `sz` without touching live state. Returns false where the

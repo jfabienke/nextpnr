@@ -487,20 +487,103 @@ impl ResidentLabs {
             }
         }
         let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
+        let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
+        let mut scratch = LabAssessmentV2::empty(&lab.facts);
+        let mut at = shaped;
         for (index, &bel) in order.iter().enumerate() {
-            let mut at = shaped;
             at.alm = u32::from(bel) / (LUTS + FFS) as u32;
             at.slot = u32::from(bel) % (LUTS + FFS) as u32;
+            if !is_lut && Self::second_register_bel(at.slot as usize) {
+                // More than half the bels a scan is asked about on a crowded LAB: the ALM rule
+                // refuses a register there whatever else the ALM holds (`check_alm`, ODD_FF; the
+                // test `the_second_register_bel_of_a_half_is_always_refused` ties this to it).
+                continue;
+            }
             let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = trials;
             in_view[trial_count] = Some(&at);
-            let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
-            let verdict =
-                Self::verdict(lab, limit, &in_view[..trial_count + 1], query, at.alm, true);
-            if verdict.status == LAB_LEGAL {
+            let in_view = &in_view[..trial_count + 1];
+            let legal = match Self::bel_legal(lab, limit, in_view, query, at.alm, &mut scratch) {
+                Some(legal) => legal,
+                None => Self::verdict(lab, limit, in_view, query, at.alm, true).status == LAB_LEGAL,
+            };
+            if legal {
                 return Ok(Some(index));
             }
         }
         Ok(None)
+    }
+
+    /// Whether one bel's query is legal with the trials in view, for the scan, which needs the
+    /// answer and not the reason. The predicates are `verdict`'s (the ALM rule, the LAB's input
+    /// total, the control rules) asked in order of cost and stopping at the first refusal: on a
+    /// crowded LAB three bels in four fail the ALM rule alone, so the input counts are recomputed
+    /// only for a bel that has passed it. `None` where `verdict` takes a path of its own (an MLAB,
+    /// more control nets than the mirror holds): the caller asks `verdict`, which for an MLAB happens
+    /// only for a bel the cheaper predicates have passed. `scratch` receives
+    /// the ALM rule's rejection record and is otherwise unused.
+    fn bel_legal(
+        lab: &mut ResidentLab,
+        limit: i32,
+        trials: &[Option<&BelPatchV2>],
+        query: u32,
+        query_alm: u32,
+        scratch: &mut LabAssessmentV2,
+    ) -> Option<bool> {
+        let ResidentLab {
+            facts,
+            alm_inputs,
+            total_inputs,
+            mirror,
+            ..
+        } = lab;
+        let facts: &LabFactsV2 = facts;
+        if query == QUERY_WHOLE_LAB {
+            return None;
+        }
+        let index = query_alm as usize;
+        if !check_alm(&Self::view(facts, trials, index), index, scratch) {
+            return Some(false);
+        }
+        let mut touched = 0u32;
+        let mut total = *total_inputs;
+        for patch in trials.iter().flatten() {
+            let alm = patch.alm as usize;
+            if touched & (1 << alm) == 0 {
+                touched |= 1 << alm;
+                total += recompute_inputs(&Self::view(facts, trials, alm)) - alm_inputs[alm];
+            }
+        }
+        if total > limit {
+            return Some(false);
+        }
+        if query == QUERY_COMB_BEL {
+            // An MLAB's group rule is `verdict`'s to ask, for a bel the others have passed.
+            return if facts.is_mlab != 0 { None } else { Some(true) };
+        }
+        let mut rows: [(usize, &LabFfV2); MAX_TRIALS] = [(0, &facts.alm[0].ff[0]); MAX_TRIALS];
+        let mut row_count = 0;
+        for patch in trials.iter().flatten() {
+            if patch.slot as usize >= LUTS {
+                rows[row_count] = (
+                    patch.alm as usize * FFS + (patch.slot as usize - LUTS),
+                    &patch.ff,
+                );
+                row_count += 1;
+            }
+        }
+        let undo = mirror.apply_trials(&rows[..row_count])?;
+        let control = control_verdict(&mirror.snapshot);
+        mirror.undo_trials(&undo);
+        if control.status != LEGAL {
+            return Some(false);
+        }
+        if facts.is_mlab != 0 { None } else { Some(true) }
+    }
+
+    /// The second register bel of an ALM half (slots 3 and 5 of the six): `check_alm` refuses any
+    /// register there.
+    fn second_register_bel(slot: usize) -> bool {
+        slot >= LUTS && (slot - LUTS) % 2 == 1
     }
 
     /// The patches' shapes, one per bel, and no more trials than `room`.
@@ -1050,6 +1133,45 @@ mod tests {
             bursts >= 190 && unchanged >= 300,
             "{bursts} bursts, {unchanged} unchanged"
         );
+    }
+
+    /// The scan skips the second register bel of a half without asking the ALM rule; this holds
+    /// the shortcut to the rule over random ALMs, registers, and both such bels of each ALM.
+    #[test]
+    fn the_second_register_bel_of_a_half_is_always_refused() {
+        let keys: Vec<u32> = (0..12).map(|i| 7_919 * (i + 3) + 1).collect();
+        let mut rng = Lcg(55_511);
+        let mut checked = 0;
+        for _ in 0..4000 {
+            let mut alm = AlmFactsV2::default();
+            for slot in 0..LUTS {
+                alm.lut[slot] = random_lut(&mut rng, &keys);
+            }
+            for slot in 0..FFS {
+                // The other three register bels in any state, legal or not.
+                alm.ff[slot] = random_ff(&mut rng, &keys, slot);
+            }
+            for slot in 0..(LUTS + FFS) {
+                assert_eq!(
+                    ResidentLabs::second_register_bel(slot),
+                    slot == LUTS + 1 || slot == LUTS + 3
+                );
+            }
+            for odd in [1usize, 3] {
+                let mut with = alm;
+                // The generator leaves odd bels empty; an even bel's register goes there.
+                loop {
+                    with.ff[odd] = random_ff(&mut rng, &keys, 0);
+                    if with.ff[odd].occupied == 1 {
+                        break;
+                    }
+                }
+                let mut result = LabAssessmentV2::default();
+                assert!(!check_alm(&AlmView::of(&with), 0, &mut result));
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 8000);
     }
 
     #[test]
