@@ -3399,6 +3399,61 @@ unit 16.1 reuses. The tree as committed was run on the core once more:
 checksum `0x2d44a02e`, 23,986,231 legal answers, strict legalisation
 386.2 s.
 
+### 2026-09-21: Unit 16.6: the scan's bookkeeping in constant time
+
+The second hot-path unit (design 16.6), in the crate only and with no
+change of any answer. Each LAB's session keeps a 60-bit occupancy mask
+beside its facts, set where commits are applied and cleared at a reset,
+and the scan decides whether the bels it was given are free by bit tests
+on that mask overlaid with the call's patches, where it searched the
+patch list and read an `occupied` field out of the 3.8 KB facts record
+for each of up to forty bels. The candidate travels beside the trials
+(`view_with`, and the same parameter through `bel_passes_alm_and_total`
+and `control_legal`), so the array of trials in view is built once per
+scan and the full array only on the rare paths that ask `verdict`. The
+ALM rule is generic over where a refusal goes (`Reject`, implemented by
+the assessment and by `Discard`), so a scan's refusing branch is a
+return and the scan no longer carries a scratch assessment.
+
+| Check | Result |
+| --- | --- |
+| Crate tests | 14, the main scan oracle now asserting after every step that the occupancy mask equals the facts, the hostile scan oracle, both property tests; clippy and fmt clean |
+| Probe placement, default and recipe options | Checksums `0x7f9f8105` and `0xa99e0f68`, scans and hits unchanged (355,103 / 165,558 and 41,220 / 27,292) |
+| Probe placement, `--lab-legality verify`, both option sets | Same checksums, `mismatches=0 errors=0` |
+| Core placement, recipe options | Checksum `0x2d44a02e`, 23,986,231 legal answers, 167,516,520 scans, 661,994 hits: all unchanged |
+| Core strict legalisation | 378.4 s and 377.1 s, against 391.3, 391.8, and 386.2 s for the tree before it: about 12 s, 3% |
+
+Kept. The estimate was 15 s; the measured 12 s is mostly the occupancy
+mask, which removes a scattered read of each LAB's facts from every one
+of 167 million scans.
+
+### 2026-09-21: Unit 16.2: the legaliser's scan loop evaluates its filters once
+
+The third hot-path unit (design 16.2), in `try_place_cell` only. The
+tile scan's look-ahead, which lists the bels that remain for the batch,
+evaluated the region test, the control-set filter, and the availability
+of every bel from its start to the end of the tile, and the loop then
+evaluated them again as it reached each bel. The look-ahead now records
+two flags per position (`scan_flags`: passes the filters, available) and
+the loop reads them from the look-ahead's start onward. The filters are
+pure, and availability changes during a scan only through the scan's
+own binds, each undone before the scan continues or ending it, so the
+ripup draw is made for exactly the same bels.
+
+| Check | Result |
+| --- | --- |
+| Probe placement, default and recipe options | Checksums `0x7f9f8105` and `0xa99e0f68`, scans and hits unchanged |
+| Probe placement, `--lab-legality verify` (the flags are read in the advisory scan too) and `--lab-legality legacy` (no batch, flags never read) | `0x7f9f8105` in both, `mismatches=0` |
+| Core placement, recipe options | Checksum `0x2d44a02e`, 23,986,231 legal answers, 167,516,520 scans, 661,994 hits: all unchanged |
+| Core strict legalisation | 367.1 s and 373.3 s, against 378.4 s and 377.1 s with unit 16.6 alone: about 7 s, 2% |
+
+Kept, at its measured size. The estimate was 25 to 35 s, from
+`checkBelAvail`'s 35 s in the profile; the duplicate was the smaller
+share of that, since most of the loop's availability tests belong to
+tile visits where no batch is asked and to the positions before the
+look-ahead. Every run with the change is below every run without it,
+which is the most two runs a side can say.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3504,6 +3559,7 @@ checksum `0x2d44a02e`, 23,986,231 legal answers, strict legalisation
 | 2026-09-21 | profile | Size further work from a whole-run Time Profiler recording of the core, never from the probe; six hot paths designed before any is built (design 16), ordered small Rust changes first, the cluster path next, upstream's files last | Strict legalisation 54% of the core's 715 s, router2 20%, annealer 11.5%, solver 10.5%; the probe is 47% annealer and 3% legaliser; estimates are for ordering only and each unit is measured by the same recording when it lands |
 | 2026-09-21 | register capacity | Hiding the never-legal register bels from the placer (`--usable-register-bels`) is a negative result; landed for the record, then removed; never size a change from one seed | Probe inside the seed spread; core: the legaliser slower on two seeds of three, router2 iterations up by half, and seed 3 unrouted at the cap where the default routes in 64 iterations |
 | 2026-09-21 | 16.4 | The scan does not shortcut the control rules: the first form (one verdict per LAB) was wrong and the sound form (end at a first-walk refusal) gains nothing; a shortcut in the evaluator now needs a hostile property test, a mutation check of the oracle, and the core's checksums | The core's checksum moved with the first form where the probe, its verify mode, and the scan oracle all passed; the corrected form holds identity at 391.8 s against 391.3 s; the new hostile scan oracle fails on the wrong form |
+| 2026-09-21 | 16.6, 16.2 | Keep both at their measured size, two core runs a side: the occupancy mask and the candidate beside the trials (12 s), the scan loop's flags (7 s); estimates from a profile's self time overstate what a change can recover | Identity on the probe in three modes and on the core; strict legalisation 390 s to 378 s to 370 s; 16.2 was estimated at 25 to 35 s |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

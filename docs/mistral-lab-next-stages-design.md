@@ -1489,6 +1489,11 @@ own to assert beyond identity.
 **Cost.** Twenty lines in `placer_heap.cc`, which this fork already
 changes in this function.
 
+**Outcome (2026-09-21): kept, smaller than estimated.** Identity on the
+probe in three modes and on the core; strict legalisation 370 s against
+378 s, about 7 s. The duplicate was the smaller share of the loop's
+availability tests.
+
 ### 16.3 HeAP's equation system appends, then merges (C++)
 
 **Profile.** The solver phase is 75 s and Eigen's conjugate gradient is
@@ -1670,13 +1675,16 @@ every step.
 
 **Cost.** Forty lines in the crate. No new surface.
 
+**Outcome (2026-09-21): kept.** Identity on the probe and the core;
+strict legalisation 378 s against 390 s, about 12 s.
+
 ### 16.7 Sum and sequence
 
 | Design | Side | Now | Estimated after | Surface | Risk |
 | --- | --- | ---: | ---: | --- | --- |
 | 16.4 a scan ends at a first-walk control refusal | Rust | 56 s | 56 s: built, no gain, reverted | none | the first form was wrong and the core caught it |
-| 16.6 constant-time scan bookkeeping | Rust | 38 s | 23 s | none | low |
-| 16.2 scan loop filters once | C++ | 100 s | 70 s | none | low |
+| 16.6 constant-time scan bookkeeping | Rust | 38 s | landed: 12 s gained | none | low |
+| 16.2 scan loop filters once | C++ | 100 s | landed: 7 s gained | none | low |
 | 16.1 clusters through the resident session | both | 91 s | 20 s | one function, one FFI call | medium: moves an authority |
 | 16.3 equation system append and merge | C++, upstream's file | 57 s | 22 s | none | low, bit-identical by argument and by checksum |
 | 16.5 one lookup per wire | C++, arch and upstream's router | 33 s | 10 s | none | medium: binding API overrides |
