@@ -281,6 +281,14 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   `--no-lab-tile-scan` turns both batch forms off. Units 16.6 and 16.2 (scan bookkeeping, the
   scan loop's flags) gained 12 s and 7 s; unit 16.4 was a negative result whose first form the
   core's checksum caught.
+- Wire and pip bindings live on the wire records (2026-09-21, design 16.5): `WireInfo::bound_net`
+  and `bound_src`, with the whole binding API (`bindWire`, `bindPip`, their unbinds, the bound
+  and conflicting queries, the availability tests) overridden in `mistral/arch.h` as the base
+  arch's functions line for line; `BaseArch`'s `base_wire2net` and `base_pip2net` are not
+  written on this arch. `checkPipAvailForNet` answers from one lookup of the destination wire.
+  Routed results byte-identical; core router2 91 s against 99 s. A flat mixed-hash wire index
+  in router2 was slower than upstream's dict (its raw-id hash keeps the fabric's locality) and
+  was not kept.
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

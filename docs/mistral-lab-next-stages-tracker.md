@@ -3526,6 +3526,46 @@ the nets and the arithmetic of the bound-to-bound model, not the
 container. Making that cheaper is a different unit, in upstream's
 algorithm and not in its data structure, and it is not started.
 
+### 2026-09-21: Unit 16.5: bindings on the wire records kept; a flat wire index in router2 measured negative
+
+The sixth hot-path unit (design 16.5), in two steps measured apart.
+
+**Step A, kept.** `WireInfo` carries the wire's bound net and the source
+of the pip that drives it, and the arch answers the binding API from
+that record: `bindWire`, `unbindWire`, `bindPip`, `unbindPip`,
+`getBoundWireNet`, `getBoundPipNet`, the two conflict queries,
+`checkWireAvail`, `checkPipAvail`, `checkPipAvailForNet`, each the base
+arch's function line for line with its two hash maps replaced, and the
+existing side effects (the routing epoch, the placement revision) where
+they were. `checkPipAvailForNet`, which router2 asks for every pip it
+considers, fetches the destination wire's record once for the blocked
+and reserved-route test and the binding test, where it fetched the
+record and then looked the pip up in `base_pip2net`. The base maps are
+not written. ecp5 and machxo2 already replace them the same way;
+nothing outside `BaseArch` reads them; checkpoints and route reuse bind
+through the API; router2's worker threads only read availability and
+binding is serial. About 44 MB more for the 2.74 million wire records.
+
+**Step B, not kept.** router2's `dict<WireId, int> wire_to_idx` as a flat
+open-addressing table, a power of two at most half full, probed from a
+multiplicative mix of the wire's hash. Byte-identical and slower: the
+mix that avoids collisions scatters neighbouring wires across a 44 MB
+table, where the dict's hash, the raw wire id modulo a prime, keeps
+wires that are near in the fabric near in memory, and the router visits
+wires in neighbourhoods. `router2.cc` is as upstream wrote it.
+
+| Check | Result |
+| --- | --- |
+| gtest | 67 in `build/rust-enabled` and 54 in `build` (the contract test and the second-register-bel test had sat inside a Rust-only region of the test file and were moved out, so the native build runs them too): a new test of the binding contract over the wire records (a pip bound by itself, its wire bound with it, a rival pip into that wire not thereby bound, unbinding the wire unbinding its pip, a blocked wire refusing), and the checkpoint round-trip and route reuse tests, which restore bindings through the API, unchanged |
+| Probe, full flow with `--alm-pairing 1 --register-packing` | Checksums `0x8d5fc97c` / `0x956e97b5`, report `5c670e0139b66090…`: unchanged, for step A and for both steps |
+| Default-path probe identity (the gate) | `0xbb18ede9` / `0xbc1365c6`, report hash unchanged |
+| Core, full flow, recipe, seed 1, every variant | Placement `0xe0b15557`, routing `0x681553a4`, 45 iterations, 767,087 wires, 11.39 MHz: unchanged |
+| Core router2 time, binaries run side by side | First pair: 92.2 s with step A against 103.1 s before. Three together: 99.2 s before, 90.8 s with step A, 99.8 s with steps A and B |
+
+Step A is about 10 s of router2, 10%, measured twice under equal
+conditions; it also makes every bind, unbind, and availability test in
+the other phases one lookup cheaper, which was not measured apart.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3634,6 +3674,7 @@ algorithm and not in its data structure, and it is not started.
 | 2026-09-21 | 16.6, 16.2 | Keep both at their measured size, two core runs a side: the occupancy mask and the candidate beside the trials (12 s), the scan loop's flags (7 s); estimates from a profile's self time overstate what a change can recover | Identity on the probe in three modes and on the core; strict legalisation 390 s to 378 s to 370 s; 16.2 was estimated at 25 to 35 s |
 | 2026-09-21 | 16.1 | In the Rust legality mode a cluster candidate is answered by the resident session and that answer decides; the detached C++ evaluation of frozen records stays the authority in legacy, the harness in shadow and verify, and the path for what the session declines; one crate function and one FFI call of new surface | The frozen path captured a whole LAB per edited bel and evaluated it twice, 91 s of the core's legaliser, with the C++ verdict deciding even after the promotion; core placement 426 s against 503 s, byte-identical with the same candidates accepted and rejected; verify mode zero mismatches on the probe over 250,504 candidates |
 | 2026-09-21 | 16.3 | The equation system keeps upstream's sorted insert; append-and-merge is bit-identical and no faster | Core HeAP 342.40 s against 342.41 s with the checksum unchanged; the columns are small because contributions merge on arrival, which the design's reading of the profile missed |
+| 2026-09-21 | 16.5 | The arch records a wire's binding on the wire and answers the binding API from it (kept); router2 keeps upstream's dict for its wire index (a flat mixed-hash table was slower) | Routed identity on the probe and the core in every variant; router2 90.8 s against 99.2 s with step A and 99.8 s with both, side by side; a hash that preserves the fabric's locality beats one that avoids collisions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

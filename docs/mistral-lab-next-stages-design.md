@@ -1657,6 +1657,14 @@ in every phase, and about a second of device load.
 the arch and a table in upstream's router. Medium risk, last in the
 order, and the second step is separable and can be dropped.
 
+**Outcome (2026-09-21): the first step kept, the second dropped.** The
+overrides hold routed identity on the probe and the core and take
+router2 from 99 s to 91 s, measured twice side by side. The flat index
+is byte-identical and gives all of it back: mixing the wire id to avoid
+collisions scatters neighbouring wires across the table, and upstream's
+hash, the raw id modulo a prime, keeps the fabric's locality, which the
+router's neighbourhood access pattern rewards. `router2.cc` is untouched.
+
 ### 16.6 The scan's bookkeeping becomes constant time (Rust)
 
 **Profile.** `evaluate_scan` has 38 s of self time that is not rules:
@@ -1701,7 +1709,7 @@ strict legalisation 378 s against 390 s, about 12 s.
 | 16.2 scan loop filters once | C++ | 100 s | landed: 7 s gained | none | low |
 | 16.1 clusters through the resident session | both | 91 s | landed: 88 s gained | one function, one FFI call | medium: moves an authority |
 | 16.3 equation system append and merge | C++, upstream's file | 57 s | 57 s: bit-identical, no gain, not kept | none | - |
-| 16.5 one lookup per wire | C++, arch and upstream's router | 33 s | 10 s | none | medium: binding API overrides |
+| 16.5 one lookup per wire | C++, arch only in the end | 33 s | landed: 10 s gained by the arch step; the router step slower, dropped | none | medium: binding API overrides |
 
 Together an estimated 200 s of the core flow's 715 s. The estimates are
 for ordering the work; each unit is measured by a Time Profiler run of
