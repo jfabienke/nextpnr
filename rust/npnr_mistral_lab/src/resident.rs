@@ -488,6 +488,7 @@ impl ResidentLabs {
         }
         let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
         let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
+        let is_mlab = lab.facts.is_mlab != 0;
         let mut scratch = LabAssessmentV2::empty(&lab.facts);
         let mut at = shaped;
         for (index, &bel) in order.iter().enumerate() {
@@ -502,10 +503,19 @@ impl ResidentLabs {
             let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = trials;
             in_view[trial_count] = Some(&at);
             let in_view = &in_view[..trial_count + 1];
-            let legal = match Self::bel_legal(lab, limit, in_view, query, at.alm, &mut scratch) {
-                Some(legal) => legal,
-                None => Self::verdict(lab, limit, in_view, query, at.alm, true).status == LAB_LEGAL,
+            let full = |lab: &mut ResidentLab| {
+                Self::verdict(lab, limit, in_view, query, at.alm, true).status == LAB_LEGAL
             };
+            let legal =
+                match Self::bel_passes_alm_and_total(lab, limit, in_view, at.alm, &mut scratch) {
+                    false => false,
+                    true if is_lut => !is_mlab || full(lab),
+                    true => match Self::control_legal(lab, in_view) {
+                        Some(legal) => legal && (!is_mlab || full(lab)),
+                        // More control nets than the mirror holds: `verdict` decides.
+                        None => full(lab),
+                    },
+                };
             if legal {
                 return Ok(Some(index));
             }
@@ -513,53 +523,44 @@ impl ResidentLabs {
         Ok(None)
     }
 
-    /// Whether one bel's query is legal with the trials in view, for the scan, which needs the
-    /// answer and not the reason. The predicates are `verdict`'s (the ALM rule, the LAB's input
-    /// total, the control rules) asked in order of cost and stopping at the first refusal: on a
-    /// crowded LAB three bels in four fail the ALM rule alone, so the input counts are recomputed
-    /// only for a bel that has passed it. `None` where `verdict` takes a path of its own (an MLAB,
-    /// more control nets than the mirror holds): the caller asks `verdict`, which for an MLAB happens
-    /// only for a bel the cheaper predicates have passed. `scratch` receives
-    /// the ALM rule's rejection record and is otherwise unused.
-    fn bel_legal(
-        lab: &mut ResidentLab,
+    /// For the scan, which needs the answer and not the reason: whether the queried bel's ALM
+    /// passes the ALM rule and the LAB stays within its input limit, with the trials in view.
+    /// These are `verdict`'s first two predicates asked in order of cost: on a crowded LAB three
+    /// bels in four fail the ALM rule alone, so the input counts are recomputed only for a bel
+    /// that has passed it. `scratch` receives the ALM rule's rejection record and is otherwise
+    /// unused.
+    fn bel_passes_alm_and_total(
+        lab: &ResidentLab,
         limit: i32,
         trials: &[Option<&BelPatchV2>],
-        query: u32,
         query_alm: u32,
         scratch: &mut LabAssessmentV2,
-    ) -> Option<bool> {
-        let ResidentLab {
-            facts,
-            alm_inputs,
-            total_inputs,
-            mirror,
-            ..
-        } = lab;
-        let facts: &LabFactsV2 = facts;
-        if query == QUERY_WHOLE_LAB {
-            return None;
-        }
+    ) -> bool {
+        let facts = &lab.facts;
         let index = query_alm as usize;
         if !check_alm(&Self::view(facts, trials, index), index, scratch) {
-            return Some(false);
+            return false;
         }
         let mut touched = 0u32;
-        let mut total = *total_inputs;
+        let mut total = lab.total_inputs;
         for patch in trials.iter().flatten() {
             let alm = patch.alm as usize;
             if touched & (1 << alm) == 0 {
                 touched |= 1 << alm;
-                total += recompute_inputs(&Self::view(facts, trials, alm)) - alm_inputs[alm];
+                total += recompute_inputs(&Self::view(facts, trials, alm)) - lab.alm_inputs[alm];
             }
         }
-        if total > limit {
-            return Some(false);
-        }
-        if query == QUERY_COMB_BEL {
-            // An MLAB's group rule is `verdict`'s to ask, for a bel the others have passed.
-            return if facts.is_mlab != 0 { None } else { Some(true) };
-        }
+        total <= limit
+    }
+
+    /// `verdict`'s third predicate: whether the LAB's control sets are legal with the trials'
+    /// register rows in view. `None` when the mirror cannot hold the trials' control nets, where
+    /// `verdict` takes the capture path's projection. The answer is of the bels the registers
+    /// sit in, not of the LAB: the rules' second walk gives data lines by first fit over lists
+    /// that overlap between kinds, so a net that serves two kinds may fit at one bel and not at
+    /// another (design 16.4, and the hostile scan oracle below).
+    fn control_legal(lab: &mut ResidentLab, trials: &[Option<&BelPatchV2>]) -> Option<bool> {
+        let ResidentLab { facts, mirror, .. } = lab;
         let mut rows: [(usize, &LabFfV2); MAX_TRIALS] = [(0, &facts.alm[0].ff[0]); MAX_TRIALS];
         let mut row_count = 0;
         for patch in trials.iter().flatten() {
@@ -574,10 +575,7 @@ impl ResidentLabs {
         let undo = mirror.apply_trials(&rows[..row_count])?;
         let control = control_verdict(&mirror.snapshot);
         mirror.undo_trials(&undo);
-        if control.status != LEGAL {
-            return Some(false);
-        }
-        if facts.is_mlab != 0 { None } else { Some(true) }
+        Some(control.status == LEGAL)
     }
 
     /// The second register bel of an ALM half (slots 3 and 5 of the six): `check_alm` refuses any
@@ -1172,6 +1170,117 @@ mod tests {
             }
         }
         assert_eq!(checked, 8000);
+    }
+
+    /// The main oracle's LABs almost never make a control refusal depend on the bel, and a scan
+    /// that wrongly ended at such a refusal passed it (the first form of design 16.4 did, and the
+    /// full core's checksum caught it; a mutation check confirmed this oracle fails on it). This
+    /// oracle builds the LABs where it matters: one small palette of nets for every control kind,
+    /// clocks that are not global, registers with no data path of their own so the control rules
+    /// decide. Every scan is held to the capture path bel by bel, and the run must contain scans
+    /// whose first legal bel comes after a bel the control rules refused.
+    #[test]
+    fn scans_over_hostile_control_labs_equal_the_capture_path() {
+        let keys: Vec<u32> = (0..12).map(|i| 7_919 * (i + 3) + 1).collect();
+        let mut rng = Lcg(16_041);
+        let (mut scans, mut legal_after_control_refusal, mut none_found) = (0u32, 0u32, 0u32);
+        for _ in 0..12_000 {
+            let mut resident = ResidentLabs::new(1, 42).unwrap();
+            resident.reset(0, false).unwrap();
+            let shared = 2 + rng.next(3);
+            let signal = |rng: &mut Lcg, absent: u32| {
+                if rng.next(absent) != 0 {
+                    return ControlSignalV1::default();
+                }
+                let net_id = keys[rng.next(shared) as usize];
+                ControlSignalV1 {
+                    net_id,
+                    flags: if net_id % 5 == 0 { GLOBAL } else { 0 },
+                }
+            };
+            let clock_net = keys[if rng.next(2) == 0 { 3 } else { 0 }];
+            let clock = ControlSignalV1 {
+                net_id: clock_net,
+                flags: if clock_net % 5 == 0 { GLOBAL } else { 0 },
+            };
+            let mut patches = Vec::new();
+            for alm in 0..ALMS as u32 {
+                for slot in [LUTS as u32, LUTS as u32 + 2] {
+                    if rng.next(4) != 0 {
+                        continue;
+                    }
+                    let mut patch = BelPatchV2 {
+                        alm,
+                        slot,
+                        commit: 1,
+                        ..BelPatchV2::default()
+                    };
+                    patch.ff.occupied = 1;
+                    patch.ff.control[0] = clock;
+                    for kind in 1..patch.ff.control.len() {
+                        patch.ff.control[kind] = signal(&mut rng, 3);
+                    }
+                    patches.push(patch);
+                }
+            }
+            if resident
+                .evaluate(0, &patches, QUERY_WHOLE_LAB, u32::MAX, true)
+                .is_err()
+            {
+                continue;
+            }
+            let mut candidate = BelPatchV2::default();
+            candidate.ff.occupied = 1;
+            candidate.ff.control[0] = clock;
+            for kind in 1..candidate.ff.control.len() {
+                candidate.ff.control[kind] = signal(&mut rng, 2);
+            }
+            let facts = *resident.facts(0).unwrap();
+            let mut order: Vec<u8> = Vec::new();
+            for alm in 0..ALMS {
+                for ff in 0..FFS {
+                    if facts.alm[alm].ff[ff].occupied == 0 && rng.next(5) != 0 {
+                        order.push((alm * (LUTS + FFS) + LUTS + ff) as u8);
+                    }
+                }
+            }
+            for i in (1..order.len()).rev() {
+                order.swap(i, rng.next(i as u32 + 1) as usize);
+            }
+            let found = resident
+                .evaluate_scan(0, &[], &candidate, &order, rng.next(2) == 0)
+                .unwrap();
+            let mut expected = None;
+            let mut control_refused = false;
+            for (index, &bel) in order.iter().enumerate() {
+                let mut at = candidate;
+                at.alm = u32::from(bel) / (LUTS + FFS) as u32;
+                at.slot = u32::from(bel) % (LUTS + FFS) as u32;
+                let mut with = facts;
+                ResidentLabs::apply_bel(&mut with.alm[at.alm as usize], &at);
+                with.query = QUERY_FF_BEL;
+                with.query_alm = at.alm;
+                let reference = evaluate_facts(&with);
+                if reference.status == LAB_LEGAL {
+                    expected = Some(index);
+                    break;
+                }
+                control_refused |= reference.reason == CONTROL_CONFLICT;
+            }
+            assert_eq!(found, expected, "{order:?}");
+            assert_eq!(resident.facts(0).unwrap().alm, facts.alm);
+            scans += 1;
+            legal_after_control_refusal += u32::from(expected.is_some() && control_refused);
+            none_found += u32::from(expected.is_none() && !order.is_empty());
+        }
+        assert!(
+            scans > 5_000 && none_found > 200,
+            "{scans} scans, {none_found} found nothing"
+        );
+        assert!(
+            legal_after_control_refusal > 20,
+            "only {legal_after_control_refusal} scans found a legal bel after a control refusal"
+        );
     }
 
     #[test]
