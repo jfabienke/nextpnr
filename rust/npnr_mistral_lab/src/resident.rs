@@ -24,7 +24,12 @@
 //! 5. several trials, in one ALM or several: the annealer's swaps;
 //! 6. a burst of up to sixty commits: a LAB just reset, or a chain bound
 //!    before any query (more than `MAX_TRIALS` changed bels);
-//! 7. a patch whose facts equal the held facts, which is skipped.
+//! 7. a patch whose facts equal the held facts, which is skipped;
+//! 8. a scan (`evaluate_scan`): any of the shapes above to bring the LAB up to
+//!    date, then one candidate's facts and the free bels the legaliser would
+//!    try, in its order; the first bel the rules accept comes back. The
+//!    candidate is held in view at each bel as a trial would be and never
+//!    applied, so a scan costs the refused bels no bind and no patch.
 
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
@@ -408,6 +413,98 @@ impl ResidentLabs {
         if !query_valid(query, query_alm) {
             return Err(ResidentError::Query);
         }
+        Self::validate(patches, MAX_TRIALS)?;
+        let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
+        Ok(Self::verdict(
+            lab,
+            limit,
+            &trials[..trial_count],
+            query,
+            query_alm,
+            recompute,
+        ))
+    }
+
+    /// The legaliser's scan of a tile as one question (module doc, shape 8).
+    /// `patches` bring the LAB up to date exactly as in `evaluate`. Then the
+    /// candidate's facts (a LUT half or a register; its `alm`, `slot`, `commit`,
+    /// and `alm_inputs` are ignored) are held in view at each bel of `order` in
+    /// turn (`alm * 6 + slot`, free bels of the candidate's kind, no repeats)
+    /// and the bel's own query is answered; the index in `order` of the first
+    /// legal bel comes back, or `None`. Counts of trial ALMs are recomputed
+    /// from the facts, since the caller keeps a count only for what is bound.
+    /// Each answer equals `evaluate` with the candidate sent as a trial at that
+    /// bel; nothing of the candidate is applied.
+    pub fn evaluate_scan(
+        &mut self,
+        lab: usize,
+        patches: &[BelPatchV2],
+        candidate: &BelPatchV2,
+        order: &[u8],
+        recompute: bool,
+    ) -> Result<Option<usize>, ResidentError> {
+        let limit = self.input_limit;
+        let lab = self.labs.get_mut(lab).ok_or(ResidentError::Lab)?;
+        if !lab.initialised {
+            return Err(ResidentError::Uninitialised);
+        }
+        let is_lut = candidate.lut.occupied != 0;
+        let mut shaped = *candidate;
+        shaped.alm = 0;
+        shaped.slot = if is_lut { 0 } else { LUTS as u32 };
+        shaped.commit = 0;
+        shaped.alm_inputs = 0;
+        let occupied = if is_lut {
+            shaped.lut.occupied
+        } else {
+            shaped.ff.occupied
+        };
+        if occupied != 1 || !Self::patch_valid(&shaped) {
+            return Err(ResidentError::Patch);
+        }
+        // One slot of the trials in view is the candidate's.
+        Self::validate(patches, MAX_TRIALS - 1)?;
+        let mut seen = 0u64;
+        for &bel in order {
+            let (alm, slot) = (bel as usize / (LUTS + FFS), bel as usize % (LUTS + FFS));
+            let bit = 1u64.checked_shl(u32::from(bel)).unwrap_or(0);
+            if alm >= ALMS || (slot < LUTS) != is_lut || seen & bit != 0 {
+                return Err(ResidentError::Query);
+            }
+            seen |= bit;
+            // Free in the state the patches describe: the patch for the bel, or the held facts.
+            let patched = patches
+                .iter()
+                .find(|p| p.alm as usize == alm && p.slot as usize == slot);
+            let taken = match (patched, slot < LUTS) {
+                (Some(patch), true) => patch.lut.occupied,
+                (Some(patch), false) => patch.ff.occupied,
+                (None, true) => lab.facts.alm[alm].lut[slot].occupied,
+                (None, false) => lab.facts.alm[alm].ff[slot - LUTS].occupied,
+            };
+            if taken != 0 {
+                return Err(ResidentError::Query);
+            }
+        }
+        let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
+        for (index, &bel) in order.iter().enumerate() {
+            let mut at = shaped;
+            at.alm = u32::from(bel) / (LUTS + FFS) as u32;
+            at.slot = u32::from(bel) % (LUTS + FFS) as u32;
+            let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = trials;
+            in_view[trial_count] = Some(&at);
+            let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
+            let verdict =
+                Self::verdict(lab, limit, &in_view[..trial_count + 1], query, at.alm, true);
+            if verdict.status == LAB_LEGAL {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The patches' shapes, one per bel, and no more trials than `room`.
+    fn validate(patches: &[BelPatchV2], room: usize) -> Result<(), ResidentError> {
         let mut seen = 0u64;
         for patch in patches {
             let bit = 1u64 << (patch.alm as usize * (LUTS + FFS) + patch.slot as usize);
@@ -416,9 +513,19 @@ impl ResidentLabs {
             }
             seen |= bit;
         }
-        if patches.iter().filter(|p| p.commit == 0).count() > MAX_TRIALS {
+        if patches.iter().filter(|p| p.commit == 0).count() > room {
             return Err(ResidentError::Patch);
         }
+        Ok(())
+    }
+
+    /// Applies the commits of validated patches and returns the trials that change something.
+    #[allow(clippy::type_complexity)]
+    fn sync<'p>(
+        lab: &mut ResidentLab,
+        patches: &'p [BelPatchV2],
+        recompute: bool,
+    ) -> Result<([Option<&'p BelPatchV2>; MAX_TRIALS], usize), ResidentError> {
         // A caller's count describes the live ALM, trials included; an ALM that
         // takes a commit and a trial in the same call gets its committed count
         // recomputed from the facts instead.
@@ -457,14 +564,7 @@ impl ResidentLabs {
             lab.total_inputs += inputs - lab.alm_inputs[index];
             lab.alm_inputs[index] = inputs;
         }
-        Ok(Self::verdict(
-            lab,
-            limit,
-            &trials[..trial_count],
-            query,
-            query_alm,
-            recompute,
-        ))
+        Ok((trials, trial_count))
     }
 
     /// An ALM's slots with the trials that touch it substituted, by reference.
@@ -782,6 +882,7 @@ mod tests {
         let (mut legal, mut trials, mut ff_legal) = (0, 0, 0);
         let mut bursts = 0;
         let mut unchanged = 0;
+        let (mut scans, mut scans_later, mut scans_none) = (0u32, 0u32, 0u32);
         for step in 0..8000u64 {
             let lab = rng.next(3) as usize;
             let count = rng.next(4) as usize;
@@ -864,7 +965,78 @@ mod tests {
             );
             legal += u32::from(result.status == LAB_LEGAL);
             ff_legal += u32::from(query != QUERY_COMB_BEL && result.status == LAB_LEGAL);
+
+            // Shape 8: a scan over free bels of this state, the step's trials resent to stay in
+            // view, against the capture path answering bel by bel. Nothing of it is applied.
+            if step % 3 == 0 && in_view.len() < MAX_TRIALS {
+                let want_lut = rng.next(2) == 0;
+                let mut candidate = BelPatchV2::default();
+                loop {
+                    if want_lut {
+                        candidate.lut = random_lut(&mut rng, &keys);
+                        if candidate.lut.occupied == 1 {
+                            break;
+                        }
+                    } else {
+                        let ff_slot = rng.next(FFS as u32) as usize;
+                        candidate.ff = random_ff(&mut rng, &keys, ff_slot);
+                        if candidate.ff.occupied == 1 {
+                            break;
+                        }
+                    }
+                }
+                let mut order: Vec<u8> = Vec::new();
+                for alm in 0..ALMS {
+                    for slot in 0..(LUTS + FFS) {
+                        let free = if slot < LUTS {
+                            expected.alm[alm].lut[slot].occupied == 0
+                        } else {
+                            expected.alm[alm].ff[slot - LUTS].occupied == 0
+                        };
+                        if free && (slot < LUTS) == want_lut && rng.next(4) != 0 {
+                            order.push((alm * (LUTS + FFS) + slot) as u8);
+                        }
+                    }
+                }
+                for i in (1..order.len()).rev() {
+                    order.swap(i, rng.next(i as u32 + 1) as usize);
+                }
+                let found = resident
+                    .evaluate_scan(lab, &in_view, &candidate, &order, step % 2 == 0)
+                    .unwrap();
+                let mut reference_found = None;
+                for (index, &bel) in order.iter().enumerate() {
+                    let mut at = candidate;
+                    at.alm = u32::from(bel) / (LUTS + FFS) as u32;
+                    at.slot = u32::from(bel) % (LUTS + FFS) as u32;
+                    let mut with = expected;
+                    ResidentLabs::apply_bel(&mut with.alm[at.alm as usize], &at);
+                    with.query = if want_lut {
+                        QUERY_COMB_BEL
+                    } else {
+                        QUERY_FF_BEL
+                    };
+                    with.query_alm = at.alm;
+                    if evaluate_facts(&with).status == LAB_LEGAL {
+                        reference_found = Some(index);
+                        break;
+                    }
+                }
+                assert_eq!(found, reference_found, "scan at step {step}: {order:?}");
+                assert_eq!(
+                    resident.facts(lab).unwrap().alm,
+                    shadow[lab].alm,
+                    "scan at step {step}"
+                );
+                scans += 1;
+                scans_later += u32::from(matches!(found, Some(index) if index > 0));
+                scans_none += u32::from(found.is_none() && !order.is_empty());
+            }
         }
+        assert!(
+            scans >= 2000 && scans_later >= 100 && scans_none >= 100,
+            "{scans} scans, {scans_later} found past the first bel, {scans_none} found nothing"
+        );
         assert!(trials > 500, "{trials}");
         assert!(
             legal > 100,

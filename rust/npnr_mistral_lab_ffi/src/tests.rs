@@ -572,6 +572,189 @@ fn resident_handle_tracks_patches_and_rejects_bad_envelopes() {
     unsafe { npnr_mistral_resident_v2_destroy(null_mut()) };
 }
 
+#[test]
+fn resident_scan_names_the_first_legal_bel_and_rejects_bad_envelopes() {
+    let mut handle: *mut NpnrLabResidentV2 = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_create(1, 42, &mut handle) },
+        CALL_OK
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_reset(handle, 0, 0) },
+        CALL_OK
+    );
+    // A five-input LUT in the first half of ALM 0, committed.
+    let mut held = BelPatchV2 {
+        commit: 1,
+        ..BelPatchV2::default()
+    };
+    held.lut.occupied = 1;
+    held.lut.input_count = 5;
+    held.lut.used_input_count = 5;
+    held.lut.bits_count = 32;
+    held.lut.mlab_group = -1;
+    for (i, net) in held.lut.input_net.iter_mut().take(5).enumerate() {
+        *net = 100 + i as u32;
+    }
+    held.alm_inputs = 5;
+    // The candidate: another five-input LUT sharing nothing, so ALM 0's other half refuses it
+    // (ten inputs) and any empty ALM takes it.
+    let mut candidate = BelPatchV2 {
+        lut: held.lut,
+        ..BelPatchV2::default()
+    };
+    for (i, net) in candidate.lut.input_net.iter_mut().take(5).enumerate() {
+        *net = 200 + i as u32;
+    }
+    let order = [1u8, 6, 12]; // ALM 0 half 1, ALM 1 half 0, ALM 2 half 0
+    let mut first = 7u32;
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                &held,
+                1,
+                &candidate,
+                order.as_ptr(),
+                order.len() as u32,
+                0,
+                &mut first,
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(
+        first, 1,
+        "the second bel of the order is the first legal one"
+    );
+    // Only the refused bel: nothing is legal.
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &candidate,
+                order.as_ptr(),
+                1,
+                0,
+                &mut first,
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(first, RESIDENT_SCAN_NONE);
+    // The scan applied nothing: the per-bel evaluation of the refused half agrees, and the
+    // occupied bel is not a bel to scan.
+    let mut trial = candidate;
+    trial.alm = 0;
+    trial.slot = 1;
+    trial.alm_inputs = 10;
+    let mut verdict = MaybeUninit::<LabVerdictV2>::uninit();
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_evaluate(
+                handle,
+                0,
+                &trial,
+                1,
+                QUERY_COMB_BEL,
+                0,
+                0,
+                verdict.as_mut_ptr(),
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(unsafe { verdict.assume_init() }.status, LAB_ILLEGAL);
+    let occupied = [0u8];
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &candidate,
+                occupied.as_ptr(),
+                1,
+                0,
+                &mut first,
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    assert_eq!(first, RESIDENT_SCAN_NONE);
+    let register_bel = [2u8]; // a register bel for a LUT candidate
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &candidate,
+                register_bel.as_ptr(),
+                1,
+                0,
+                &mut first,
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                order.as_ptr(),
+                3,
+                0,
+                &mut first,
+            )
+        },
+        CALL_NULL
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &candidate,
+                order.as_ptr(),
+                61,
+                0,
+                &mut first,
+            )
+        },
+        CALL_BAD_COUNT
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_scan(
+                handle,
+                9,
+                std::ptr::null(),
+                0,
+                &candidate,
+                order.as_ptr(),
+                3,
+                0,
+                &mut first,
+            )
+        },
+        CALL_BAD_RANGE
+    );
+    unsafe { npnr_mistral_resident_v2_destroy(handle) };
+}
+
 mod monitor_tests {
     use crate::*;
     use std::mem::MaybeUninit;

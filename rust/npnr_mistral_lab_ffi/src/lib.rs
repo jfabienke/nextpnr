@@ -747,6 +747,93 @@ pub unsafe extern "C" fn npnr_mistral_resident_v2_evaluate(
     }
 }
 
+/// The "no bel" answer of `npnr_mistral_resident_v2_scan`.
+pub const RESIDENT_SCAN_NONE: u32 = u32::MAX;
+
+/// The legaliser's scan of a tile as one call: the patches bring the LAB up to
+/// date as in `npnr_mistral_resident_v2_evaluate`; the candidate's facts are
+/// then held in view at each bel of `order` in turn and `first_legal` receives
+/// the index in `order` of the first bel the rules accept, or
+/// `RESIDENT_SCAN_NONE`. A malformed scan writes `RESIDENT_SCAN_NONE` and
+/// returns `CALL_BAD_SNAPSHOT`, so the caller falls back to asking per bel.
+///
+/// # Safety
+/// `handle` is a live resident handle used by its owner thread only; `patches`
+/// holds `patch_count` records; `candidate` is one record; `order` holds
+/// `order_count` bytes; `first_legal` is exclusive writable storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_scan(
+    handle: *mut NpnrLabResidentV2,
+    lab: u32,
+    patches: *const BelPatchV2,
+    patch_count: u32,
+    candidate: *const BelPatchV2,
+    order: *const u8,
+    order_count: u32,
+    flags: u32,
+    first_legal: *mut u32,
+) -> u32 {
+    let resident = match resident_mut(handle) {
+        Ok(resident) => resident,
+        Err(status) => return status,
+    };
+    if patch_count as usize > LAB_BELS || order_count as usize > LAB_BELS {
+        return CALL_BAD_COUNT;
+    }
+    if first_legal.is_null()
+        || candidate.is_null()
+        || (patches.is_null() && patch_count != 0)
+        || (order.is_null() && order_count != 0)
+    {
+        return CALL_NULL;
+    }
+    if first_legal.addr() % align_of::<u32>() != 0
+        || candidate.addr() % align_of::<BelPatchV2>() != 0
+        || (patch_count != 0 && patches.addr() % align_of::<BelPatchV2>() != 0)
+    {
+        return CALL_MISALIGNED;
+    }
+    if flags & !RESIDENT_RECOMPUTE_COUNTS != 0 {
+        return CALL_BAD_SNAPSHOT;
+    }
+    let patches: &[BelPatchV2] = if patch_count == 0 {
+        &[]
+    } else {
+        // SAFETY: envelope checked above; the caller keeps the records live and unaliased.
+        unsafe { std::slice::from_raw_parts(patches, patch_count as usize) }
+    };
+    let order: &[u8] = if order_count == 0 {
+        &[]
+    } else {
+        // SAFETY: non-null and `order_count` bytes long by the caller's contract.
+        unsafe { std::slice::from_raw_parts(order, order_count as usize) }
+    };
+    // SAFETY: checked non-null and aligned; live for the call by the caller's contract.
+    let candidate = unsafe { &*candidate };
+    let recompute = flags & RESIDENT_RECOMPUTE_COUNTS != 0;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        resident
+            .labs
+            .evaluate_scan(lab as usize, patches, candidate, order, recompute)
+    }));
+    let (status, answer) = match outcome {
+        Ok(Ok(Some(index))) => (CALL_OK, index as u32),
+        Ok(Ok(None)) => (CALL_OK, RESIDENT_SCAN_NONE),
+        Ok(Err(ResidentError::Lab)) => (CALL_BAD_RANGE, RESIDENT_SCAN_NONE),
+        Ok(Err(_)) => (CALL_BAD_SNAPSHOT, RESIDENT_SCAN_NONE),
+        Err(payload) => {
+            resident.poisoned = true;
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            (CALL_PANIC, RESIDENT_SCAN_NONE)
+        }
+    };
+    // SAFETY: checked non-null and aligned above.
+    unsafe { first_legal.write(answer) };
+    status
+}
+
 /// # Safety
 /// `handle` must come from create and must not be used afterwards.
 #[unsafe(no_mangle)]
