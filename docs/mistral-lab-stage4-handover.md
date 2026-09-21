@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `04bf76be` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled and six hot paths designed, design 16)
+- Commit: `738a18cb` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled and six hot paths designed, design 16)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -392,6 +392,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `bcd28c23` | Unit 16.1, crate and FFI: a cluster candidate's edits as one evaluation (`ResidentLabs::evaluate_edits`, `npnr_mistral_resident_v2_edits`) |
 | `f597530b` | Unit 16.1, arch: in the Rust mode the resident session answers HeAP's cluster candidates; core strict legalisation 282 s against 370 s, byte-identical |
 | `04bf76be` | Unit 16.1 recorded |
+| `02673ca6` | Unit 16.3 recorded: append-and-merge in HeAP's equation system is bit-identical and no faster; not kept |
+| `b592944f` | Unit 16.5: a wire's binding lives on the wire record; core router2 91 s against 99 s, routed results byte-identical |
+| `738a18cb` | Unit 16.5 recorded; the flat wire index in router2 measured slower and dropped |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
