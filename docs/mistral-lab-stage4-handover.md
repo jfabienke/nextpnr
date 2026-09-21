@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `51ff2738` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled, six hot paths designed in design 16 and closed at three kept and three negative, core flow 715 s to 575 s of CPU)
+- Commit: `c45a702c` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled, six hot paths designed in design 16 and closed at three kept and three negative, core flow 715 s to 575 s of CPU; the pipeline's stalls measured per phase with CPU Counters)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -396,6 +396,7 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `b592944f` | Unit 16.5: a wire's binding lives on the wire record; core router2 91 s against 99 s, routed results byte-identical |
 | `738a18cb` | Unit 16.5 recorded; the flat wire index in router2 measured slower and dropped |
 | `51ff2738` | The six hot-path units closed: the core flow's profile before and after (715 s to 575 s of CPU), and what the profile names next |
+| `c45a702c` | CPU Counters run of the core flow: strict legalisation is 13% back end (front end and mispredicts are its losses), router2 and the annealer 57% each; cache-layout candidates by measured ceiling |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
