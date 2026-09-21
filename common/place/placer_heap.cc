@@ -1557,20 +1557,58 @@ class HeAPPlacer
             return std::make_pair(nx, ny);
         }
 
+        // Batch answer for the scan of one tile (PlacerHeapCfg::scan_tile_first_legal).
+        std::vector<BelId> scan_bels;
+        std::vector<size_t> scan_positions;
+
         void try_place_cell(CellInfo *ci, int nx, int ny, int ctrl_set_group = -1)
         {
-            for (auto sz : fb->at(nx).at(ny)) {
+            const auto &tile_bels = fb->at(nx).at(ny);
+            // The filters every bel of the scan passes before it is tried; pure, so the batch can
+            // apply them to the bels ahead.
+            auto passes = [&](BelId bel) {
                 // Look through all bels in this tile; checking region constraint if applicable
-                if (!ci->testRegion(sz))
-                    continue;
-                if (ctrl_set_group != -1 && p->z_to_ctrl_set.at(ctx->getBelLocation(sz).z) != ctrl_set_group)
-                    continue;
-                if (ctrl_set_group == -1 && !p->test_ctrl_set(sz, ci->name))
+                if (!ci->testRegion(bel))
+                    return false;
+                if (ctrl_set_group != -1 && p->z_to_ctrl_set.at(ctx->getBelLocation(bel).z) != ctrl_set_group)
+                    return false;
+                if (ctrl_set_group == -1 && !p->test_ctrl_set(bel, ci->name))
+                    return false;
+                return true;
+            };
+            // After a first live refusal of an available bel, the arch is asked once for the first
+            // legal bel among the available ones that remain: those before it are skipped, the
+            // one it names is certified by the ordinary check, and the ones after it are unknown.
+            bool refused_live = false, scan_asked = false, scan_valid = false;
+            size_t scan_from = 0, scan_named = 0; // positions in tile_bels; scan_named past the end: none
+            for (size_t pos = 0; pos < tile_bels.size(); ++pos) {
+                const BelId sz = tile_bels[pos];
+                if (!passes(sz))
                     continue;
                 // Prefer available bels; unless we are dealing with a wide radius (e.g. difficult control sets)
                 // or occasionally trigger a tiebreaker
-                if (ctx->checkBelAvail(sz) ||
-                    (ctrl_set_group == -1 && (radius > ripup_radius || ctx->rng(20000) < 10))) {
+                const bool avail = ctx->checkBelAvail(sz);
+                if (avail || (ctrl_set_group == -1 && (radius > ripup_radius || ctx->rng(20000) < 10))) {
+                    if (avail && refused_live && !scan_asked && p->cfg.scan_tile_first_legal) {
+                        scan_asked = true;
+                        scan_bels.clear();
+                        scan_positions.clear();
+                        for (size_t q = pos; q < tile_bels.size(); ++q)
+                            if (passes(tile_bels[q]) && ctx->checkBelAvail(tile_bels[q])) {
+                                scan_bels.push_back(tile_bels[q]);
+                                scan_positions.push_back(q);
+                            }
+                        int first = -1;
+                        if (scan_bels.size() >= 2 && p->cfg.scan_tile_first_legal(ctx, ci, scan_bels, first)) {
+                            scan_valid = true;
+                            scan_from = pos;
+                            scan_named = first < 0 ? tile_bels.size() : scan_positions.at(size_t(first));
+                        }
+                    }
+                    const bool predicted = avail && scan_valid && pos >= scan_from && pos <= scan_named;
+                    const bool predicted_legal = predicted && pos == scan_named;
+                    if (predicted && !predicted_legal && !p->cfg.scan_tile_advisory)
+                        continue; // refused by the batch: what the bind, check, and unbind below would find
                     CellInfo *bound = ctx->getBoundBelCell(sz);
                     if (bound != nullptr) {
                         // Only rip up cells without constraints
@@ -1580,7 +1618,12 @@ class HeAPPlacer
                     }
                     // Provisionally bind the bel
                     ctx->bindBel(sz, ci, STRENGTH_WEAK);
-                    if (!ctx->isBelLocationValid(sz)) {
+                    const bool valid = ctx->isBelLocationValid(sz);
+                    if (predicted && p->cfg.scan_tile_observed)
+                        p->cfg.scan_tile_observed(ctx, predicted_legal, valid);
+                    if (avail && !valid)
+                        refused_live = true;
+                    if (!valid) {
                         // New location is not legal; unbind the cell (and rebind the cell we ripped up if
                         // applicable)
                         ctx->unbindBel(sz);

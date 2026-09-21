@@ -59,16 +59,28 @@ struct ResidentLabLegality
     // modes); without it the arch's counts travel with the patches as facts.
     uint32_t evaluate(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm, bool recompute,
                       NpnrLabVerdictV2 &out);
+    // The tile scan (design section 14): brings the LAB up to date as `evaluate` does, then asks
+    // for the first of `order`'s free bels (alm * 6 + slot) at which the unbound `cell` would be
+    // legal. `first_legal` is the index in `order` or NPNR_LAB_RESIDENT_SCAN_NONE.
+    uint32_t scan(const Arch &arch, uint32_t lab, const CellInfo &cell, bool is_ff, const uint8_t *order,
+                  uint32_t order_count, bool recompute, uint32_t &first_legal);
 
     // Single-writer counters: the owner thread bumps them with a relaxed load and store (a plain
     // add on the hot path) and the monitor's ticker reads them.
     std::atomic<uint64_t> evaluations{0}, resets{0}, trials{0}, commits{0}, restored{0};
-    static void bump(std::atomic<uint64_t> &counter)
+    std::atomic<uint64_t> scans{0}, scan_bels{0}, scan_hits{0}; // tile scans, bels asked about, scans naming a bel
+    static void bump(std::atomic<uint64_t> &counter, uint64_t by = 1)
     {
-        counter.store(counter.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        counter.store(counter.load(std::memory_order_relaxed) + by, std::memory_order_relaxed);
     }
 
   private:
+    // Builds the patches for the LAB's changed bels into `batch_`, after a reset if the LAB needs
+    // one; more changed bels than `max_trials` travel as commits. Returns the reset's call status.
+    uint32_t build_batch(const Arch &arch, uint32_t lab, unsigned max_trials, uint32_t &count, uint64_t &still_dirty);
+    // The session took the batch: records the commits and leaves the trials pending.
+    void note_sent(const Arch &arch, uint32_t lab, uint32_t count, uint64_t still_dirty);
+
     NpnrLabResidentV2 *handle_ = nullptr;
     std::thread::id owner_;
     // Per LAB bel (ten ALMs, two LUT halves then four registers each): where the arch keeps the
@@ -84,6 +96,7 @@ struct ResidentLabLegality
     std::vector<NpnrLabFfV2> committed_ff_, pending_ff_;
     std::vector<uint8_t> has_pending_;
     std::array<NpnrBelPatchV2, 60> batch_{};
+    NpnrBelPatchV2 candidate_{};
 };
 
 NEXTPNR_NAMESPACE_END

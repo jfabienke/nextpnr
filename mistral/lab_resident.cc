@@ -74,9 +74,11 @@ ResidentLabLegality::~ResidentLabLegality()
 #endif
 }
 
-uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
-                                       bool recompute, NpnrLabVerdictV2 &out)
+uint32_t ResidentLabLegality::build_batch(const Arch &arch, uint32_t lab, unsigned max_trials, uint32_t &count,
+                                          uint64_t &still_dirty)
 {
+    count = 0;
+    still_dirty = 0;
 #ifndef NO_RUST
     NPNR_ASSERT(handle_ != nullptr && std::this_thread::get_id() == owner_ && lab < arch.labs.size());
     uint64_t &dirty = arch.lab_bel_dirty[lab];
@@ -95,13 +97,11 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
     }
     // The batch lives in a member buffer: a 60-record array on the stack cost a stack probe per query.
     std::array<NpnrBelPatchV2, kBelsPerLab> &batch = batch_;
-    uint32_t count = 0;
-    uint64_t still_dirty = 0;
     const size_t base = size_t(lab) * kBelsPerLab;
     // Just reset, or more changed bels than the session holds in view (a chain bound before any
     // query): the state travels as commits, since it is the state.
-    const bool resync = (refacts == kAllBelsDirty && dirty == kAllBelsDirty) ||
-                        __builtin_popcountll(dirty) > NPNR_LAB_RESIDENT_MAX_TRIALS;
+    const bool resync =
+            (refacts == kAllBelsDirty && dirty == kAllBelsDirty) || unsigned(__builtin_popcountll(dirty)) > max_trials;
     for (uint64_t bits = dirty; bits != 0; bits &= bits - 1) {
         const int bel = __builtin_ctzll(bits);
         const uint64_t bit = uint64_t(1) << bel;
@@ -139,29 +139,52 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
         }
         ++count;
     }
-    const uint32_t status =
-            npnr_mistral_resident_v2_evaluate(handle_, lab, count ? batch.data() : nullptr, count, query, query_alm,
-                                              recompute ? NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS : 0u, &out);
-    bump(evaluations);
-    if (status == NPNR_LAB_CALL_OK && out.status != NPNR_LAB_V2_MALFORMED) {
-        dirty = still_dirty;
-        for (uint32_t i = 0; i < count; ++i) {
-            const NpnrBelPatchV2 &patch = batch[i];
-            const int bel = int(patch.alm) * 6 + int(patch.slot);
-            if (patch.commit) {
-                if (patch.slot < 2)
-                    committed_lut_[size_t(lab) * 20 + patch.alm * 2 + patch.slot] = patch.lut;
-                else
-                    committed_ff_[size_t(lab) * 40 + patch.alm * 4 + (patch.slot - 2)] = patch.ff;
-                has_pending_[base + bel] = 0;
-                occupant_[base + bel] = *bound_[base + bel];
-                refacts &= ~(uint64_t(1) << bel);
-                bump(commits);
-            } else {
-                bump(trials);
-            }
+    return NPNR_LAB_CALL_OK;
+#else
+    (void)arch;
+    (void)lab;
+    (void)max_trials;
+    return NPNR_LAB_CALL_BAD_SNAPSHOT;
+#endif
+}
+
+void ResidentLabLegality::note_sent(const Arch &arch, uint32_t lab, uint32_t count, uint64_t still_dirty)
+{
+    const size_t base = size_t(lab) * kBelsPerLab;
+    arch.lab_bel_dirty[lab] = still_dirty;
+    uint64_t &refacts = arch.lab_bel_refacts[lab];
+    for (uint32_t i = 0; i < count; ++i) {
+        const NpnrBelPatchV2 &patch = batch_[i];
+        const int bel = int(patch.alm) * 6 + int(patch.slot);
+        if (patch.commit) {
+            if (patch.slot < 2)
+                committed_lut_[size_t(lab) * 20 + patch.alm * 2 + patch.slot] = patch.lut;
+            else
+                committed_ff_[size_t(lab) * 40 + patch.alm * 4 + (patch.slot - 2)] = patch.ff;
+            has_pending_[base + bel] = 0;
+            occupant_[base + bel] = *bound_[base + bel];
+            refacts &= ~(uint64_t(1) << bel);
+            bump(commits);
+        } else {
+            bump(trials);
         }
     }
+}
+
+uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
+                                       bool recompute, NpnrLabVerdictV2 &out)
+{
+#ifndef NO_RUST
+    uint32_t count = 0;
+    uint64_t still_dirty = 0;
+    uint32_t status = build_batch(arch, lab, NPNR_LAB_RESIDENT_MAX_TRIALS, count, still_dirty);
+    if (status != NPNR_LAB_CALL_OK)
+        return status;
+    status = npnr_mistral_resident_v2_evaluate(handle_, lab, count ? batch_.data() : nullptr, count, query, query_alm,
+                                               recompute ? NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS : 0u, &out);
+    bump(evaluations);
+    if (status == NPNR_LAB_CALL_OK && out.status != NPNR_LAB_V2_MALFORMED)
+        note_sent(arch, lab, count, still_dirty);
     return status;
 #else
     (void)arch;
@@ -170,6 +193,46 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
     (void)query_alm;
     (void)recompute;
     (void)out;
+    return NPNR_LAB_CALL_BAD_SNAPSHOT;
+#endif
+}
+
+uint32_t ResidentLabLegality::scan(const Arch &arch, uint32_t lab, const CellInfo &cell, bool is_ff,
+                                   const uint8_t *order, uint32_t order_count, bool recompute, uint32_t &first_legal)
+{
+#ifndef NO_RUST
+    first_legal = NPNR_LAB_RESIDENT_SCAN_NONE;
+    uint32_t count = 0;
+    uint64_t still_dirty = 0;
+    // One of the trials the session holds in view is the candidate.
+    uint32_t status = build_batch(arch, lab, NPNR_LAB_RESIDENT_MAX_TRIALS - 1, count, still_dirty);
+    if (status != NPNR_LAB_CALL_OK)
+        return status;
+    capture_cell_v2_keyed(cell, is_ff, candidate_);
+    candidate_.alm = 0;
+    candidate_.slot = 0;
+    candidate_.commit = 0;
+    candidate_.alm_inputs = 0;
+    status = npnr_mistral_resident_v2_scan(handle_, lab, count ? batch_.data() : nullptr, count, &candidate_, order,
+                                           order_count, recompute ? NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS : 0u,
+                                           &first_legal);
+    bump(scans);
+    bump(scan_bels, order_count);
+    if (status == NPNR_LAB_CALL_OK) {
+        note_sent(arch, lab, count, still_dirty);
+        if (first_legal != NPNR_LAB_RESIDENT_SCAN_NONE)
+            bump(scan_hits);
+    }
+    return status;
+#else
+    (void)arch;
+    (void)lab;
+    (void)cell;
+    (void)is_ff;
+    (void)order;
+    (void)order_count;
+    (void)recompute;
+    first_legal = UINT32_MAX;
     return NPNR_LAB_CALL_BAD_SNAPSHOT;
 #endif
 }

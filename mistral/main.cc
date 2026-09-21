@@ -105,6 +105,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                                             "(routing-demand-aware placement; off by default; experimental)");
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
+    specific.add_options()("no-lab-tile-scan",
+                           "ask the LAB legality authority per bel even where the tile scan applies (the scan is "
+                           "on in the rust, shadow, and verify modes; results are identical either way)");
     specific.add_options()("monitor", "show a live dashboard of the run in the terminal (phases, LAB legality and "
                                       "resident counters, placer and router progress, log tail); the log text "
                                       "goes to --log");
@@ -249,6 +252,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.register_packing = vm.count("register-packing") != 0;
     if (vm.count("telemetry"))
         chipArgs.telemetry_path = vm["telemetry"].as<std::string>();
+    chipArgs.lab_tile_scan = vm.count("no-lab-tile-scan") == 0;
     if (vm.count("row-cost")) {
         chipArgs.row_cost = vm["row-cost"].as<float>();
         if (chipArgs.row_cost <= 0.0f)

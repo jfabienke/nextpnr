@@ -149,6 +149,21 @@ struct PlacerHeapCfg
     int clusterLookahead = 0;
 
     // Passed to the simulated-annealing refinement (see Placer1Cfg).
+    // Optional batch form of the arch's validity check for the strict legaliser's scan of one tile.
+    // For an unclustered `cell` and available bels of one tile that the scan would try next, in scan
+    // order, the arch writes the index of the first bel where isBelLocationValid would accept the
+    // cell once bound, or -1 for none, and returns true; it returns false when it has no batch
+    // answer, and every bel is then tried as before. The batch is asked only after a first live
+    // refusal in the tile, for the bels that remain. The bel it names is still bound and certified
+    // by isBelLocationValid, which alone accepts a placement; what the batch removes is the bind,
+    // check, and unbind of the bels before it. The scan order, the filters, and the random draws
+    // for occupied bels are unchanged, so the placement is identical.
+    std::function<bool(Context *, CellInfo *, const std::vector<BelId> &, int &)> scan_tile_first_legal;
+    // With scan_tile_first_legal: skip nothing, and report every prediction against the live check
+    // of the same bel (an arch's comparing modes). Without `scan_tile_advisory` only the named bel's
+    // certification is reported.
+    bool scan_tile_advisory = false;
+    std::function<void(Context *, bool predicted_legal, bool live_legal)> scan_tile_observed;
     std::function<Placer1SwapAssessment(Context *, const std::vector<Placer1SwapEdit> &)> assess_swap;
     std::function<bool(Context *, const std::vector<Placer1SwapEdit> &, const Placer1SwapAssessment &)> commit_swap;
     bool swap_seam_shadow = false;

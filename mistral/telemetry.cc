@@ -70,6 +70,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"router2_unit_cost", a.router2_unit_cost},
             {"router2_reroute", a.router2_reroute},
             {"router2_reroute_contested", a.router2_reroute_contested},
+            {"lab_tile_scan", a.lab_tile_scan},
             {"reuse_routes_history", double(a.reuse_routes_history)},
     };
     Json::object legality{
@@ -93,9 +94,14 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
     Json::object resident;
     if (arch.lab_resident) {
         resident = Json::object{
-                {"evaluations", count(arch.lab_resident->evaluations)}, {"resets", count(arch.lab_resident->resets)},
-                {"trials", count(arch.lab_resident->trials)},           {"commits", count(arch.lab_resident->commits)},
+                {"evaluations", count(arch.lab_resident->evaluations)},
+                {"resets", count(arch.lab_resident->resets)},
+                {"trials", count(arch.lab_resident->trials)},
+                {"commits", count(arch.lab_resident->commits)},
                 {"restored", count(arch.lab_resident->restored)},
+                {"scans", count(arch.lab_resident->scans)},
+                {"scan_bels", count(arch.lab_resident->scan_bels)},
+                {"scan_hits", count(arch.lab_resident->scan_hits)},
         };
     }
     Json::object phases{

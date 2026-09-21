@@ -411,7 +411,7 @@ NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQue
     return capture_lab_v2_impl(arch, lab, query, query_alm, &occupancy, request_id, epoch);
 }
 
-void capture_bel_v2_keyed(const Arch &arch, uint32_t lab, uint8_t alm, uint8_t slot, NpnrBelPatchV2 &out)
+void capture_cell_v2_keyed(const CellInfo &cell, bool is_ff, NpnrBelPatchV2 &out)
 {
     out.lut = NpnrLabLutV2{};
     out.ff = NpnrLabFfV2{};
@@ -421,12 +421,22 @@ void capture_bel_v2_keyed(const Arch &arch, uint32_t lab, uint8_t alm, uint8_t s
                                    (value.inverted ? uint32_t(NPNR_CONTROL_INVERTED) : 0u) |
                                            ((value.net && value.net->is_global) ? uint32_t(NPNR_CONTROL_GLOBAL) : 0u)};
     };
+    if (is_ff)
+        fill_ff_facts(cell, net_id, signal, out.ff);
+    else
+        fill_lut_facts(cell, net_id, signal, out.lut);
+}
+
+void capture_bel_v2_keyed(const Arch &arch, uint32_t lab, uint8_t alm, uint8_t slot, NpnrBelPatchV2 &out)
+{
+    out.lut = NpnrLabLutV2{};
+    out.ff = NpnrLabFfV2{};
     const ALMInfo &info = arch.labs[lab].alms[alm];
     if (slot < 2) {
         if (const CellInfo *cell = arch.getBoundBelCell(info.lut_bels[slot]))
-            fill_lut_facts(*cell, net_id, signal, out.lut);
+            capture_cell_v2_keyed(*cell, false, out);
     } else if (const CellInfo *cell = arch.getBoundBelCell(info.ff_bels[slot - 2])) {
-        fill_ff_facts(*cell, net_id, signal, out.ff);
+        capture_cell_v2_keyed(*cell, true, out);
     }
 }
 
@@ -711,6 +721,62 @@ bool dispatch_lab_legality(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query,
 #endif
 }
 
+bool scan_lab_tile(const Arch &arch, const CellInfo *cell, const std::vector<BelId> &bels, int &first_legal)
+{
+#ifdef NO_RUST
+    (void)arch;
+    (void)cell;
+    (void)bels;
+    (void)first_legal;
+    return false;
+#else
+    const auto mode = arch.args.lab_legality;
+    if (mode == LabLegalityMode::Legacy || cell == nullptr || bels.empty() || bels.size() > 60)
+        return false;
+    const bool is_ff = cell->type == id_MISTRAL_FF;
+    // Carry cells travel in chains and LUTRAM cells carry host-owned write reservations: neither
+    // is scanned as a single cell.
+    if (!is_ff && (cell->type == id_MISTRAL_MLAB || cell->combInfo.is_carry))
+        return false;
+    std::array<uint8_t, 60> order{};
+    uint32_t lab = UINT32_MAX;
+    for (size_t i = 0; i < bels.size(); ++i) {
+        const auto &data = arch.bel_data(bels[i]);
+        const bool bel_is_ff = data.type == id_MISTRAL_FF;
+        if (bel_is_ff != is_ff || (!bel_is_ff && !data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB)))
+            return false;
+        if (lab == UINT32_MAX)
+            lab = data.lab_data.lab;
+        else if (lab != data.lab_data.lab)
+            return false;
+        order[i] = uint8_t(data.lab_data.alm * 6 + (bel_is_ff ? 2 : 0) + data.lab_data.idx);
+    }
+    if (!arch.lab_resident)
+        std::atomic_store(&arch.lab_resident, std::make_shared<ResidentLabLegality>(arch));
+    uint32_t first = NPNR_LAB_RESIDENT_SCAN_NONE;
+    const uint32_t call = arch.lab_resident->scan(arch, lab, *cell, is_ff, order.data(), uint32_t(bels.size()),
+                                                  mode != LabLegalityMode::Rust, first);
+    if (call != NPNR_LAB_CALL_OK || (first != NPNR_LAB_RESIDENT_SCAN_NONE && first >= bels.size())) {
+        arch.lab_legality_stats.errors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    first_legal = first == NPNR_LAB_RESIDENT_SCAN_NONE ? -1 : int(first);
+    return true;
+#endif
+}
+
+void note_lab_tile_prediction(const Arch &arch, bool predicted_legal, bool live_legal)
+{
+    if (predicted_legal == live_legal)
+        return;
+    // The scan and the per-bel check are the same rules over the same facts: a difference is a
+    // defect of the protocol, fatal in verify as every mismatch is. The live check has decided.
+    arch.lab_legality_stats.mismatches.fetch_add(1, std::memory_order_relaxed);
+    if (arch.args.lab_legality == LabLegalityMode::Verify)
+        log_error("LAB tile scan predicted %s where the per-bel check found %s.\n",
+                  predicted_legal ? "legal" : "illegal", live_legal ? "legal" : "illegal");
+}
+
 void report_lab_legality_stats(const Arch &arch)
 {
     if (arch.args.lab_legality == LabLegalityMode::Legacy)
@@ -724,10 +790,11 @@ void report_lab_legality_stats(const Arch &arch)
              std::min(get(s.diagnostics), uint64_t(4)));
     if (arch.lab_resident)
         log_info("LAB legality resident: evaluations=%" PRIu64 " resets=%" PRIu64 " trials=%" PRIu64 " commits=%" PRIu64
-                 " restored=%" PRIu64 ".\n",
+                 " restored=%" PRIu64 " scans=%" PRIu64 " scan-bels=%" PRIu64 " scan-hits=%" PRIu64 ".\n",
                  arch.lab_resident->evaluations.load(), arch.lab_resident->resets.load(),
                  arch.lab_resident->trials.load(), arch.lab_resident->commits.load(),
-                 arch.lab_resident->restored.load());
+                 arch.lab_resident->restored.load(), arch.lab_resident->scans.load(),
+                 arch.lab_resident->scan_bels.load(), arch.lab_resident->scan_hits.load());
 }
 
 NEXTPNR_NAMESPACE_END

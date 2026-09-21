@@ -928,6 +928,19 @@ bool Arch::run_placement()
                 log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
             }
             cfg.criticalityExponent = 7;
+            // Stage 6 (tile scan, design section 14): in the Rust legality modes the strict legaliser
+            // asks for the first legal bel of a tile in one call after a first refusal; the comparing
+            // modes skip nothing and check every prediction against the live answer.
+            if (args.lab_legality != LabLegalityMode::Legacy && args.lab_tile_scan) {
+                cfg.scan_tile_first_legal = [](Context *owner, CellInfo *cell, const std::vector<BelId> &bels,
+                                               int &first_legal) {
+                    return scan_lab_tile(*owner, cell, bels, first_legal);
+                };
+                cfg.scan_tile_advisory = args.lab_legality != LabLegalityMode::Rust;
+                cfg.scan_tile_observed = [](Context *owner, bool predicted_legal, bool live_legal) {
+                    note_lab_tile_prediction(*owner, predicted_legal, live_legal);
+                };
+            }
             cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
                                                const HeAPDisplacedBindings &displaced) {
                 auto prepared =

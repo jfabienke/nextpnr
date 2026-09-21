@@ -194,6 +194,16 @@ uint32_t npnr_mistral_resident_v2_reset(NpnrLabResidentV2 *handle, uint32_t lab,
 uint32_t npnr_mistral_resident_v2_evaluate(NpnrLabResidentV2 *handle, uint32_t lab, const NpnrBelPatchV2 *patches,
                                            uint32_t patch_count, uint32_t query, uint32_t query_alm, uint32_t flags,
                                            NpnrLabVerdictV2 *output);
+/* The legaliser's scan of a tile as one call (design section 14): the patches bring the LAB up to
+ * date as in evaluate; the candidate's facts (a LUT half or a register; alm, slot, commit, and
+ * alm_inputs ignored) are held in view at each bel of `order` in turn (alm * 6 + slot, free bels
+ * of the candidate's kind, no repeats) and `first_legal` receives the index in `order` of the
+ * first bel the rules accept, or NPNR_LAB_RESIDENT_SCAN_NONE. Nothing of the candidate is
+ * applied. A malformed scan returns NPNR_LAB_CALL_BAD_SNAPSHOT with the LAB untouched. */
+#define NPNR_LAB_RESIDENT_SCAN_NONE UINT32_MAX
+uint32_t npnr_mistral_resident_v2_scan(NpnrLabResidentV2 *handle, uint32_t lab, const NpnrBelPatchV2 *patches,
+                                       uint32_t patch_count, const NpnrBelPatchV2 *candidate, const uint8_t *order,
+                                       uint32_t order_count, uint32_t flags, uint32_t *first_legal);
 void npnr_mistral_resident_v2_destroy(NpnrLabResidentV2 *handle);
 
 #ifdef __cplusplus

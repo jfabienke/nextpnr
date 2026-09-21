@@ -1726,6 +1726,103 @@ TEST_F(LabControlCaptureTest, ResidentLegalityPatchesChangedAlmsAndMatchesTheCap
 }
 #endif
 
+TEST_F(LabControlCaptureTest, TileScanNamesTheFirstBelThePerBelCheckAccepts)
+{
+    // Design section 14: the legaliser's scan of a tile as one call. For an unbound cell and free
+    // bels of one LAB in the legaliser's order, the scan names the first bel that bind, check, and
+    // unbind would accept, binds nothing, and declines what it does not cover.
+    ctx->args.lab_legality = LabLegalityMode::Rust;
+    ctx->lab_resident.reset();
+    ctx->lab_bel_dirty.clear();
+    ctx->lab_bel_refacts.clear();
+    auto &lab0 = ctx->labs.at(0);
+    for (unsigned slot : {0u, 4u, 8u, 12u}) {
+        cells[slot]->ffInfo.ctrlset.clk = {nets[0], false};
+        bind(slot);
+    }
+    auto per_bel_first = [&](CellInfo *cell, const std::vector<BelId> &bels) {
+        for (size_t i = 0; i < bels.size(); ++i) {
+            ctx->bindBel(bels[i], cell, STRENGTH_WEAK);
+            const bool ok = ctx->isBelLocationValid(bels[i]);
+            ctx->unbindBel(bels[i]);
+            if (ok)
+                return int(i);
+        }
+        return -1;
+    };
+    // The second register bel of ALM 0's first half is refused (the half has its register), so an
+    // order that starts there has its first legal bel further on.
+    std::vector<BelId> free_ffs{lab0.alms[0].ff_bels[1]};
+    for (unsigned alm = 0; alm < 10; ++alm)
+        for (unsigned i = 0; i < 4; ++i)
+            if (ctx->checkBelAvail(lab0.alms[alm].ff_bels[i]) && lab0.alms[alm].ff_bels[i] != free_ffs.front())
+                free_ffs.push_back(lab0.alms[alm].ff_bels[i]);
+    ASSERT_GT(free_ffs.size(), 30u);
+
+    CellInfo *same_clock = cells[20];
+    same_clock->ffInfo.ctrlset.clk = {nets[0], false};
+    int first = -2;
+    ASSERT_TRUE(scan_lab_tile(*ctx, same_clock, free_ffs, first));
+    EXPECT_GT(first, 0);
+    EXPECT_EQ(first, per_bel_first(same_clock, free_ffs));
+    EXPECT_EQ(same_clock->bel, BelId());
+    ASSERT_TRUE(ctx->lab_resident && ctx->lab_resident->available());
+    EXPECT_EQ(ctx->lab_resident->scans, 1u);
+    EXPECT_EQ(ctx->lab_resident->scan_bels, free_ffs.size());
+    EXPECT_EQ(ctx->lab_resident->scan_hits, 1u);
+
+    // Registers on more clocks, enables, and clears than a LAB carries: whatever the per-bel
+    // check says of each, the scan says the same, including "nowhere".
+    int refused_everywhere = 0;
+    for (unsigned variant = 0; variant < 6; ++variant) {
+        CellInfo *cell = cells[21 + variant];
+        cell->ffInfo.ctrlset.clk = {nets[1 + variant % 3], variant % 2 == 1};
+        cell->ffInfo.ctrlset.ena = {nets[4 + variant % 2], false};
+        if (variant >= 2)
+            cell->ffInfo.ctrlset.aclr = {nets[6 + variant % 2], false};
+        if (variant >= 4) {
+            cell->ffInfo.ctrlset.sclr = {nets[8], false};
+            cell->ffInfo.ctrlset.sload = {nets[9], variant == 5};
+        }
+        // Each variant joins the LAB if it can, so the LAB fills with distinct controls.
+        int scanned = -2;
+        ASSERT_TRUE(scan_lab_tile(*ctx, cell, free_ffs, scanned));
+        const int live = per_bel_first(cell, free_ffs);
+        EXPECT_EQ(scanned, live) << "variant " << variant;
+        refused_everywhere += live < 0;
+        if (live >= 0) {
+            ctx->bindBel(free_ffs[size_t(live)], cell, STRENGTH_WEAK);
+            free_ffs.erase(free_ffs.begin() + live);
+        }
+    }
+    EXPECT_GT(refused_everywhere, 0);
+    EXPECT_EQ(ctx->lab_legality_stats.mismatches.load(), 0u);
+
+    // What the scan does not cover it declines, and the legaliser asks per bel: the legacy
+    // authority, bels of two LABs, a register asked about LUT bels.
+    int untouched = 7;
+    std::vector<BelId> two_labs{lab0.alms[9].ff_bels[3], ctx->labs.at(1).alms[0].ff_bels[0]};
+    EXPECT_FALSE(scan_lab_tile(*ctx, same_clock, two_labs, untouched));
+    EXPECT_FALSE(scan_lab_tile(*ctx, same_clock, {lab0.alms[9].lut_bels[0], lab0.alms[9].lut_bels[1]}, untouched));
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
+    EXPECT_FALSE(scan_lab_tile(*ctx, same_clock, free_ffs, untouched));
+    EXPECT_EQ(untouched, 7);
+
+    // A prediction the live check contradicts is a mismatch, fatal in verify.
+    ctx->args.lab_legality = LabLegalityMode::Rust;
+    const uint64_t before = ctx->lab_legality_stats.mismatches.load();
+    note_lab_tile_prediction(*ctx, true, true);
+    EXPECT_EQ(ctx->lab_legality_stats.mismatches.load(), before);
+    note_lab_tile_prediction(*ctx, true, false);
+    EXPECT_EQ(ctx->lab_legality_stats.mismatches.load(), before + 1);
+    ctx->args.lab_legality = LabLegalityMode::Verify;
+    EXPECT_THROW(note_lab_tile_prediction(*ctx, false, true), log_execution_error_exception);
+    ctx->lab_legality_stats.mismatches.store(before);
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
+    for (auto *cell : cells)
+        cell->ffInfo.ctrlset = FFControlSet{};
+}
+
 TEST_F(LabControlCaptureTest, V2LiveModesPreserveScopeAndRejectStaleAuthority)
 {
     const auto bel = ctx->labs[0].alms[0].ff_bels[0];
