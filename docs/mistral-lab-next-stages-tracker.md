@@ -3454,6 +3454,51 @@ tile visits where no batch is asked and to the positions before the
 look-ahead. Every run with the change is below every run without it,
 which is the most two runs a side can say.
 
+### 2026-09-21: Unit 16.1: cluster candidates through the resident session
+
+The fourth hot-path unit (design 16.1) and the largest. Every pair and
+register cluster HeAP tries goes to `place_cluster_transaction`, 19.6
+million times on the core with 96.6% rejected. The Mistral callback
+froze each candidate as one whole-LAB overlay capture per edited bel,
+evaluated every record in C++, and evaluated it again in Rust as a fatal
+cross-check: 91 s in the profile, and the C++ verdict the authority in
+every legality mode. In the Rust mode the candidate is now answered by
+the session that already holds the LAB.
+
+- Crate: `ResidentLabs::evaluate_edits` (patch shape 9). The patches
+  bring the LAB up to date through the shared sync step; the candidate's
+  edits of the LAB, the facts of the cell each places or empty facts
+  where one is displaced, are held in view together, an edit overriding
+  a pending trial of the same bel; the answer is the conjunction the
+  frozen path computes per edit, asked once per distinct predicate: the
+  ALM rule for each ALM an edit touches, the input total once, the
+  control rules once if any edit is a register bel, the full verdict
+  for an MLAB. The pending trials and the edits share the places in
+  view; a candidate with more edits is a malformed call.
+- FFI: `npnr_mistral_resident_v2_edits`, with the envelope checks and
+  the poisoned handle of its siblings.
+- Arch: `ResidentLabLegality::edits` over the shared batch builder;
+  `placement_candidate_resident` groups a prepared transaction's edits
+  by LAB, builds each edit's facts with `capture_cell_v2_keyed`, and
+  declines what the session does not cover (a bel outside a LAB, a
+  LUTRAM cell, a LAB over the budget, which is a carry chain).
+- Callback: `rust` mode asks the session and rejects or commits;
+  `shadow` and `verify` run the frozen path as before, which decides,
+  and compare the two, a difference fatal in verify; `legacy`, the
+  lookahead's worker threads, and what the session declines are
+  unchanged. `--no-lab-tile-scan` turns this off with the tile scan.
+  `edit-calls` and `edit-bels` join the resident stats line and the
+  telemetry file.
+
+| Check | Result |
+| --- | --- |
+| Crate | The main oracle compares edit sets (placements, removals, edits overriding a pending trial, over-budget sets) with the capture path answering edit by edit, coverage asserted; two mutants about removals (a removed bel's ALM unchecked; the control rules skipped for a removed register) both fail it within a hundred steps; FFI test for the round trip and the envelopes |
+| gtest | The resident answer equals the frozen evaluation's for a pair with a register on each half, a pair with one, a single LUT with its register, the same with a displaced register among the edits, and a register forced in against the control rules; legacy declines |
+| Probe placement, default and recipe options | Checksums `0x7f9f8105` and `0xa99e0f68`; transaction counters exactly the baseline's (2,892 / 1,632 / 1,260 and 251,392 / 153,720 / 97,672 attempted, committed, rejected) |
+| Probe placement, `--lab-legality verify`, both option sets | Same checksums and counters; the resident answer compared with the frozen evaluation on 624 and 249,880 candidates: `mismatches=0 errors=0` |
+| Probe, recipe, strict legalisation | 0.64 s against 1.44 s with `--no-lab-tile-scan` |
+| Core placement, recipe options | Checksum `0x2d44a02e`, 23,986,231 legal answers, 167,516,520 scans, and the transaction counters 19,561,195 / 668,514 / 18,892,681: all unchanged. 19,528,999 candidates (99.8%) answered by the session over 56,087,279 edited bels, the rest carry chains on the frozen path. Strict legalisation 282.4 s against 370 s with units 16.6 and 16.2, HeAP 342.4 s, placement 425.7 s against 503 s; the legacy authority takes 781 s |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3560,6 +3605,7 @@ which is the most two runs a side can say.
 | 2026-09-21 | register capacity | Hiding the never-legal register bels from the placer (`--usable-register-bels`) is a negative result; landed for the record, then removed; never size a change from one seed | Probe inside the seed spread; core: the legaliser slower on two seeds of three, router2 iterations up by half, and seed 3 unrouted at the cap where the default routes in 64 iterations |
 | 2026-09-21 | 16.4 | The scan does not shortcut the control rules: the first form (one verdict per LAB) was wrong and the sound form (end at a first-walk refusal) gains nothing; a shortcut in the evaluator now needs a hostile property test, a mutation check of the oracle, and the core's checksums | The core's checksum moved with the first form where the probe, its verify mode, and the scan oracle all passed; the corrected form holds identity at 391.8 s against 391.3 s; the new hostile scan oracle fails on the wrong form |
 | 2026-09-21 | 16.6, 16.2 | Keep both at their measured size, two core runs a side: the occupancy mask and the candidate beside the trials (12 s), the scan loop's flags (7 s); estimates from a profile's self time overstate what a change can recover | Identity on the probe in three modes and on the core; strict legalisation 390 s to 378 s to 370 s; 16.2 was estimated at 25 to 35 s |
+| 2026-09-21 | 16.1 | In the Rust legality mode a cluster candidate is answered by the resident session and that answer decides; the detached C++ evaluation of frozen records stays the authority in legacy, the harness in shadow and verify, and the path for what the session declines; one crate function and one FFI call of new surface | The frozen path captured a whole LAB per edited bel and evaluated it twice, 91 s of the core's legaliser, with the C++ verdict deciding even after the promotion; core placement 426 s against 503 s, byte-identical with the same candidates accepted and rejected; verify mode zero mismatches on the probe over 250,504 candidates |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

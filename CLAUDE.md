@@ -133,7 +133,8 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   `legacy|shadow|verify|rust` (`mistral/main.cc`). **Since 2026-09-19 the complete LAB evaluator
   defaults to `rust` in Rust builds** (promoted at the user's direction; tracker entry
   "Promotion": byte-identical to legacy on the probe and the core, verify harness zero mismatches
-  on both, 1.4 times the legacy placement time on the core then, 0.68 times since the tile scan)
+  on both, 1.4 times the legacy placement time on the core then, 0.55 times since the tile scan
+  and unit 16.1)
   and to `legacy` in Rust-disabled
   builds; `--lab-legality legacy` selects the C++ rules in any build. `--lab-controls` stays
   `legacy`: the complete evaluator owns the control check and refuses a second Rust authority
@@ -262,11 +263,24 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   property test lets the scan skip), and the legaliser asks before its first bind when the
   previous tile was refused (`scan_prev_refused`: the batch equals the live check, so when it is
   asked changes cost, never the result). Core placement 530 s, against 1,092 s on the per-bel
-  Rust path and 781 s under the legacy C++ authority, byte-identical (checksum `0x2d44a02e`).
+  Rust path and 781 s under the legacy C++ authority, byte-identical (checksum `0x2d44a02e`);
+  426 s since unit 16.1 (below).
   HeAP's spreader takes a tile's register capacity as 40 bels where the rules admit 20; hiding
   the 20 never-legal bels from the placer (`--usable-register-bels`, design 15) was built,
   measured negative on the core (slower on two seeds of three, one seed unrouted), and removed.
   Do not retry it without a new idea; and never size a placer change from one seed.
+- Cluster candidates through the resident session (2026-09-21, design 16.1): HeAP offers every
+  pair and register cluster to `place_cluster_transaction`, 19.6 million times on the core. In
+  `--lab-legality rust` the callback no longer freezes whole-LAB records per edited bel: it asks
+  `placement_candidate_resident`, which holds the candidate's edits of each LAB in view together
+  (`ResidentLabs::evaluate_edits`, `npnr_mistral_resident_v2_edits`; an edit with empty facts is a
+  displaced cell), and that answer decides. Shadow and verify still run the frozen evaluation,
+  which decides there, and compare; legacy, the lookahead's workers, and what the session
+  declines (carry chains over the trial budget, LUTRAM cells) are unchanged. Byte-identical with
+  the same candidates accepted and rejected; core strict legalisation 282 s against 370 s.
+  `--no-lab-tile-scan` turns both batch forms off. Units 16.6 and 16.2 (scan bookkeeping, the
+  scan loop's flags) gained 12 s and 7 s; unit 16.4 was a negative result whose first form the
+  core's checksum caught.
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

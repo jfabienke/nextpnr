@@ -1452,6 +1452,12 @@ from the detached C++ evaluator to the Rust session, consistent with
 the promotion, and the C++ evaluator remains the legacy authority and
 the harness.
 
+**Outcome (2026-09-21): kept.** Identity on the probe and the core with
+the transaction counters exactly the baseline's; 99.8% of the core's
+19.6 million candidates answered by the session; strict legalisation
+282 s against 370 s. The estimate held because it was the inclusive
+time of functions that stopped running, not a share of a loop.
+
 ### 16.2 The legaliser's scan loop evaluates its filters once (C++)
 
 **Profile.** `try_place_cell` is 64 s of self time and
@@ -1685,7 +1691,7 @@ strict legalisation 378 s against 390 s, about 12 s.
 | 16.4 a scan ends at a first-walk control refusal | Rust | 56 s | 56 s: built, no gain, reverted | none | the first form was wrong and the core caught it |
 | 16.6 constant-time scan bookkeeping | Rust | 38 s | landed: 12 s gained | none | low |
 | 16.2 scan loop filters once | C++ | 100 s | landed: 7 s gained | none | low |
-| 16.1 clusters through the resident session | both | 91 s | 20 s | one function, one FFI call | medium: moves an authority |
+| 16.1 clusters through the resident session | both | 91 s | landed: 88 s gained | one function, one FFI call | medium: moves an authority |
 | 16.3 equation system append and merge | C++, upstream's file | 57 s | 22 s | none | low, bit-identical by argument and by checksum |
 | 16.5 one lookup per wire | C++, arch and upstream's router | 33 s | 10 s | none | medium: binding API overrides |
 
