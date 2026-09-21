@@ -1401,8 +1401,9 @@ resident session, which already holds the LAB.
   rule for every distinct ALM an edit touches (a removal can break an
   ALM too: a register loses the LUT that fed it and needs a data path),
   the LAB's input total once with counts recomputed for the touched
-  ALMs, the control rules once if any edit is a register bel (16.4),
-  and the full verdict for an MLAB. For a pair with two registers that
+  ALMs, the control rules once if any edit is a register bel (the
+  edits name their bels, so one evaluation is exact here and owes
+  nothing to 16.4), and the full verdict for an MLAB. For a pair with two registers that
   is one ALM check, one total, and one control evaluation, where the
   frozen path makes four captures and eight evaluations. It is patch
   shape 9 in the module's list.
@@ -1522,56 +1523,74 @@ entry.
 **Cost.** Twenty lines inside one struct of upstream's file. It is
 upstreamable as it stands.
 
-### 16.4 The control rules are asked once per scan (Rust)
+### 16.4 A scan ends at a control refusal that holds everywhere (Rust)
 
 **Profile.** Inside scans the control rules cost 56 s: `rules::evaluate`
 41 s and the mirror's trial rows 15 s, asked for every bel that has
 passed the ALM rule and the input total.
 
-**Analysis.** The worker (`rules.rs`, `Worker::run`) walks the registers
-in physical order and gives each connected control signal the first
-resource of its kind's pool that holds the same signal or is empty; a
-second pass gives the signals held in those resources their data
-lines, kind by kind in a fixed order. The choice list depends on the
-kind alone, never on the register. First fit over one list succeeds
-exactly when the distinct signals of that kind do not outnumber the
-list, whatever the order they arrive in; order decides which resource
-a signal receives and which register a failure names, not whether the
-walk succeeds. The second pass is first fit again, over lists that
-depend on the kind alone, fed by the set of signals the first pass
-placed. So whether a LAB's control sets are legal is a function of the
-set of distinct signals per kind and of whether the clock is global,
-and not of the bels the registers sit in. For a scan this means the
-control verdict of a candidate register is the same at every bel of
-the LAB.
+**The first form of this design was wrong, and the record of it
+matters.** It argued that a candidate register's control verdict is
+the same at every bel of a LAB, so the rules could be asked once per
+scan, and it cited a property test that agreed. The probe agreed too,
+under both option sets and in verify mode. The full core's placement
+checksum did not: `0xea133043` where `0x2d44a02e` was required, and the
+unit stopped there as the plan says it must. The argument had taken
+the rules' two walks to be alike. They are not. The test had given
+each control kind nets of its own, so it could not meet the case; the
+scan oracle's LABs almost never meet it either, which a mutation test
+confirmed.
 
-**Design.** `evaluate_scan` evaluates the control rules at the first bel
-that passes the ALM rule and the input total, and keeps the answer for
-the scan. A refusal ends the scan at once with "no bel": no later bel
-can pass. An acceptance makes that bel the answer, and the scan ends
-there as it always does. The control rules therefore run at most once
-per scan, and a scan the controls refuse stops evaluating ALM rules
-for its remaining bels. `evaluate_edits` (16.1) asks them once per LAB
-by the same argument. The per-bel path and its verdicts, whose reasons
-do name a register, are untouched.
+**Analysis, corrected.** The worker (`rules.rs`, `Worker::run`) walks
+the registers in physical order twice. The first walk gives each
+connected control signal the first resource of its kind's pool that
+holds the same signal or is empty. The pools are disjoint between
+kinds (one clock, one sload, one sclr, two clears, three enables), so
+the walk fails exactly when a kind has more distinct signals than
+resources: a property of the set of registers, not of the bels they sit
+in. The second walk gives the signals held in those resources their
+data lines, again by first fit, but over lists that overlap between
+kinds in different orders (enables may take `Datain2`, `Datain3`,
+`Datain0`; clears `Datain3`, `Datain2`; sclr `Datain3`; the clock
+`Datain0`). First fit takes the first free line without looking ahead
+for a line that already carries the same signal. When one net serves
+two kinds, whether it finds its line depends on which resource the
+first walk put it in, which depends on the order the registers were
+met, which depends on the bel. A `DatainConflict` is therefore a
+refusal of this bel only.
 
-**Held by.** A property test states the analysis: over random LABs and
-candidate control sets, legal and illegal well represented, the status
-of the control verdict is equal at every free register bel. It was
-written and run while this design was drafted, before any of the
-design was built: 3,000 LABs with global clocks and sparse enables and
-clears, more than 300 legal and 300 illegal cases, more than 50,000
-bels compared, no difference. It is the guard of the shortcut: a rules revision that
-gives pools per half or per register fails it, and the scan returns to
-asking per bel. The scan oracle, unchanged, continues to hold every
-scan to the capture path bel by bel, and verify mode does so in the
-flow.
+**Design.** The scan classifies the control verdict
+(`ControlAnswer`): legal; refused here (`DatainConflict`), and the scan
+goes on to the next bel; refused everywhere (any first-walk reason:
+clock, sload, or sclr conflict, clear or enable capacity), and the scan
+ends with "no bel". Nothing is cached: a legal answer ends the scan
+anyway. The per-bel path and its verdicts are untouched.
 
-**Gain.** 56 s to an estimated 12 s, and less ALM-rule time through the
-early exit.
+**Held by.** Three things, the second and third added because the
+first form got past everything that existed.
+- A property test with a hostile generator, one small palette of nets
+  for every control kind and clocks that are not global, holds that a
+  first-walk refusal at one bel is a refusal at every bel, and must
+  itself find LABs where a register is legal at one bel and refused at
+  another, or it fails as too weak.
+- A second scan oracle over the same hostile LABs compares every scan
+  with the capture path bel by bel and must contain scans whose first
+  legal bel comes after a control refusal. A mutation check confirmed
+  it fails on the first form's early exit, which the main oracle did
+  not.
+- The core's placement checksum, which is what caught it.
 
-**Cost.** Thirty lines in the crate and one property test. No new
-surface.
+**Outcome (2026-09-21): no gain, reverted.** The corrected form holds
+the core's checksum and takes strict legalisation from 391.3 s to
+391.8 s: first-walk refusals are rare among the core's scans, and the
+common control refusals are the kind that must not be shortcut. The
+early exit is removed. What the unit leaves behind is worth more than
+it set out to save: the hostile scan oracle, the rule that a shortcut
+needs a hostile property test, a mutation check, and the core's
+checksums (CLAUDE.md), and the split of the scan's legality check that
+16.1 reuses. The 56 s remain the cost of asking the control rules per
+bel; reducing it means making `rules::evaluate` cheaper, not asking it
+less.
 
 ### 16.5 One lookup per wire in the arch, a flat index in router2 (C++)
 
@@ -1655,7 +1674,7 @@ every step.
 
 | Design | Side | Now | Estimated after | Surface | Risk |
 | --- | --- | ---: | ---: | --- | --- |
-| 16.4 control rules once per scan | Rust | 56 s | 12 s | none | low, behind a property test |
+| 16.4 a scan ends at a first-walk control refusal | Rust | 56 s | 56 s: built, no gain, reverted | none | the first form was wrong and the core caught it |
 | 16.6 constant-time scan bookkeeping | Rust | 38 s | 23 s | none | low |
 | 16.2 scan loop filters once | C++ | 100 s | 70 s | none | low |
 | 16.1 clusters through the resident session | both | 91 s | 20 s | one function, one FFI call | medium: moves an authority |

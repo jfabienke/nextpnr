@@ -352,6 +352,12 @@ full recomputation, and nothing may silently certify a partial result.
   `--telemetry` is the machine-readable form. `--report` stays byte-identical for the same run.
 - A test that creates cells or nets in the shared fixture context takes them down again; the
   fixture's teardown fails the test otherwise.
+- A shortcut in the evaluator (an answer taken without asking the rule) needs three guards, all
+  learned from unit 16.4, whose first form passed every test and the probe and was wrong: a
+  property test whose generator is hostile and proves it by finding the cases the naive claim
+  denies; a mutation check that the oracle fails on the wrong version; and the full core's
+  checksums, not only the probe's. Size and certify legaliser work on the core: the probe's
+  LABs are not crowded and its profile is a different program.
 - Untracked `AGENTS.md` and `mistral/tests/__pycache__/` are not part of the LAB work; leave them.
 
 ## Repository guidelines (from AGENTS.md)

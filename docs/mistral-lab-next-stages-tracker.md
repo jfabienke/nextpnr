@@ -3280,10 +3280,12 @@ strict legalisation 3%. Nothing about the legaliser can be sized from
 it.
 
 Six paths were judged worth work and are designed in section 16 of the
-design document; the control-rule design's premise, that a register's
+design document. The control-rule design's premise, that a register's
 control verdict is the same at every bel of a LAB, was checked by a
 property test before the design was written down (3,000 random LABs,
-more than 50,000 bels compared, no difference).
+more than 50,000 bels compared, no difference), and was wrong: the
+test's generator could not reach the case, and the full core disproved
+it when the unit was built (entry "Unit 16.4", below).
 
 ### 2026-09-21: The register capacity the rules admit: built, measured negative, removed
 
@@ -3339,6 +3341,63 @@ authorities, which is the fact the tile scan's shortcut and any later
 attempt rest on. The cost of scanning those bels is already mostly
 gone: the refined scan skips them in Rust without evaluating, and
 design 16.2 removes the loop's share.
+
+### 2026-09-21: Unit 16.4: the control rules in scans: a wrong premise caught by the core, and no gain from the right one
+
+The first of the six hot-path units (design 16.4), and a negative
+result with a lesson in it.
+
+**The first form was wrong.** The design argued that a candidate
+register's control verdict is the same at every bel of a LAB, so a scan
+could ask the control rules once, keep the answer, and end at a
+refusal. A property test written during design agreed (3,000 LABs,
+50,000 bels). Built, it passed the crate's 14 tests including the scan
+oracle, clippy, the probe's placement checksums under both option sets,
+and verify mode on the probe with zero mismatches over 7.9 million
+compared predictions. The full core's placement did not: checksum
+`0xea133043` where `0x2d44a02e` is required, with strict legalisation
+at 305 s. The unit stopped there.
+
+**Why.** `rules.rs` walks the registers twice. The first walk's pools
+are disjoint per kind, so it fails by the set of signals alone. The
+second walk gives data lines by first fit over lists that overlap
+between kinds in different orders (enables `Datain2, Datain3, Datain0`;
+clears `Datain3, Datain2`), taking the first free line without looking
+ahead for one that already carries the signal. A net that serves two
+kinds fits or not by which resource the first walk gave it, which
+follows the registers' physical order: a `DatainConflict` is a refusal
+of one bel, not of the LAB. The design's analysis took the two walks to
+be alike; the property test gave each kind nets of its own and could
+not meet the case; the probe has no such LABs.
+
+**What the wrong form got past, and what now stops it.** A mutation
+check put the wrong early exit back: the main scan oracle still passed.
+A second oracle, `scans_over_hostile_control_labs_equal_the_capture_path`
+(one palette of nets for every control kind, clocks that are not
+global, registers the control rules alone decide), compares every scan
+with the capture path bel by bel, asserts that it contains scans whose
+first legal bel follows a control refusal, and fails on the mutant in a
+fraction of a second.
+
+**The right form does not pay.** Ending a scan only at a first-walk
+refusal (clock, sload, sclr conflict, clear or enable capacity), which
+does hold at every bel, was built with a hostile property test that had
+to find position-dependent LABs to pass, and did.
+
+| Core placement, recipe options | Checksum | Legal answers | Strict legalisation | Placement |
+| --- | --- | ---: | ---: | ---: |
+| Before (`e0e1cdac`) | `0x2d44a02e` | 23,986,231 | 391.3 s | 529.6 s |
+| First form, wrong | `0xea133043` | - | 305.4 s | - |
+| Corrected form | `0x2d44a02e` | 23,986,231 | 391.8 s | 534.7 s |
+
+Inside the noise: first-walk refusals are rare among the core's scans,
+and the control refusals that are common are the kind that must not be
+shortcut. The early exit is reverted, as the plan rules. Kept: the
+hostile scan oracle, and the split of the scan's legality check into
+the ALM-and-total part and the control part, behaviour-neutral, which
+unit 16.1 reuses. The tree as committed was run on the core once more:
+checksum `0x2d44a02e`, 23,986,231 legal answers, strict legalisation
+386.2 s.
 
 ## Decision log
 
@@ -3444,6 +3503,7 @@ design 16.2 removes the loop's share.
 | 2026-09-21 | tile scan | Inside the scan, ask the predicates cheapest first, skip the second register bel of a half under a property test, keep MLABs on the cheap path, and ask the batch before the first bind after a refused tile | 55% of the bels a scan evaluates on the core are second-in-half register bels and 76% fail the ALM rule alone; the batch equals the live check, so its timing is a cost choice; core placement 530 s against 669 s, byte-identical, 0.68 of the legacy authority's 781 s |
 | 2026-09-21 | profile | Size further work from a whole-run Time Profiler recording of the core, never from the probe; six hot paths designed before any is built (design 16), ordered small Rust changes first, the cluster path next, upstream's files last | Strict legalisation 54% of the core's 715 s, router2 20%, annealer 11.5%, solver 10.5%; the probe is 47% annealer and 3% legaliser; estimates are for ordering only and each unit is measured by the same recording when it lands |
 | 2026-09-21 | register capacity | Hiding the never-legal register bels from the placer (`--usable-register-bels`) is a negative result; landed for the record, then removed; never size a change from one seed | Probe inside the seed spread; core: the legaliser slower on two seeds of three, router2 iterations up by half, and seed 3 unrouted at the cap where the default routes in 64 iterations |
+| 2026-09-21 | 16.4 | The scan does not shortcut the control rules: the first form (one verdict per LAB) was wrong and the sound form (end at a first-walk refusal) gains nothing; a shortcut in the evaluator now needs a hostile property test, a mutation check of the oracle, and the core's checksums | The core's checksum moved with the first form where the probe, its verify mode, and the scan oracle all passed; the corrected form holds identity at 391.8 s against 391.3 s; the new hostile scan oracle fails on the wrong form |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
