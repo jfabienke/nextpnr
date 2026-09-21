@@ -30,6 +30,7 @@
 #include "log.h"
 #include "monitor.h"
 #include "nextpnr.h"
+#include "pack_admission.h"
 #include "placement_coordinator.h"
 #include "placement_pool.h"
 #include "placement_reuse.h"
@@ -2689,6 +2690,35 @@ TEST_F(LabControlCaptureTest, AlmPairingFormsOnlyPairsTheAlmRuleAllows)
     EXPECT_TRUE(is_alm_pair_root(p5a));
     EXPECT_EQ(p5b->cluster, p5a->name);
     EXPECT_EQ(p5b->constr_z, 1);
+    EXPECT_EQ(r1.refused, 0u);
+
+    // Pack-time admission (design section 13): every authority admits the pair the search formed
+    // and refuses one forced together against the rule (nine inputs, none shared), with nothing
+    // bound and, in the comparing modes, no disagreement between the C++ rules and Rust.
+    for (auto mode : {LabLegalityMode::Legacy,
+#ifndef NO_RUST
+                      LabLegalityMode::Shadow, LabLegalityMode::Verify, LabLegalityMode::Rust
+#endif
+         }) {
+        ctx->args.lab_legality = mode;
+        PackAdmission gate(*ctx, /*assign_facts=*/true); // the pairing runs before assignArchInfo
+        ASSERT_TRUE(gate.available());
+        EXPECT_TRUE(gate.admits(p5a)) << lab_legality_mode_name(mode);
+        p5c->cluster = p5c->name;
+        q4a->cluster = p5c->name;
+        q4a->constr_z = 1;
+        p5c->constr_children.push_back(q4a);
+        EXPECT_FALSE(gate.admits(p5c)) << lab_legality_mode_name(mode);
+        p5c->constr_children.pop_back();
+        p5c->cluster = ClusterId();
+        q4a->cluster = ClusterId();
+        q4a->constr_z = 0;
+        EXPECT_EQ(gate.checked, 2u);
+        EXPECT_EQ(gate.refused, 1u);
+        EXPECT_EQ(gate.mismatches, 0u);
+        EXPECT_EQ(gate.errors, 0u);
+    }
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
 
     auto &lab0 = ctx->labs.at(0);
     std::vector<std::pair<CellInfo *, BelId>> placement;
@@ -2794,6 +2824,7 @@ TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
     EXPECT_EQ(r.packed, 4u);
     EXPECT_EQ(r.lut_full, 2u);
     EXPECT_EQ(r.control_conflict, 1u);
+    EXPECT_EQ(r.refused, 0u);
     EXPECT_EQ(r.onto_pair_root, 2u);
     EXPECT_EQ(r.onto_pair_child, 1u);
     EXPECT_EQ(r.onto_single, 1u);
@@ -2813,6 +2844,34 @@ TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
     EXPECT_EQ(fx->cluster, ClusterId());
     EXPECT_TRUE(registers_share_a_lab({fa, fb}));
     EXPECT_FALSE(registers_share_a_lab({fc, fd}));
+
+    // Pack-time admission (design section 13): every authority admits the clusters the packer
+    // formed, registers included, and refuses d's register forced into c's cluster, whose control
+    // sets cannot share a LAB; the refusal is the authority's, not the packer's filter.
+    for (auto mode : {LabLegalityMode::Legacy,
+#ifndef NO_RUST
+                      LabLegalityMode::Shadow, LabLegalityMode::Verify, LabLegalityMode::Rust
+#endif
+         }) {
+        ctx->args.lab_legality = mode;
+        PackAdmission gate(*ctx, /*assign_facts=*/false);
+        ASSERT_TRUE(gate.available());
+        EXPECT_TRUE(gate.admits(a)) << lab_legality_mode_name(mode); // a pair with a register on each half
+        EXPECT_TRUE(gate.admits(c)) << lab_legality_mode_name(mode); // a pair with one register
+        EXPECT_TRUE(gate.admits(s)) << lab_legality_mode_name(mode); // a single LUT with its register
+        fd->cluster = c->name;
+        fd->constr_z = 4;
+        c->constr_children.push_back(fd);
+        EXPECT_FALSE(gate.admits(c)) << lab_legality_mode_name(mode);
+        c->constr_children.pop_back();
+        fd->cluster = ClusterId();
+        fd->constr_z = 0;
+        EXPECT_EQ(gate.checked, 4u);
+        EXPECT_EQ(gate.refused, 1u);
+        EXPECT_EQ(gate.mismatches, 0u);
+        EXPECT_EQ(gate.errors, 0u);
+    }
+    ctx->args.lab_legality = LabLegalityMode::Legacy;
 
     auto &lab0 = ctx->labs.at(0);
     std::vector<std::pair<CellInfo *, BelId>> placement;

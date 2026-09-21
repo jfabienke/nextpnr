@@ -18,6 +18,7 @@
  */
 
 #include "register_packing.h"
+#include "pack_admission.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -132,6 +133,9 @@ RegisterPackingReport pack_registers(Context &ctx)
               [](const CellInfo *a, const CellInfo *b) { return a->name.index < b->name.index; });
     r.registers = ffs.size();
     std::unordered_set<const CellInfo *> slot_used; // LUTs with their one register slot taken
+    // The control model below is the search's filter; what admits a register into a cluster is the
+    // authority the placer will ask, on a clean ALM, before it is committed (design section 13).
+    PackAdmission gate(ctx, /*assign_facts=*/false);
     for (CellInfo *ff : ffs) {
         const NetInfo *d = ff->getPort(id_DATAIN);
         if (d == nullptr || d->driver.cell == nullptr || d->driver.port != id_Q || !is_plain_lut(d->driver.cell->type))
@@ -190,7 +194,9 @@ RegisterPackingReport pack_registers(Context &ctx)
             ++r.control_conflict;
             continue;
         }
-        slot_used.insert(lut);
+        const ClusterId root_cluster = root->cluster, ff_cluster = ff->cluster;
+        const int root_z = root->constr_z, ff_x = ff->constr_x, ff_y = ff->constr_y, ff_z = ff->constr_z;
+        const bool root_abs_z = root->constr_abs_z, ff_abs_z = ff->constr_abs_z;
         if (root->cluster == ClusterId()) {
             root->cluster = root->name;
             root->constr_abs_z = false;
@@ -202,6 +208,20 @@ RegisterPackingReport pack_registers(Context &ctx)
         ff->constr_abs_z = false;
         ff->constr_z = base;
         root->constr_children.push_back(ff);
+        if (!gate.admits(root)) {
+            root->constr_children.pop_back();
+            root->cluster = root_cluster;
+            root->constr_z = root_z;
+            root->constr_abs_z = root_abs_z;
+            ff->cluster = ff_cluster;
+            ff->constr_x = ff_x;
+            ff->constr_y = ff_y;
+            ff->constr_z = ff_z;
+            ff->constr_abs_z = ff_abs_z;
+            ++r.refused;
+            continue;
+        }
+        slot_used.insert(lut);
         ++r.packed;
         if (kind == Single)
             ++r.onto_single;
@@ -210,6 +230,7 @@ RegisterPackingReport pack_registers(Context &ctx)
         else
             ++r.onto_pair_child;
     }
+    report_pack_admission(ctx, gate, "register-packing");
     return r;
 }
 

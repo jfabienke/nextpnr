@@ -53,6 +53,7 @@ set(SOURCES
     route_reuse.cc
     alm_pairing.cc
     register_packing.cc
+    pack_admission.cc
     telemetry.cc
     monitor.cc
     reuse_plan.h

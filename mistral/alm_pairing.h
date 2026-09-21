@@ -33,6 +33,7 @@ struct AlmPairingReport
     uint64_t by_any = 0;      // pairs with no relation (level 3)
     uint64_t unpaired = 0;    // eligible LUTs left single
     uint64_t shared_nets = 0; // input nets shared inside pairs, summed
+    uint64_t refused = 0;     // pairs the search chose and the LAB legality authority refused (design 13)
 };
 
 // Declared input count of a pairable LUT type, or -1 when the type never pairs.

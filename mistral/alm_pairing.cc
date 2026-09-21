@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: ISC */
 #include "alm_pairing.h"
+#include "pack_admission.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -99,12 +100,33 @@ AlmPairingReport pair_alm_luts(Context &ctx, int level)
         for (const NetInfo *net : input_nets(ci))
             users[net].push_back(ci);
     std::unordered_set<const CellInfo *> paired;
+    // The rule above is the search's filter; what admits a pair is the authority the placer will
+    // ask, on a clean ALM, before the pair is committed (design section 13).
+    PackAdmission gate(ctx, /*assign_facts=*/true);
 
-    auto pair_up = [&](CellInfo *a, CellInfo *b, uint64_t &bucket) {
+    struct Constraint
+    {
+        ClusterId cluster;
+        int x, y, z;
+        bool abs_z;
+    };
+    auto constraint_of = [](const CellInfo *c) {
+        return Constraint{c->cluster, c->constr_x, c->constr_y, c->constr_z, c->constr_abs_z};
+    };
+    auto restore = [](CellInfo *c, const Constraint &was) {
+        c->cluster = was.cluster;
+        c->constr_x = was.x;
+        c->constr_y = was.y;
+        c->constr_z = was.z;
+        c->constr_abs_z = was.abs_z;
+    };
+
+    auto pair_up = [&](CellInfo *a, CellInfo *b, uint64_t &bucket) -> bool {
         CellInfo *root = a, *child = b;
         if (alm_pair_lut_inputs(b->type) > alm_pair_lut_inputs(a->type) ||
             (alm_pair_lut_inputs(b->type) == alm_pair_lut_inputs(a->type) && b->name.index < a->name.index))
             std::swap(root, child);
+        const Constraint root_was = constraint_of(root), child_was = constraint_of(child);
         root->cluster = root->name;
         root->constr_abs_z = false;
         root->constr_z = 0;
@@ -114,11 +136,19 @@ AlmPairingReport pair_alm_luts(Context &ctx, int level)
         child->constr_z = 1;
         child->constr_abs_z = false;
         root->constr_children.push_back(child);
+        if (!gate.admits(root)) {
+            root->constr_children.pop_back();
+            restore(root, root_was);
+            restore(child, child_was);
+            report.refused++;
+            return false;
+        }
         paired.insert(a);
         paired.insert(b);
         report.pairs++;
         bucket++;
         report.shared_nets += uint64_t(shared_inputs(a, b));
+        return true;
     };
 
     // Level 1: partners that share input nets, most shared first, then larger partners first.
@@ -157,10 +187,8 @@ AlmPairingReport pair_alm_luts(Context &ctx, int level)
             std::sort(linked.begin(), linked.end(),
                       [](const CellInfo *a, const CellInfo *b) { return a->name.index < b->name.index; });
             for (CellInfo *other : linked)
-                if (alm_pair_compatible(ci, other)) {
-                    pair_up(ci, other, report.by_link);
+                if (alm_pair_compatible(ci, other) && pair_up(ci, other, report.by_link))
                     break;
-                }
         }
     }
     // Level 3: anything compatible, in order.
@@ -173,14 +201,14 @@ AlmPairingReport pair_alm_luts(Context &ctx, int level)
             if (paired.count(left[i]))
                 continue;
             for (size_t j = i + 1; j < left.size(); j++) {
-                if (!paired.count(left[j]) && alm_pair_compatible(left[i], left[j])) {
-                    pair_up(left[i], left[j], report.by_any);
+                if (!paired.count(left[j]) && alm_pair_compatible(left[i], left[j]) &&
+                    pair_up(left[i], left[j], report.by_any))
                     break;
-                }
             }
         }
     }
     report.unpaired = report.eligible - 2 * report.pairs;
+    report_pack_admission(ctx, gate, "alm-pairing");
     return report;
 }
 

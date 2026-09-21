@@ -52,6 +52,7 @@ struct RegisterPackingReport
     uint64_t lut_clustered = 0;    // the LUT sits in a chain or another cluster
     uint64_t ff_constrained = 0;   // the register already has a cluster or children
     uint64_t control_conflict = 0; // its control set cannot share a LAB with the cluster's other registers
+    uint64_t refused = 0;          // the LAB legality authority refused the cluster with it (design 13)
 };
 
 // A plain-LUT root whose children are a pair partner at relative z 1 and/or registers at 2 or 4.
