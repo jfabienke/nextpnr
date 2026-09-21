@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `ad477af8` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined)
+- Commit: `97ba4bb1` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled and six hot paths designed, design 16)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -381,6 +381,9 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `ef0f3460` | The tile scan designed (section 14), measured, and recorded; the core's verify-mode run pending |
 | `e0e1cdac` | The tile scan refined: predicates cheapest first, the second register bel of a half skipped under a property test, the batch asked first after a refused tile; core placement 530 s against 781 s legacy, byte-identical |
 | `ad477af8` | The refinement and the register capacity finding recorded |
+| `d15f93b1` | The core flow profiled with the Time Profiler, six hot paths designed (design 16), the tile scan certified on the core in verify mode |
+| `5407ae7b` | `--usable-register-bels` landed for the record: negative on the core (slower on two seeds of three, one seed unrouted) |
+| `97ba4bb1` | The option removed; a test keeps the fact that the second register bel of every half refuses a register |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
