@@ -3499,6 +3499,33 @@ the session that already holds the LAB.
 | Probe, recipe, strict legalisation | 0.64 s against 1.44 s with `--no-lab-tile-scan` |
 | Core placement, recipe options | Checksum `0x2d44a02e`, 23,986,231 legal answers, 167,516,520 scans, and the transaction counters 19,561,195 / 668,514 / 18,892,681: all unchanged. 19,528,999 candidates (99.8%) answered by the session over 56,087,279 edited bels, the rest carry chains on the frozen path. Strict legalisation 282.4 s against 370 s with units 16.6 and 16.2, HeAP 342.4 s, placement 425.7 s against 503 s; the legacy authority takes 781 s |
 
+### 2026-09-21: Unit 16.3: the equation system appending then merging: bit-identical, no gain, not kept
+
+The fifth hot-path unit (design 16.3), in upstream's `EquationSystem`.
+The profile put 57 s of the solver phase into building the system
+(`build_solve_direction` 34 s with `add_coeff` inlined, a vector insert
+17 s) against 12 s in Eigen's conjugate gradient, and the design blamed
+`add_coeff`'s binary search and shifting insert. The unit appended
+contributions and merged each column once in `solve` by a stable sort
+and a fold in arrival order.
+
+| Check | Result |
+| --- | --- |
+| Probe placement, default, recipe, and legacy | Checksums `0x7f9f8105`, `0xa99e0f68`, `0x7f9f8105`: the matrix is bit-identical, as the design argued |
+| Probe HeAP time | 6.0 s against 5.8 s and 8.2 s against 7.5 s: slower, if anything |
+| Core placement, recipe options | Checksum `0x2d44a02e`; HeAP 342.40 s against 342.41 s; strict legalisation 287.1 s against 282.4 s and the remainder 55.3 s against 60.0 s, which is noise moving between the two |
+
+Not kept; `placer_heap.cc` is as it was. The argument for identity held
+and the argument for speed did not. The original keeps each column small
+by merging a contribution the moment it arrives, so its search is over
+a handful of entries and its insert shifts almost nothing; appending
+holds every duplicate until the end, and the sort of those larger
+columns (with `std::stable_sort`'s buffer per column) costs what the
+searches saved. The 34 s of `build_solve_direction` are the walk over
+the nets and the arithmetic of the bound-to-bound model, not the
+container. Making that cheaper is a different unit, in upstream's
+algorithm and not in its data structure, and it is not started.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3606,6 +3633,7 @@ the session that already holds the LAB.
 | 2026-09-21 | 16.4 | The scan does not shortcut the control rules: the first form (one verdict per LAB) was wrong and the sound form (end at a first-walk refusal) gains nothing; a shortcut in the evaluator now needs a hostile property test, a mutation check of the oracle, and the core's checksums | The core's checksum moved with the first form where the probe, its verify mode, and the scan oracle all passed; the corrected form holds identity at 391.8 s against 391.3 s; the new hostile scan oracle fails on the wrong form |
 | 2026-09-21 | 16.6, 16.2 | Keep both at their measured size, two core runs a side: the occupancy mask and the candidate beside the trials (12 s), the scan loop's flags (7 s); estimates from a profile's self time overstate what a change can recover | Identity on the probe in three modes and on the core; strict legalisation 390 s to 378 s to 370 s; 16.2 was estimated at 25 to 35 s |
 | 2026-09-21 | 16.1 | In the Rust legality mode a cluster candidate is answered by the resident session and that answer decides; the detached C++ evaluation of frozen records stays the authority in legacy, the harness in shadow and verify, and the path for what the session declines; one crate function and one FFI call of new surface | The frozen path captured a whole LAB per edited bel and evaluated it twice, 91 s of the core's legaliser, with the C++ verdict deciding even after the promotion; core placement 426 s against 503 s, byte-identical with the same candidates accepted and rejected; verify mode zero mismatches on the probe over 250,504 candidates |
+| 2026-09-21 | 16.3 | The equation system keeps upstream's sorted insert; append-and-merge is bit-identical and no faster | Core HeAP 342.40 s against 342.41 s with the checksum unchanged; the columns are small because contributions merge on arrival, which the design's reading of the profile missed |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

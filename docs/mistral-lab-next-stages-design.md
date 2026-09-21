@@ -1534,6 +1534,14 @@ entry.
 **Cost.** Twenty lines inside one struct of upstream's file. It is
 upstreamable as it stands.
 
+**Outcome (2026-09-21): bit-identical, no gain, not kept.** The identity
+argument held on the probe and the core. The speed argument did not:
+core HeAP 342.40 s against 342.41 s. Upstream's columns are small
+because a contribution merges the moment it arrives, so the search is
+short and the insert shifts little; appending defers that and pays it
+back in the sort. What is expensive in `build_solve_direction` is the
+walk over the nets and the bound-to-bound arithmetic, not the container.
+
 ### 16.4 A scan ends at a control refusal that holds everywhere (Rust)
 
 **Profile.** Inside scans the control rules cost 56 s: `rules::evaluate`
@@ -1692,7 +1700,7 @@ strict legalisation 378 s against 390 s, about 12 s.
 | 16.6 constant-time scan bookkeeping | Rust | 38 s | landed: 12 s gained | none | low |
 | 16.2 scan loop filters once | C++ | 100 s | landed: 7 s gained | none | low |
 | 16.1 clusters through the resident session | both | 91 s | landed: 88 s gained | one function, one FFI call | medium: moves an authority |
-| 16.3 equation system append and merge | C++, upstream's file | 57 s | 22 s | none | low, bit-identical by argument and by checksum |
+| 16.3 equation system append and merge | C++, upstream's file | 57 s | 57 s: bit-identical, no gain, not kept | none | - |
 | 16.5 one lookup per wire | C++, arch and upstream's router | 33 s | 10 s | none | medium: binding API overrides |
 
 Together an estimated 200 s of the core flow's 715 s. The estimates are
