@@ -3332,7 +3332,7 @@ true capacity makes the spreader move registers out before the
 legaliser has a say, which costs wires (6% more on seed 3) where the
 core has none to spare.
 
-The option is removed in the commit after this one. What stays: the
+The option landed in `5407ae7b` and is removed in the commit after it. What stays: the
 finding, the design section with its outcome, and a test that the
 second register bel of every half refuses a register under both
 authorities, which is the fact the tile scan's shortcut and any later

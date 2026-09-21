@@ -75,11 +75,7 @@ struct ArchArgs
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
     bool lab_tile_scan = true; // design 14: the legaliser's tile scan as one call in the Rust legality modes
-    // Design 15: offer the placer only the register bels the ALM rule admits (the second of each
-    // half is refused for any register): twenty per LAB in the bucket, the spreader's capacity, the
-    // legaliser's scans, and the annealer's proposals. Changes the placement; off by default.
-    bool usable_register_bels = false;
-    float row_cost = 0.0f; // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
+    float row_cost = 0.0f;     // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
     SwapSeamMode sa_seam = SwapSeamMode::On; // Stage 5 (1c): annealer swap seam; on by default since 2026-09-19
     int sa_batch = 0;                        // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;         // Stage 5 (2b): stop route() after preparation, before the router
@@ -644,8 +640,6 @@ struct Arch : BaseArch<ArchRanges>
     bool isValidBelForCellType(IdString cell_type, BelId bel) const override;
     BelBucketId getBelBucketForCellType(IdString cell_type) const override;
     BelBucketId getBelBucketForBel(BelId bel) const override;
-    // The second register bel of an ALM half, which the ALM rule refuses for any register.
-    bool is_unusable_register_bel(BelId bel) const;
 
     // -------------------------------------------------
     // Expanding bounding box seems to make thing worse for CycloneV

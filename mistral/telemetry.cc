@@ -71,7 +71,6 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"router2_reroute", a.router2_reroute},
             {"router2_reroute_contested", a.router2_reroute_contested},
             {"lab_tile_scan", a.lab_tile_scan},
-            {"usable_register_bels", a.usable_register_bels},
             {"reuse_routes_history", double(a.reuse_routes_history)},
     };
     Json::object legality{
