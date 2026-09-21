@@ -1188,3 +1188,45 @@ same either way.
 The monitor does not replace the telemetry file. It shows this run;
 the file, one per run, is the record across runs, and a recent-runs
 view would read the files, not the process.
+
+## 13. Pack-time admission by the placer's authority
+
+Two packers form clusters the placer must later put on one ALM: the
+ALM pairing of unit 6b and the register packing of unit 6g. Each
+decides with a rule of its own. The pairing rule is a structural
+restatement of the checker's input rule (three exclusive lines per
+half, two shared), kept at least as strict as the checker by a unit
+test; the register rule asks the C++ twin of the control model. A
+cluster that the packer admits and the placer's authority refuses is
+the worst failure the flow has: it is rejected at every ALM of the
+device until HeAP's timeout, which is how unit 6g found its
+control-set conflict. With the Rust evaluator promoted to the default
+authority the split is also one of implementations: the packer asks
+C++ and the placer asks Rust.
+
+The packers' rules stay, as what they are: search filters. The
+pairing search evaluates its rule for every candidate on every shared
+net, millions of times on the full core, and the rule is a few
+integer operations; routing that through an evaluator call would cost
+more than the packing it guards. What changes is who admits the
+result. Before a packer commits a cluster it asks the question the
+placer will ask: is this cluster legal on a clean ALM under the run's
+LAB legality authority? The members are laid on the first clean LAB
+through the same cluster placement the placer uses and evaluated
+through the seams the placer's paths already have, the bel overlay
+for the C++ rules and the overlay capture for the Rust evaluator,
+with nothing bound and nothing new on the Rust side. In the shadow and
+verify modes both answer and are compared, as everywhere else. A
+refusal undoes the cluster, is counted in the packer's report, and
+the cells go on unclustered, which is always placeable.
+
+The cost is one evaluation per committed cluster, some twenty
+thousand on the full core, against millions for the search. The
+invariant the unit test asserted about two functions becomes a
+property of every packed design: no cluster leaves the packer that
+the placer's authority has not admitted. The exit criterion is that
+the admission never fires on the recorded designs, so the pairings,
+the register packings, and the results after them are byte-identical
+to those before it; if a future rules revision makes the two
+disagree, the run says so in its pack report instead of in a
+placement that never finishes.

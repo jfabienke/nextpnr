@@ -236,6 +236,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   spreader weigh a cluster by the members of the pass's bucket only. Off by default. On the core it packs 5,360 of 9,632 LUT-driven registers; the router plateau is 15% worse
   under the delay cost and a third of 6f's unit-cost plateau (1,964 against 5,694) under
   `--router2-unit-cost`.
+- Pack-time admission (2026-09-21, design section 13): before the pairing (6b) or the register
+  packing (6g) commits a cluster, `mistral/pack_admission.*` lays it on a clean ALM through
+  `alm_cluster_placement` and asks the run's LAB legality authority, through the placer's own
+  seams (the bel overlay for the C++ rules, the overlay capture for Rust, both compared in
+  shadow and verify); a refusal undoes the cluster and is counted (`Pack admission <packer>:
+  authority=... checked=... refused=... mismatches=... errors=...`). The packers' own rules stay
+  as search filters: the pairing search evaluates its rule millions of times on the core, the
+  admission once per committed cluster. Zero refusals and zero verify mismatches over the core's
+  20,541 clusters; packing and results byte-identical. No new Rust surface.
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

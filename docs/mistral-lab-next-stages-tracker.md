@@ -3069,6 +3069,37 @@ byte-identical and is owner-bound past two workers. Each stays opt-in.
 | `mistral/tests/gate.sh` on the new default path | Passed in 44 s, probe identical |
 | Full core | Not rerun: the parity entry records the Rust authority byte-identical to legacy on the core at 1,065 s placement against 750 s (1.4 times), verify harness zero mismatches over 5.36 billion queries; that cost is now the default's |
 
+### 2026-09-21: Pack-time admission by the placer's authority
+
+An evaluation of further Rust port targets found two, both pack-time
+rules: the pairing rule of 6b, a third statement of the ALM input rule
+kept as strict as the checker only by a unit test, and the register
+rule of 6g, which asks the C++ twin of the control model while the
+placer, since the promotion, asks Rust. The design (section 13) did not
+port either. Reading the code showed the pairing rule is algebraically
+the checker's input rule on plain LUTs and that the search evaluates it
+for every candidate on every shared net, millions of times on the core;
+an evaluator call there would cost more than the packing it guards.
+What landed is an admission: before either packer commits a cluster,
+`mistral/pack_admission.*` lays it on the first clean, non-MLAB LAB
+through `alm_cluster_placement` and asks the run's LAB legality
+authority, the bel overlay for the C++ rules and the overlay capture
+with `npnr_mistral_eval_lab_v2` for Rust, both compared in shadow and
+verify (a verify mismatch is an error). Nothing is bound; a refusal
+undoes the cluster, is counted in the packer's report (`refused`), and
+the cells go on unclustered. The pairing's gate assigns the two LUTs'
+comb facts itself, since the pairing runs before `assignArchInfo`. No
+new Rust surface.
+
+| Check | Result |
+| --- | --- |
+| Probe, `--alm-pairing 1 --register-packing`, default (Rust) authority, against the binary before the change | Checksums `0x8d5fc97c` / `0x956e97b5` and report hash `5c670e0139b66090…` identical; `Pack admission alm-pairing: authority=rust checked=4108 refused=0 mismatches=0 errors=0`, `register-packing: checked=817 refused=0` |
+| Core, `--pack-only` with both packers, Rust authority | 15,181 pairs and 5,360 packed registers as before; packed JSON identical to the baseline's in all 1,953,267 lines but the `creator` version; `checked=15181 refused=0` and `checked=5360 refused=0` |
+| Core, `--pack-only`, `--lab-legality verify` | The C++ rules and the Rust evaluator agree on all 20,541 clusters: `mismatches=0 errors=0`; packed JSON equal to the Rust run's |
+| Core, `--pack-only`, `--lab-legality legacy` | Same counts, packed JSON equal |
+| Unit tests | Both packers' tests assert, in legacy, shadow, verify, and Rust modes, that the gate admits the clusters the packers form (a pair, a pair with a register on each half, a single LUT with its register) and refuses a pair forced against the input rule and a register forced against the control rules, with zero mismatches and the cluster left as it was |
+| gtest, gate | 64 pass in `build/rust-enabled`, 52 in `build`; `mistral/tests/gate.sh` passed, default-path probe identity unchanged |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3167,6 +3198,7 @@ byte-identical and is owner-bound past two workers. Each stays opt-in.
 | 2026-09-19 | monitor | Add the live dashboard as Rust surface at the user's direction: a pure renderer crate and a monitor module in the existing FFI crate (a second static library would carry a second Rust runtime); the session owns the terminal, keeps the `--log` stream, and reads only atomics and the phase clock off the owner thread | Probe byte-identical with and without it; the resident totals of a Rust-mode run equal the run without it; 96 frames over the 24 s probe |
 | 2026-09-19 | promotion | The complete LAB evaluator defaults to the Rust authority in Rust builds, with the annealer on the overlay seam; legacy stays the fallback in every build and the default where Rust is not built; the control-plan authority stays legacy because the complete evaluator owns the control check | User's direction on the recorded evidence: byte-identical on the probe and the core, verify harness zero mismatches on both, probe wall at parity (29.4 s against 30.0 s), core placement 1.4 times legacy; the gate's probe identity unchanged on the new default path |
 | 2026-09-19 | concurrency | Enable no concurrency path with the promotion: `--threads` for placement, `--placer-lookahead`, and `--sa-batch` stay off | Threads change nothing on the default path (router2 partitions on its own; placement has no parallel section); the lookahead is byte-identical, 10% slower, 1.8 times the CPU; the batched annealer is not byte-identical and owner-bound past two workers |
+| 2026-09-21 | admission | The pack-time rules are not ported: they stay as search filters, and the placer's LAB legality authority admits each cluster before the packer commits it, through the overlay seams, with no new Rust surface | The pairing rule equals the checker's input rule on plain LUTs and runs millions of times per pack; one admission per committed cluster costs 20,541 evaluations on the core; zero refusals, zero verify mismatches, packing and results byte-identical |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
