@@ -3616,6 +3616,83 @@ What the profile names next, none of it started:
   and the arithmetic and not the container.
 - The annealer, 80 s with nothing above 1.5% of the run.
 
+### 2026-09-21: CPU Counters run of the full core flow: where the pipeline stalls
+
+The Time Profiler runs say where the time goes and not why. This run
+records the core flow (recipe, seed 1, tree at `a1ac20e9`) under
+Instruments' CPU Counters template, which on Apple silicon reports per
+millisecond the share of the core's pipeline capacity that retired work
+(useful), that the back end could not take (processing: execution limits
+and, in pointer-chasing code, above all waiting for data), that the
+front end could not deliver (instruction fetch, branch targets), and
+that was discarded after a mispredicted branch. The same trace carries a
+1 ms time profile; `build/stage6-fullcore/profile/bottleneck.py` joins
+the two by millisecond (`record_counters.sh` beside it records, exports,
+and joins; report in `counters_bottlenecks.txt`). Result unchanged:
+`0xe0b15557` / `0x681553a4`. M1 Ultra: 128-byte lines, 128 KB of L1D,
+12 MB of L2 per four cores, 16 KB pages. The verify run of the entry
+above shared the machine on another core.
+
+| Phase | CPU | Useful | Back end | Front end | Discarded |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HeAP strict legalisation | 288.0 s | 55.6% | 13.3% (38 s) | 15.8% (46 s) | 15.3% (44 s) |
+| router2 | 117.8 s | 23.0% | 57.2% (67 s) | 1.6% | 18.2% (21 s) |
+| Annealer refinement | 77.1 s | 20.6% | 56.9% (44 s) | 5.3% | 17.2% (13 s) |
+| HeAP solver | 72.9 s | 39.5% | 31.0% (23 s) | 5.4% | 24.1% (18 s) |
+| HeAP cut spreading | 10.8 s | 20.3% | 37.5% | 9.8% | 32.4% |
+| Whole run | 580.5 s | 40.9% | 31.7% (184 s) | 9.9% (57 s) | 17.5% (102 s) |
+
+What it resolves and what it does not: a millisecond holds thousands of
+iterations of a tight loop, so every function of one loop gets the
+loop's shares (the legaliser's functions all read 54 to 56% useful, the
+router's all 23 to 25%). Phases, and stretches longer than a
+millisecond, are resolved: inside the solver, system building is 32%
+useful with 28% discarded while the coefficient insert is 57% useful,
+and the timing analyser's walks inside routing are 82% back end. The
+back-end share does not separate a cache miss from a busy execution
+port; that needs a counters template in manual mode (L1D, L2, and TLB
+miss events with event-triggered samples), which has to be saved once
+from the Instruments window and cannot be made from the command line.
+
+Findings:
+
+- Strict legalisation, half the run, is not waiting for data: 13% back
+  end. One LAB of the resident session is about 6 KB (3.8 KB of facts,
+  2.2 KB of control mirror) and a scan evaluates some thirty bels
+  against it, so the first touch is paid once per scan and the
+  neighbourhood in play fits in L2. A better layout there has a ceiling
+  of 38 s and a realistic yield of a few. Its losses are the front end
+  (46 s: many small functions and an FFI crossing per scan) and
+  mispredicted branches (44 s: the rules are chains of data-dependent
+  early exits). The levers that fit are rules evaluated as masks and
+  tables instead of branches, and fewer calls per bel; not data layout.
+- router2 and the annealer are waiting for data: 57% back end each, 111 s
+  between them, and a fifth to a quarter useful. The router touches, per
+  neighbour it looks at, the arch's wire record through a hash lookup
+  (`dict<WireId, WireInfo>`: 2.74 million entries of about 120 bytes,
+  330 MB, each with three heap vectors behind it), its own
+  `dict<WireId, int>` (33 MB of entries and a bucket table beside
+  them), `flat_wires` (52-byte records, about 140 MB), and the net's own
+  wire dict: five dependent reads across three tables, all far past L2
+  and past what a second-level TLB of a few thousand 16 KB pages maps.
+  Sizes are from the declarations, not measured. Its priority queue is a
+  binary heap of 20-byte entries, 33.5 s of self time.
+- The solver is mixed: 23 s back end and 18 s discarded. System building
+  reads a cell's position through `cell_locs.at(cell->name)`, a hash
+  lookup six to eight times per port per net, which is what unit 16.3
+  found when the container turned out not to be the cost.
+
+Candidates, by the measured ceiling of their phase, none started and
+none designed:
+
+| Candidate | Phase, stalled | Shape |
+| --- | --- | --- |
+| The router's per-wire state in one compact record per wire, in creation order (flags, bound net, bound source, congestion, the visit fields), and the adjacency as one flat array with offsets | router2, 67 s | The arch's, plus an index the router can share; unit 16.5's second step showed the index must keep the fabric's locality |
+| A four-way heap for the router's queue: four 20-byte children on one 128-byte line and half the depth | router2, part of the 33.5 s | Upstream's file; pops in the same order wherever scores do not tie exactly, which the routed checksum decides |
+| The annealer's per-move reads: `dict<IdString, ArchPinInfo>` by port name, the timing analyser's `dict<CellPortKey, PerPort>`, net bounds through `CellInfo` records spread over the heap | Annealer, 44 s | Dense per-cell and per-port arrays beside the dicts; bit-identical by construction |
+| Cell positions in a dense array indexed per cell for the solver's system building | Solver, 23 s | Upstream's file; the same arithmetic in the same order |
+| A free-bel mask per tile kept on bind and unbind, read once per tile visit instead of sixty 88-byte bel records for one pointer each | Strict legalisation, a share of 38 s | Small, and the measurement says the phase is not memory bound, so expect little |
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
