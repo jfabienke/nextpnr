@@ -1560,6 +1560,11 @@ class HeAPPlacer
         // Batch answer for the scan of one tile (PlacerHeapCfg::scan_tile_first_legal).
         std::vector<BelId> scan_bels;
         std::vector<size_t> scan_positions;
+        // What the batch's look-ahead found out about each bel of the tile from its start onward
+        // (1: passes the filters, 2: available), so the scan reads it instead of asking again. The
+        // filters are pure, and availability changes during a scan only through the scan's own
+        // binds, each of which is undone before the scan continues or ends it.
+        std::vector<uint8_t> scan_flags;
         // Whether the previous tile scan found its first available bel refused. The batch answers
         // what the live check would, so when it is asked changes cost and never the result: after
         // a refused tile the next is likely crowded too, and the batch is asked before the first
@@ -1586,23 +1591,32 @@ class HeAPPlacer
             // one it names is certified by the ordinary check, and the ones after it are unknown.
             bool refused_live = false, scan_asked = false, scan_valid = false;
             size_t scan_from = 0, scan_named = 0; // positions in tile_bels; scan_named past the end: none
+            size_t flags_from = tile_bels.size(); // scan_flags holds the positions from here on
             for (size_t pos = 0; pos < tile_bels.size(); ++pos) {
                 const BelId sz = tile_bels[pos];
-                if (!passes(sz))
+                const bool known = pos >= flags_from;
+                if (known ? (scan_flags[pos] & 1) == 0 : !passes(sz))
                     continue;
                 // Prefer available bels; unless we are dealing with a wide radius (e.g. difficult control sets)
                 // or occasionally trigger a tiebreaker
-                const bool avail = ctx->checkBelAvail(sz);
+                const bool avail = known ? (scan_flags[pos] & 2) != 0 : ctx->checkBelAvail(sz);
                 if (avail || (ctrl_set_group == -1 && (radius > ripup_radius || ctx->rng(20000) < 10))) {
                     if (avail && (refused_live || scan_prev_refused) && !scan_asked && p->cfg.scan_tile_first_legal) {
                         scan_asked = true;
                         scan_bels.clear();
                         scan_positions.clear();
-                        for (size_t q = pos; q < tile_bels.size(); ++q)
-                            if (passes(tile_bels[q]) && ctx->checkBelAvail(tile_bels[q])) {
+                        scan_flags.assign(tile_bels.size(), 0);
+                        flags_from = pos;
+                        for (size_t q = pos; q < tile_bels.size(); ++q) {
+                            if (!passes(tile_bels[q]))
+                                continue;
+                            scan_flags[q] = 1;
+                            if (ctx->checkBelAvail(tile_bels[q])) {
+                                scan_flags[q] = 3;
                                 scan_bels.push_back(tile_bels[q]);
                                 scan_positions.push_back(q);
                             }
+                        }
                         int first = -1;
                         if (scan_bels.size() >= 2 && p->cfg.scan_tile_first_legal(ctx, ci, scan_bels, first)) {
                             scan_valid = true;
