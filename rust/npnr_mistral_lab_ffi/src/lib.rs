@@ -834,6 +834,83 @@ pub unsafe extern "C" fn npnr_mistral_resident_v2_scan(
     status
 }
 
+/// A cluster candidate as one call: the patches bring the LAB up to date as in
+/// `npnr_mistral_resident_v2_evaluate`; the `edits` of this LAB (the facts of
+/// the cell each places, or empty facts where one is displaced; `commit` 0) are
+/// held in view together and `legal` receives 1 when every edited bel would be
+/// legal with all of them in place, else 0. Nothing of the edits is applied. A
+/// malformed call, or more edits than the places in view, writes 0 and returns
+/// `CALL_BAD_SNAPSHOT` with the LAB untouched, so the caller asks another way.
+///
+/// # Safety
+/// `handle` is a live resident handle used by its owner thread only; `patches`
+/// holds `patch_count` records and `edits` holds `edit_count`; `legal` is
+/// exclusive writable storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn npnr_mistral_resident_v2_edits(
+    handle: *mut NpnrLabResidentV2,
+    lab: u32,
+    patches: *const BelPatchV2,
+    patch_count: u32,
+    edits: *const BelPatchV2,
+    edit_count: u32,
+    flags: u32,
+    legal: *mut u32,
+) -> u32 {
+    let resident = match resident_mut(handle) {
+        Ok(resident) => resident,
+        Err(status) => return status,
+    };
+    if patch_count as usize > LAB_BELS || edit_count as usize > LAB_BELS {
+        return CALL_BAD_COUNT;
+    }
+    if legal.is_null() || edits.is_null() || (patches.is_null() && patch_count != 0) {
+        return CALL_NULL;
+    }
+    if legal.addr() % align_of::<u32>() != 0
+        || edits.addr() % align_of::<BelPatchV2>() != 0
+        || (patch_count != 0 && patches.addr() % align_of::<BelPatchV2>() != 0)
+    {
+        return CALL_MISALIGNED;
+    }
+    if flags & !RESIDENT_RECOMPUTE_COUNTS != 0 {
+        return CALL_BAD_SNAPSHOT;
+    }
+    let patches: &[BelPatchV2] = if patch_count == 0 {
+        &[]
+    } else {
+        // SAFETY: envelope checked above; the caller keeps the records live and unaliased.
+        unsafe { std::slice::from_raw_parts(patches, patch_count as usize) }
+    };
+    let edits: &[BelPatchV2] = if edit_count == 0 {
+        &[]
+    } else {
+        // SAFETY: non-null, aligned, and `edit_count` records long by the caller's contract.
+        unsafe { std::slice::from_raw_parts(edits, edit_count as usize) }
+    };
+    let recompute = flags & RESIDENT_RECOMPUTE_COUNTS != 0;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        resident
+            .labs
+            .evaluate_edits(lab as usize, patches, edits, recompute)
+    }));
+    let (status, answer) = match outcome {
+        Ok(Ok(answer)) => (CALL_OK, u32::from(answer)),
+        Ok(Err(ResidentError::Lab)) => (CALL_BAD_RANGE, 0),
+        Ok(Err(_)) => (CALL_BAD_SNAPSHOT, 0),
+        Err(payload) => {
+            resident.poisoned = true;
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
+            (CALL_PANIC, 0)
+        }
+    };
+    // SAFETY: checked non-null and aligned above.
+    unsafe { legal.write(answer) };
+    status
+}
+
 /// # Safety
 /// `handle` must come from create and must not be used afterwards.
 #[unsafe(no_mangle)]

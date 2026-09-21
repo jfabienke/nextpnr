@@ -29,7 +29,12 @@
 //!    date, then one candidate's facts and the free bels the legaliser would
 //!    try, in its order; the first bel the rules accept comes back. The
 //!    candidate is held in view at each bel as a trial would be and never
-//!    applied, so a scan costs the refused bels no bind and no patch.
+//!    applied, so a scan costs the refused bels no bind and no patch;
+//! 9. a cluster candidate (`evaluate_edits`): any of shapes 1 to 7 to bring the
+//!    LAB up to date, then the candidate's edits of this LAB, each the facts of
+//!    the cell it places at a bel or empty facts where it displaces one, held
+//!    in view together and never applied. An edit overrides a pending trial of
+//!    the same bel, since it says what the bel would hold.
 
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
@@ -578,10 +583,22 @@ impl ResidentLabs {
         trials: &[Option<&BelPatchV2>],
         candidate: &BelPatchV2,
     ) -> Option<bool> {
+        Self::control_rows(lab, trials.iter().flatten().copied().chain(Some(candidate)))
+    }
+
+    /// The same for patches that are all in view already (a cluster candidate's edits).
+    fn control_rows_legal(lab: &mut ResidentLab, in_view: &[Option<&BelPatchV2>]) -> Option<bool> {
+        Self::control_rows(lab, in_view.iter().flatten().copied())
+    }
+
+    fn control_rows<'p>(
+        lab: &mut ResidentLab,
+        patches: impl Iterator<Item = &'p BelPatchV2>,
+    ) -> Option<bool> {
         let ResidentLab { facts, mirror, .. } = lab;
         let mut rows: [(usize, &LabFfV2); MAX_TRIALS] = [(0, &facts.alm[0].ff[0]); MAX_TRIALS];
         let mut row_count = 0;
-        for patch in trials.iter().flatten().copied().chain(Some(candidate)) {
+        for patch in patches {
             if patch.slot as usize >= LUTS {
                 rows[row_count] = (
                     patch.alm as usize * FFS + (patch.slot as usize - LUTS),
@@ -600,6 +617,105 @@ impl ResidentLabs {
     /// register there.
     fn second_register_bel(slot: usize) -> bool {
         slot >= LUTS && (slot - LUTS) % 2 == 1
+    }
+
+    /// A cluster candidate as one question (module doc, shape 9). `patches` bring the LAB up to
+    /// date exactly as in `evaluate`. The `edits` are then held in view together: the answer is
+    /// whether every edited bel's own query would be legal with all of them in place, which is
+    /// what a caller asking bel by bel over a frozen record computes, asked once per distinct
+    /// predicate instead of once per edit: the ALM rule for each ALM an edit touches (a removal
+    /// can break an ALM too, by taking the LUT that fed a register), the LAB's input total once,
+    /// and the control rules once if any edit is a register bel. The edits name their bels, so
+    /// one control evaluation is exact. Counts of the ALMs in view are recomputed from the facts.
+    /// The pending trials and the edits share the `MAX_TRIALS` places in view: a candidate with
+    /// more edits than that is refused as a malformed call, and the caller asks another way.
+    pub fn evaluate_edits(
+        &mut self,
+        lab: usize,
+        patches: &[BelPatchV2],
+        edits: &[BelPatchV2],
+        recompute: bool,
+    ) -> Result<bool, ResidentError> {
+        let limit = self.input_limit;
+        let lab = self.labs.get_mut(lab).ok_or(ResidentError::Lab)?;
+        if !lab.initialised {
+            return Err(ResidentError::Uninitialised);
+        }
+        if edits.is_empty() || edits.len() > MAX_TRIALS {
+            return Err(ResidentError::Patch);
+        }
+        let mut edited = 0u64;
+        for edit in edits {
+            if !Self::patch_valid(edit) || edit.commit != 0 {
+                return Err(ResidentError::Patch);
+            }
+            let (bit, _) = Self::bel_bit(edit);
+            if edited & bit != 0 {
+                return Err(ResidentError::Patch);
+            }
+            edited |= bit;
+        }
+        Self::validate(patches, MAX_TRIALS - edits.len())?;
+        let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
+        // In view: the pending trials an edit does not override, then the edits.
+        let mut in_view: [Option<&BelPatchV2>; MAX_TRIALS] = [None; MAX_TRIALS];
+        let mut count = 0;
+        for trial in trials[..trial_count].iter().flatten() {
+            if edited & Self::bel_bit(trial).0 == 0 {
+                in_view[count] = Some(trial);
+                count += 1;
+            }
+        }
+        let mut edit_alms = 0u32;
+        let mut any_register = false;
+        for edit in edits {
+            in_view[count] = Some(edit);
+            count += 1;
+            edit_alms |= 1 << edit.alm;
+            any_register |= edit.slot as usize >= LUTS;
+        }
+        let in_view = &in_view[..count];
+        let full = |lab: &mut ResidentLab| {
+            edits.iter().all(|edit| {
+                let query = if (edit.slot as usize) < LUTS {
+                    QUERY_COMB_BEL
+                } else {
+                    QUERY_FF_BEL
+                };
+                Self::verdict(lab, limit, in_view, query, edit.alm, true).status == LAB_LEGAL
+            })
+        };
+        if lab.facts.is_mlab != 0 {
+            return Ok(full(lab));
+        }
+        let facts = &lab.facts;
+        for alm in 0..ALMS {
+            if edit_alms & (1 << alm) != 0
+                && !check_alm(&Self::view(facts, in_view, alm), alm, &mut Discard)
+            {
+                return Ok(false);
+            }
+        }
+        let mut touched = 0u32;
+        let mut total = lab.total_inputs;
+        for patch in in_view.iter().flatten() {
+            let alm = patch.alm as usize;
+            if touched & (1 << alm) == 0 {
+                touched |= 1 << alm;
+                total += recompute_inputs(&Self::view(facts, in_view, alm)) - lab.alm_inputs[alm];
+            }
+        }
+        if total > limit {
+            return Ok(false);
+        }
+        if !any_register {
+            return Ok(true);
+        }
+        match Self::control_rows_legal(lab, in_view) {
+            Some(legal) => Ok(legal),
+            // More control nets than the mirror holds: `verdict` decides.
+            None => Ok(full(lab)),
+        }
     }
 
     /// The patches' shapes, one per bel, and no more trials than `room`.
@@ -1010,6 +1126,8 @@ mod tests {
         let mut bursts = 0;
         let mut unchanged = 0;
         let (mut scans, mut scans_later, mut scans_none) = (0u32, 0u32, 0u32);
+        let (mut edits_legal, mut edits_illegal) = (0u32, 0u32);
+        let (mut edits_removing, mut edits_overriding, mut edits_over_budget) = (0u32, 0u32, 0u32);
         for step in 0..8000u64 {
             let lab = rng.next(3) as usize;
             let count = rng.next(4) as usize;
@@ -1174,7 +1292,96 @@ mod tests {
                 scans_later += u32::from(matches!(found, Some(index) if index > 0));
                 scans_none += u32::from(found.is_none() && !order.is_empty());
             }
+
+            // Shape 9: a cluster candidate's edits over this state, the step's trials resent,
+            // against the capture path answering edit by edit with every edit in place.
+            if step % 3 == 1 {
+                let edit_count = if rng.next(10) == 0 {
+                    6 + rng.next(3) as usize
+                } else {
+                    1 + rng.next(4) as usize
+                };
+                let home = rng.next(ALMS as u32);
+                let mut edits: Vec<BelPatchV2> = Vec::new();
+                while edits.len() < edit_count {
+                    let alm = if rng.next(3) == 0 {
+                        rng.next(ALMS as u32)
+                    } else {
+                        home
+                    };
+                    let slot = rng.next((LUTS + FFS) as u32);
+                    if edits.iter().any(|e| e.alm == alm && e.slot == slot) {
+                        continue;
+                    }
+                    let mut edit = random_patch(&mut rng, &keys, alm, slot);
+                    edit.commit = 0;
+                    if rng.next(4) == 0 {
+                        // A displaced cell: the bel is left empty.
+                        edit.lut = LabLutV2::default();
+                        edit.ff = LabFfV2::default();
+                    }
+                    edits.push(edit);
+                }
+                let same_bel = |a: &BelPatchV2, b: &BelPatchV2| a.alm == b.alm && a.slot == b.slot;
+                let answer = resident.evaluate_edits(lab, &in_view, &edits, step % 2 == 0);
+                if in_view.len() + edits.len() > MAX_TRIALS {
+                    assert_eq!(
+                        answer,
+                        Err(ResidentError::Patch),
+                        "over budget at step {step}"
+                    );
+                    edits_over_budget += 1;
+                } else {
+                    let mut with = shadow[lab];
+                    for patch in &in_view {
+                        if !edits.iter().any(|e| same_bel(e, patch)) {
+                            ResidentLabs::apply_bel(&mut with.alm[patch.alm as usize], patch);
+                        }
+                    }
+                    let before = with;
+                    for edit in &edits {
+                        ResidentLabs::apply_bel(&mut with.alm[edit.alm as usize], edit);
+                    }
+                    let legal = edits.iter().all(|edit| {
+                        let mut asked = with;
+                        asked.query = if (edit.slot as usize) < LUTS {
+                            QUERY_COMB_BEL
+                        } else {
+                            QUERY_FF_BEL
+                        };
+                        asked.query_alm = edit.alm;
+                        evaluate_facts(&asked).status == LAB_LEGAL
+                    });
+                    assert_eq!(answer, Ok(legal), "edits at step {step}: {edits:?}");
+                    edits_legal += u32::from(legal);
+                    edits_illegal += u32::from(!legal);
+                    edits_overriding +=
+                        u32::from(edits.iter().any(|e| in_view.iter().any(|p| same_bel(e, p))));
+                    edits_removing += u32::from(edits.iter().any(|e| {
+                        let held = &before.alm[e.alm as usize];
+                        let (was, now) = if (e.slot as usize) < LUTS {
+                            (held.lut[e.slot as usize].occupied, e.lut.occupied)
+                        } else {
+                            (held.ff[e.slot as usize - LUTS].occupied, e.ff.occupied)
+                        };
+                        was != 0 && now == 0
+                    }));
+                }
+                assert_eq!(
+                    resident.facts(lab).unwrap().alm,
+                    shadow[lab].alm,
+                    "edits at step {step} left something behind"
+                );
+            }
         }
+        assert!(
+            edits_legal > 150 && edits_illegal > 150,
+            "{edits_legal} legal edit sets, {edits_illegal} illegal"
+        );
+        assert!(
+            edits_removing > 100 && edits_overriding > 20 && edits_over_budget > 20,
+            "{edits_removing} removing, {edits_overriding} overriding, {edits_over_budget} over budget"
+        );
         assert!(
             scans >= 2000 && scans_later >= 100 && scans_none >= 100,
             "{scans} scans, {scans_later} found past the first bel, {scans_none} found nothing"

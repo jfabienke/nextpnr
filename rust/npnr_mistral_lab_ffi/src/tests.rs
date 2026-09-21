@@ -755,6 +755,172 @@ fn resident_scan_names_the_first_legal_bel_and_rejects_bad_envelopes() {
     unsafe { npnr_mistral_resident_v2_destroy(handle) };
 }
 
+#[test]
+fn resident_edits_answer_a_cluster_candidate_and_reject_bad_envelopes() {
+    let mut handle: *mut NpnrLabResidentV2 = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_create(1, 42, &mut handle) },
+        CALL_OK
+    );
+    assert_eq!(
+        unsafe { npnr_mistral_resident_v2_reset(handle, 0, 0) },
+        CALL_OK
+    );
+    let lut = |first_net: u32| {
+        let mut patch = BelPatchV2::default();
+        patch.lut.occupied = 1;
+        patch.lut.input_count = 5;
+        patch.lut.used_input_count = 5;
+        patch.lut.bits_count = 32;
+        patch.lut.mlab_group = -1;
+        for (i, net) in patch.lut.input_net.iter_mut().take(5).enumerate() {
+            *net = first_net + i as u32;
+        }
+        patch
+    };
+    // A pair in one ALM: two five-input LUTs. Sharing two nets they fit (eight inputs); sharing
+    // none they do not (ten).
+    let mut root = lut(100);
+    root.alm = 4;
+    root.slot = 0;
+    let mut partner = lut(103);
+    partner.alm = 4;
+    partner.slot = 1;
+    let mut legal = 7u32;
+    let pair = [root, partner];
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                pair.as_ptr(),
+                2,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(legal, 1);
+    let mut stranger = lut(200);
+    stranger.alm = 4;
+    stranger.slot = 1;
+    let bad_pair = [root, stranger];
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                bad_pair.as_ptr(),
+                2,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(legal, 0);
+    // Nothing was applied: the ALM is still empty, so the stranger alone is legal there.
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &stranger,
+                1,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_OK
+    );
+    assert_eq!(legal, 1);
+    // Envelopes: two edits of one bel, more edits than the places in view, a commit among the
+    // edits, null edits, a LAB out of range.
+    let twice = [root, root];
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                twice.as_ptr(),
+                2,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    assert_eq!(legal, 0);
+    let mut many = [BelPatchV2::default(); 9];
+    for (i, edit) in many.iter_mut().enumerate() {
+        *edit = lut(300 + 10 * i as u32);
+        edit.alm = i as u32;
+    }
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                many.as_ptr(),
+                9,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    let mut committed = root;
+    committed.commit = 1;
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                &committed,
+                1,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_BAD_SNAPSHOT
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(
+                handle,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                1,
+                0,
+                &mut legal,
+            )
+        },
+        CALL_NULL
+    );
+    assert_eq!(
+        unsafe {
+            npnr_mistral_resident_v2_edits(handle, 3, std::ptr::null(), 0, &root, 1, 0, &mut legal)
+        },
+        CALL_BAD_RANGE
+    );
+    unsafe { npnr_mistral_resident_v2_destroy(handle) };
+}
+
 mod monitor_tests {
     use crate::*;
     use std::mem::MaybeUninit;
