@@ -1,9 +1,11 @@
 #include "placement_transaction.h"
 
+#include <array>
 #include <set>
 
 #include "arch.h"
 #include "lab_dispatch.h"
+#include "lab_resident.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -133,6 +135,69 @@ PlacementCandidateAssessment evaluate_placement_candidate(const FrozenPlacementC
             break;
     }
     return assessment;
+}
+
+std::optional<bool> placement_candidate_resident(const Arch &arch, const PreparedPlacementTransaction &transaction)
+{
+#ifdef NO_RUST
+    (void)arch;
+    (void)transaction;
+    return std::nullopt;
+#else
+    if (arch.args.lab_legality == LabLegalityMode::Legacy || !transaction || transaction.edits().empty())
+        return std::nullopt;
+    // The edits grouped by LAB, in the order the transaction lists them. A cluster of one ALM is
+    // one group; a carry chain is several and usually over the budget.
+    struct Group
+    {
+        uint32_t lab;
+        uint32_t count = 0;
+        std::array<NpnrBelPatchV2, NPNR_LAB_RESIDENT_MAX_TRIALS> edits{};
+    };
+    std::array<Group, 4> groups{};
+    size_t group_count = 0;
+    for (const auto &edit : transaction.edits()) {
+        const auto &data = arch.bel_data(edit.bel);
+        const bool is_ff = data.type == id_MISTRAL_FF;
+        if (!is_ff && !data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB))
+            return std::nullopt;
+        if (edit.replacement != nullptr && edit.replacement->type == id_MISTRAL_MLAB)
+            return std::nullopt; // LUTRAM write reservations are host-owned
+        size_t g = 0;
+        while (g < group_count && groups[g].lab != data.lab_data.lab)
+            ++g;
+        if (g == group_count) {
+            if (group_count == groups.size())
+                return std::nullopt;
+            groups[group_count++].lab = data.lab_data.lab;
+        }
+        Group &group = groups[g];
+        if (group.count == group.edits.size())
+            return std::nullopt;
+        NpnrBelPatchV2 &patch = group.edits[group.count++];
+        patch = NpnrBelPatchV2{};
+        if (edit.replacement != nullptr)
+            capture_cell_v2_keyed(*edit.replacement, is_ff, patch);
+        patch.alm = data.lab_data.alm;
+        patch.slot = uint32_t((is_ff ? 2 : 0) + data.lab_data.idx);
+    }
+    if (!arch.lab_resident)
+        std::atomic_store(&arch.lab_resident, std::make_shared<ResidentLabLegality>(arch));
+    for (size_t g = 0; g < group_count; ++g) {
+        bool legal = false;
+        const uint32_t call = arch.lab_resident->edits(arch, groups[g].lab, groups[g].edits.data(), groups[g].count,
+                                                       arch.args.lab_legality != LabLegalityMode::Rust, legal);
+        if (call == NPNR_LAB_CALL_BAD_SNAPSHOT)
+            return std::nullopt; // over the budget with the LAB's pending trials: not covered
+        if (call != NPNR_LAB_CALL_OK) {
+            arch.lab_legality_stats.errors.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+        if (!legal)
+            return false;
+    }
+    return true;
+#endif
 }
 
 bool placement_candidate_rust_matches(const FrozenPlacementCandidate &candidate,

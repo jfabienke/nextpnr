@@ -3034,6 +3034,61 @@ TEST_F(LabControlCaptureTest, RegisterPackingClustersARegisterWithItsLut)
         EXPECT_EQ(assessment.status, FrozenPlacementStatus::Ready);
         EXPECT_TRUE(assessment.legal);
     }
+#ifndef NO_RUST
+    // Design section 16.1: the resident session answers a cluster candidate from the LAB it holds,
+    // and its answer is the frozen evaluation's for every cluster here, legal and not, with a
+    // displaced cell among the edits in one case; what it does not cover it declines.
+    {
+        ctx->args.lab_legality = LabLegalityMode::Rust;
+        ctx->lab_resident.reset();
+        ctx->lab_bel_dirty.clear();
+        ctx->lab_bel_refacts.clear();
+        auto both = [&](CellInfo *root, BelId seed, CellInfo *displaced_cell, BelId displaced_bel) {
+            std::vector<std::pair<CellInfo *, BelId>> targets;
+            EXPECT_TRUE(ctx->getClusterPlacement(root->cluster, seed, targets));
+            HeAPDisplacedBindings displaced;
+            for (auto &target : targets)
+                displaced[target.second] = {nullptr, STRENGTH_NONE};
+            if (displaced_cell != nullptr)
+                displaced[displaced_bel] = {displaced_cell, STRENGTH_WEAK};
+            auto prepared = prepare_placement_transaction(*ctx, placement_edits_for_candidate(targets, displaced));
+            EXPECT_TRUE(bool(prepared));
+            const auto frozen = freeze_placement_candidate(*ctx, prepared);
+            EXPECT_EQ(frozen.status, FrozenPlacementStatus::Ready);
+            const bool frozen_legal = evaluate_placement_candidate(frozen).legal;
+            const auto resident = placement_candidate_resident(*ctx, prepared);
+            EXPECT_TRUE(resident.has_value());
+            EXPECT_EQ(resident.value_or(!frozen_legal), frozen_legal) << ctx->nameOf(root);
+            return frozen_legal;
+        };
+        EXPECT_TRUE(both(a, lab0.alms[1].lut_bels[0], nullptr, BelId())); // a pair, a register on each half
+        EXPECT_TRUE(both(c, lab0.alms[3].lut_bels[0], nullptr, BelId())); // a pair with one register
+        EXPECT_TRUE(both(s, lab0.alms[2].lut_bels[1], nullptr, BelId())); // a single LUT and its register
+        // A register sitting where the pair's register would go is displaced by the candidate.
+        ctx->bindBel(lab0.alms[1].ff_bels[0], fx, STRENGTH_WEAK);
+        EXPECT_TRUE(both(a, lab0.alms[1].lut_bels[0], fx, lab0.alms[1].ff_bels[0]));
+        ctx->unbindBel(lab0.alms[1].ff_bels[0]);
+        // d's register forced into c's cluster: its control set cannot share the LAB.
+        fd->cluster = c->name;
+        fd->constr_z = 4;
+        c->constr_children.push_back(fd);
+        EXPECT_FALSE(both(c, lab0.alms[3].lut_bels[0], nullptr, BelId()));
+        c->constr_children.pop_back();
+        fd->cluster = ClusterId();
+        fd->constr_z = 0;
+        EXPECT_GE(ctx->lab_resident->edit_calls.load(), 5u);
+        EXPECT_EQ(ctx->lab_legality_stats.errors.load(), 0u);
+        // The legacy mode has no session to ask.
+        ctx->args.lab_legality = LabLegalityMode::Legacy;
+        std::vector<std::pair<CellInfo *, BelId>> targets;
+        ASSERT_TRUE(ctx->getClusterPlacement(s->cluster, lab0.alms[2].lut_bels[1], targets));
+        HeAPDisplacedBindings displaced;
+        for (auto &target : targets)
+            displaced[target.second] = {nullptr, STRENGTH_NONE};
+        auto prepared = prepare_placement_transaction(*ctx, placement_edits_for_candidate(targets, displaced));
+        EXPECT_FALSE(placement_candidate_resident(*ctx, prepared).has_value());
+    }
+#endif
     const std::vector<std::pair<BelId, CellInfo *>> binds = {
             {lab0.alms[1].lut_bels[0], a}, {lab0.alms[1].lut_bels[1], b}, {lab0.alms[1].ff_bels[0], fa},
             {lab0.alms[1].ff_bels[2], fb}, {lab0.alms[2].lut_bels[1], s}, {lab0.alms[2].ff_bels[2], fs}};

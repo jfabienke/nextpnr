@@ -204,6 +204,15 @@ uint32_t npnr_mistral_resident_v2_evaluate(NpnrLabResidentV2 *handle, uint32_t l
 uint32_t npnr_mistral_resident_v2_scan(NpnrLabResidentV2 *handle, uint32_t lab, const NpnrBelPatchV2 *patches,
                                        uint32_t patch_count, const NpnrBelPatchV2 *candidate, const uint8_t *order,
                                        uint32_t order_count, uint32_t flags, uint32_t *first_legal);
+/* A cluster candidate as one call (design section 16.1): the patches bring the LAB up to date as in
+ * evaluate; the `edits` of this LAB (the facts of the cell each places, or empty facts where one is
+ * displaced; commit 0; at most NPNR_LAB_RESIDENT_MAX_TRIALS less the pending trials) are held in view
+ * together and `legal` receives 1 when every edited bel would be legal with all of them in place.
+ * Nothing of the edits is applied. A malformed or over-budget call returns
+ * NPNR_LAB_CALL_BAD_SNAPSHOT with the LAB untouched. */
+uint32_t npnr_mistral_resident_v2_edits(NpnrLabResidentV2 *handle, uint32_t lab, const NpnrBelPatchV2 *patches,
+                                        uint32_t patch_count, const NpnrBelPatchV2 *edits, uint32_t edit_count,
+                                        uint32_t flags, uint32_t *legal);
 void npnr_mistral_resident_v2_destroy(NpnrLabResidentV2 *handle);
 
 #ifdef __cplusplus

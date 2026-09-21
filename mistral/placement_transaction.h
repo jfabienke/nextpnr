@@ -1,6 +1,7 @@
 #ifndef MISTRAL_PLACEMENT_TRANSACTION_H
 #define MISTRAL_PLACEMENT_TRANSACTION_H
 
+#include <optional>
 #include <vector>
 
 #include "lab_v2.h"
@@ -76,6 +77,12 @@ PlacementCommitOutcome commit_placement_transaction(Arch &arch, PreparedPlacemen
 bool placement_candidate_supported(const Arch &arch, const PreparedPlacementTransaction &transaction);
 FrozenPlacementCandidate freeze_placement_candidate(const Arch &arch, const PreparedPlacementTransaction &transaction);
 PlacementCandidateAssessment evaluate_placement_candidate(const FrozenPlacementCandidate &candidate);
+// The candidate answered by the resident Rust session without freezing it (design section 16.1):
+// the edits of each LAB held in view together, legal when every LAB says so. Empty when the
+// session does not cover the candidate (the legacy mode, no Rust, a bel outside a LAB, a LUTRAM
+// cell, more edits in one LAB than the session holds in view, or a failed call): the caller
+// then freezes and evaluates as before.
+std::optional<bool> placement_candidate_resident(const Arch &arch, const PreparedPlacementTransaction &transaction);
 bool placement_candidate_rust_matches(const FrozenPlacementCandidate &candidate,
                                       const PlacementCandidateAssessment &cpp);
 

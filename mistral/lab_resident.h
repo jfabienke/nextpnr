@@ -64,11 +64,17 @@ struct ResidentLabLegality
     // legal. `first_legal` is the index in `order` or NPNR_LAB_RESIDENT_SCAN_NONE.
     uint32_t scan(const Arch &arch, uint32_t lab, const CellInfo &cell, bool is_ff, const uint8_t *order,
                   uint32_t order_count, bool recompute, uint32_t &first_legal);
+    // A cluster candidate (design section 16.1): brings the LAB up to date, then asks whether every
+    // bel the candidate edits in this LAB would be legal with all its edits in place. The edits and
+    // the pending trials share the places the session holds in view.
+    uint32_t edits(const Arch &arch, uint32_t lab, const NpnrBelPatchV2 *edits, uint32_t edit_count, bool recompute,
+                   bool &legal);
 
     // Single-writer counters: the owner thread bumps them with a relaxed load and store (a plain
     // add on the hot path) and the monitor's ticker reads them.
     std::atomic<uint64_t> evaluations{0}, resets{0}, trials{0}, commits{0}, restored{0};
     std::atomic<uint64_t> scans{0}, scan_bels{0}, scan_hits{0}; // tile scans, bels asked about, scans naming a bel
+    std::atomic<uint64_t> edit_calls{0}, edit_bels{0};          // cluster candidates answered, bels they edited
     static void bump(std::atomic<uint64_t> &counter, uint64_t by = 1)
     {
         counter.store(counter.load(std::memory_order_relaxed) + by, std::memory_order_relaxed);

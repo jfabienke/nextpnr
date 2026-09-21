@@ -790,11 +790,13 @@ void report_lab_legality_stats(const Arch &arch)
              std::min(get(s.diagnostics), uint64_t(4)));
     if (arch.lab_resident)
         log_info("LAB legality resident: evaluations=%" PRIu64 " resets=%" PRIu64 " trials=%" PRIu64 " commits=%" PRIu64
-                 " restored=%" PRIu64 " scans=%" PRIu64 " scan-bels=%" PRIu64 " scan-hits=%" PRIu64 ".\n",
+                 " restored=%" PRIu64 " scans=%" PRIu64 " scan-bels=%" PRIu64 " scan-hits=%" PRIu64
+                 " edit-calls=%" PRIu64 " edit-bels=%" PRIu64 ".\n",
                  arch.lab_resident->evaluations.load(), arch.lab_resident->resets.load(),
                  arch.lab_resident->trials.load(), arch.lab_resident->commits.load(),
                  arch.lab_resident->restored.load(), arch.lab_resident->scans.load(),
-                 arch.lab_resident->scan_bels.load(), arch.lab_resident->scan_hits.load());
+                 arch.lab_resident->scan_bels.load(), arch.lab_resident->scan_hits.load(),
+                 arch.lab_resident->edit_calls.load(), arch.lab_resident->edit_bels.load());
 }
 
 NEXTPNR_NAMESPACE_END

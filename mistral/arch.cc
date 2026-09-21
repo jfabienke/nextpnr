@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#include <optional>
 
 #include "alm_pairing.h"
 #include "log.h"
@@ -946,6 +947,23 @@ bool Arch::run_placement()
                         prepare_placement_transaction(*owner, placement_edits_for_candidate(targets, displaced));
                 if (!prepared)
                     log_error("Failed to preflight a detached HeAP cluster candidate.\n");
+                // Design section 16.1: in the Rust legality modes the resident session answers the
+                // candidate from the LAB it already holds, without freezing whole-LAB records. In
+                // rust mode that answer decides; in shadow and verify the frozen evaluation below
+                // decides as before and the two are compared. What the session does not cover (a
+                // carry chain's many edits, a LUTRAM cell) takes the frozen path in every mode.
+                static const bool debug_reject = getenv("MISTRAL_DEBUG_CLUSTER_REJECT") != nullptr;
+                const LabLegalityMode legality = owner->args.lab_legality;
+                std::optional<bool> resident;
+                if (legality != LabLegalityMode::Legacy && owner->args.lab_tile_scan)
+                    resident = placement_candidate_resident(*owner, prepared);
+                if (resident && legality == LabLegalityMode::Rust && !debug_reject) {
+                    if (!*resident)
+                        return HeAPClusterTransactionOutcome::Rejected;
+                    if (commit_placement_transaction(*owner, std::move(prepared)) != PlacementCommitOutcome::Committed)
+                        log_error("Failed to commit a detached HeAP cluster candidate.\n");
+                    return HeAPClusterTransactionOutcome::Committed;
+                }
                 auto frozen = freeze_placement_candidate(*owner, prepared);
                 if (frozen.status == FrozenPlacementStatus::Unsupported)
                     return HeAPClusterTransactionOutcome::Unsupported;
@@ -956,6 +974,12 @@ bool Arch::run_placement()
                     log_error("Failed to evaluate a detached HeAP cluster candidate.\n");
                 if (!placement_candidate_rust_matches(frozen, assessment))
                     log_error("Rust disagrees with detached C++ for a HeAP cluster candidate.\n");
+                if (resident && *resident != assessment.legal) {
+                    owner->lab_legality_stats.mismatches.fetch_add(1, std::memory_order_relaxed);
+                    if (legality == LabLegalityMode::Verify)
+                        log_error("The resident session %s a HeAP cluster candidate the frozen evaluation %s.\n",
+                                  *resident ? "admits" : "refuses", assessment.legal ? "admits" : "refuses");
+                }
                 if (!assessment.legal) {
                     static int debug_left = getenv("MISTRAL_DEBUG_CLUSTER_REJECT") ? 20 : 0;
                     if (debug_left > 0) {

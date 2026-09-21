@@ -74,8 +74,11 @@ struct ArchArgs
     bool router2_unit_cost = false;         // Stage 6 (6f): router2 costs every wire one unit instead of its delay
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
-    bool lab_tile_scan = true; // design 14: the legaliser's tile scan as one call in the Rust legality modes
-    float row_cost = 0.0f;     // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
+    // Designs 14 and 16.1: the Rust session's batch forms in the Rust legality modes, the strict
+    // legaliser's tile scan and a cluster candidate's edits as one call. Off: one question per bel,
+    // and frozen whole-LAB records per cluster candidate, as before them. Results are identical.
+    bool lab_tile_scan = true;
+    float row_cost = 0.0f; // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
     SwapSeamMode sa_seam = SwapSeamMode::On; // Stage 5 (1c): annealer swap seam; on by default since 2026-09-19
     int sa_batch = 0;                        // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;         // Stage 5 (2b): stop route() after preparation, before the router

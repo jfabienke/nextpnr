@@ -106,8 +106,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("register-packing", "pack a register with the LUT that drives it into one ALM before "
                                                "placement (off by default; experimental)");
     specific.add_options()("no-lab-tile-scan",
-                           "ask the LAB legality authority per bel even where the tile scan applies (the scan is "
-                           "on in the rust, shadow, and verify modes; results are identical either way)");
+                           "ask the LAB legality authority per bel and per frozen cluster candidate even where "
+                           "its batch forms apply (the tile scan and the cluster edits are on in the rust, shadow, "
+                           "and verify modes; results are identical either way)");
     specific.add_options()("monitor", "show a live dashboard of the run in the terminal (phases, LAB legality and "
                                       "resident counters, placer and router progress, log tail); the log text "
                                       "goes to --log");

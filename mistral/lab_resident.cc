@@ -197,6 +197,38 @@ uint32_t ResidentLabLegality::evaluate(const Arch &arch, uint32_t lab, NpnrLabQu
 #endif
 }
 
+uint32_t ResidentLabLegality::edits(const Arch &arch, uint32_t lab, const NpnrBelPatchV2 *edits, uint32_t edit_count,
+                                    bool recompute, bool &legal)
+{
+    legal = false;
+#ifndef NO_RUST
+    if (edit_count == 0 || edit_count > NPNR_LAB_RESIDENT_MAX_TRIALS)
+        return NPNR_LAB_CALL_BAD_SNAPSHOT;
+    uint32_t count = 0;
+    uint64_t still_dirty = 0;
+    uint32_t status = build_batch(arch, lab, NPNR_LAB_RESIDENT_MAX_TRIALS - edit_count, count, still_dirty);
+    if (status != NPNR_LAB_CALL_OK)
+        return status;
+    uint32_t answer = 0;
+    status = npnr_mistral_resident_v2_edits(handle_, lab, count ? batch_.data() : nullptr, count, edits, edit_count,
+                                            recompute ? NPNR_LAB_RESIDENT_RECOMPUTE_COUNTS : 0u, &answer);
+    bump(edit_calls);
+    bump(edit_bels, edit_count);
+    if (status == NPNR_LAB_CALL_OK) {
+        note_sent(arch, lab, count, still_dirty);
+        legal = answer != 0;
+    }
+    return status;
+#else
+    (void)arch;
+    (void)lab;
+    (void)edits;
+    (void)edit_count;
+    (void)recompute;
+    return NPNR_LAB_CALL_BAD_SNAPSHOT;
+#endif
+}
+
 uint32_t ResidentLabLegality::scan(const Arch &arch, uint32_t lab, const CellInfo &cell, bool is_ff,
                                    const uint8_t *order, uint32_t order_count, bool recompute, uint32_t &first_legal)
 {

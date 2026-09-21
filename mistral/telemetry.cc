@@ -102,6 +102,8 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
                 {"scans", count(arch.lab_resident->scans)},
                 {"scan_bels", count(arch.lab_resident->scan_bels)},
                 {"scan_hits", count(arch.lab_resident->scan_hits)},
+                {"edit_calls", count(arch.lab_resident->edit_calls)},
+                {"edit_bels", count(arch.lab_resident->edit_bels)},
         };
     }
     Json::object phases{
