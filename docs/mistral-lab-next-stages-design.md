@@ -1307,3 +1307,350 @@ than the mirror, takes the full verdict as before. The per-bel path
 and its verdicts, reasons included, are untouched. The oracle that
 holds every scan against the capture path bel by bel is the proof
 that the order changes nothing.
+
+## 15. The register capacity the rules admit
+
+An ALM has four register bels, two per half, and the ALM rule refuses a
+register in the second of each pair whatever else the ALM holds; the
+upstream checker's line reads "TODO: why are these FFs broken?". The
+reason count of section 14.1 made the consequence visible: more than
+half of what the legaliser asks on the full core is whether a register
+may sit in one of those bels. The answer never varies, so the question
+is the defect. It has two costs. The bels are always free, so every
+tile visit of every register scans them. And HeAP's cut spreader takes
+a tile's capacity from the number of bels in the cell's bucket, so it
+spreads registers as if a LAB held forty where it holds twenty; the
+registers it over-assigns are the ones the legaliser then carries from
+tile to tile, which is the stuck-register pattern of unit 6a.
+
+The rule itself is not this unit's subject. Whether the second bel of a
+half can be made usable is a question about the device and the
+bitstream, with silicon behind it, and it stays where upstream left it.
+What this unit does is tell the placer what the rule already says. With
+`--usable-register-bels` the second register bel of each half leaves
+the register bucket: `getBelBucketForBel` files it under a bucket no
+cell type maps to and `isValidBelForCellType` refuses it for a
+register, so HeAP's bel lists, the spreader's capacity, the
+legaliser's scans, and the annealer's proposals all see twenty register
+bels per LAB. Nothing can be placed that could not be placed before,
+since no register was ever legal there; what changes is where the
+spreader sends registers and what the search spends its time on, so
+the placement changes and the option is opt-in, with its own quality
+evidence on the probe and the core.
+
+The bucket for the hidden bels is an identifier the arch already has
+and nothing maps to (`MISTRAL_MCOMB`, the bel type of LUTRAM-capable
+LUT bels, which themselves file under `MISTRAL_COMB`), because a new
+identifier would be interned ahead of the netlist and shift every net
+index of the default path.
+
+## 16. Six hot paths of the full core flow
+
+A Time Profiler recording of the whole core flow under the recipe
+(tracker, "Time Profiler run of the full core flow") put strict
+legalisation at 54% of the run, router2 at 20%, the annealer at 11.5%,
+and HeAP's solver at 10.5%, and named six paths worth work. Each design
+below states what the profile shows, the change, why the result does
+not move, what holds it, the expected gain, and what it costs. None
+changes a placement or a routing: the exit criterion of every one is
+the recorded checksums on the probe and the core, and the gain is
+whatever the core's Time Profiler run says afterwards, not the
+estimate given here.
+
+The order of work is 16.4, 16.6, 16.2, 16.1, 16.3, 16.5: the two small
+Rust changes first because 16.1 builds on both, then the C++ loop,
+then the largest unit, then the two that touch upstream's code. Each
+lands as its own commit with its own core timing.
+
+### 16.1 Cluster candidates through the resident session (Rust and C++)
+
+**Profile.** `try_place_cluster` is 91 s, 23% of strict legalisation.
+HeAP offers every pair and register cluster to
+`PlacerHeapCfg::place_cluster_transaction`, 19.6 million times on the
+core with 96.6% rejected, and the Mistral callback prepares the edits,
+freezes them (`freeze_placement_candidate`, 52 s: one whole-LAB overlay
+capture of 3.8 KB per edited bel, four for a pair with two registers),
+evaluates every record in C++ (`evaluate_placement_candidate`, 13 s),
+and evaluates every record again in Rust as a fatal cross-check
+(`placement_candidate_rust_matches`, 14 s). The authority on this path
+is the detached C++ evaluator in every legality mode, the promotion
+notwithstanding.
+
+**Design.** In the Rust legality mode the candidate is answered by the
+resident session, which already holds the LAB.
+
+- Crate: `ResidentLabs::evaluate_edits(lab, patches, edits, recompute)
+  -> Result<bool, ResidentError>`. `patches` bring the LAB up to date
+  through `sync`, as for `evaluate` and `evaluate_scan`. `edits` are
+  bel patches held in view together and never applied: the facts of
+  the cell an edit places, or empty facts where an edit displaces one.
+  The answer is the conjunction the frozen path computes per edit,
+  asked once per distinct predicate instead of once per edit: the ALM
+  rule for every distinct ALM an edit touches (a removal can break an
+  ALM too: a register loses the LUT that fed it and needs a data path),
+  the LAB's input total once with counts recomputed for the touched
+  ALMs, the control rules once if any edit is a register bel (16.4),
+  and the full verdict for an MLAB. For a pair with two registers that
+  is one ALM check, one total, and one control evaluation, where the
+  frozen path makes four captures and eight evaluations. It is patch
+  shape 9 in the module's list.
+- Budget: the pending trials of the sync and the edits share the
+  `MAX_TRIALS` slots in view, so the batch builder is given
+  `MAX_TRIALS - edits` and sends more changed bels as commits, as it
+  does for the scan. A candidate with more edits in one LAB than the
+  budget, which is a carry chain, is not covered and takes the frozen
+  path as today.
+- FFI: `npnr_mistral_resident_v2_edits(handle, lab, patches,
+  patch_count, edits, edit_count, flags, legal)`, with the envelope
+  checks and the poisoned handle of its siblings.
+- Arch: `ResidentLabLegality::edits(...)` sharing `build_batch` and
+  `note_sent`; `placement_candidate_resident(arch, transaction)` groups
+  the prepared transaction's edits by LAB, builds each edit's facts with
+  `capture_cell_v2_keyed` (or empty facts for a displaced cell), and
+  declines what it does not cover (a bel outside a LAB, a LUTRAM cell,
+  an over-budget LAB).
+- Callback: in `rust` mode, prepare, ask the resident session, then
+  reject or commit; the freeze, the C++ evaluation, and the cross-check
+  are not run. In `shadow` and `verify` both paths run and are compared,
+  a difference fatal in verify, which keeps the existing cross-check's
+  meaning. In `legacy`, and for the lookahead's worker threads, which
+  need frozen values by construction, nothing changes.
+
+**Identity.** The verdict per candidate is the same conjunction of the
+same predicates, so HeAP sees the same accept and reject sequence. The
+commit path (`commit_placement_transaction`) and the revision stamps are
+untouched; the resident answer is synchronous on the owner thread, so
+it cannot be stale.
+
+**Held by.** The oracle gains edit sets: several placements and
+removals over one or more ALMs, registers included, compared with the
+capture path's per-edit conjunction, with coverage asserted for
+accepted sets, rejected sets, removals, and over-budget refusals. A
+gtest compares `placement_candidate_resident` with the frozen
+assessment on the register packing fixture's clusters. Verify mode on
+the probe and the core compares every candidate in the flow.
+
+**Gain.** 91 s to an estimated 15 to 25 s.
+
+**Cost and decision.** One function in the crate and one FFI call: new
+Rust surface, so a decision row. The decision it records is larger
+than the surface: in the Rust mode the cluster path's authority moves
+from the detached C++ evaluator to the Rust session, consistent with
+the promotion, and the C++ evaluator remains the legacy authority and
+the harness.
+
+### 16.2 The legaliser's scan loop evaluates its filters once (C++)
+
+**Profile.** `try_place_cell` is 64 s of self time and
+`Arch::checkBelAvail` 35 s beneath it, a quarter of strict
+legalisation. The loop visits up to forty bels per tile visit and for
+each evaluates the region test, the control-set filter, and the
+availability. Since the tile scan, the look-ahead that lists the
+remaining candidates for the batch evaluates the same three for every
+bel from the current position on, and the main loop then evaluates
+them again.
+
+**Design.** The look-ahead records what it computes. A member vector of
+one byte per tile position holds two flags, passes-the-filters and
+available, filled for the positions from the batch's start onward; the
+main loop reads the flags for those positions instead of calling
+`passes` and `checkBelAvail`. Positions before the batch's start are
+evaluated live as today, and a scan in which no batch is asked never
+fills or reads the flags.
+
+**Identity.** The filters are pure functions of the cell and the bel.
+Availability can change during a scan only through the loop's own
+binds, and every one of those is either undone before the loop
+continues (a refused trial, a refused ripup with the displaced cell
+bound back) or ends the loop. So a flag read later equals the call it
+replaces, and the ripup draw, which is made only for a bel the flag
+says is unavailable, is made for exactly the same bels.
+
+**Held by.** The probe's routed identity in the gate and the core's
+placement checksum. No new test: the change has no behaviour of its
+own to assert beyond identity.
+
+**Gain.** An estimated 25 to 35 s of the 100 s. With
+`--usable-register-bels` the list itself is a third shorter.
+
+**Cost.** Twenty lines in `placer_heap.cc`, which this fork already
+changes in this function.
+
+### 16.3 HeAP's equation system appends, then merges (C++)
+
+**Profile.** The solver phase is 75 s and Eigen's conjugate gradient is
+12 s of it. Building the system is 57 s: `build_solve_direction` 34 s
+with `EquationSystem::add_coeff` inlined, and
+`std::vector<std::pair<int, double>>::insert` another 17 s. `add_coeff`
+keeps every column sorted by row: a binary search per coefficient, an
+addition where the entry exists, and otherwise an insert that shifts
+the column's tail.
+
+**Design.** `add_coeff` appends `(row, value)` to the column. `solve`
+begins with a finalise pass per column: `std::stable_sort` by row, then
+one forward pass that folds each run of equal rows into its first
+entry by adding the later values in order. The matrix is built from
+the merged columns exactly as now, sorted by row.
+
+**Identity.** The present code sums a coefficient's contributions in
+arrival order: the first creates the entry and each later one is added
+to it. A stable sort keeps equal rows in arrival order, and the fold
+adds them in that order, so every coefficient is the same sequence of
+the same floating-point additions and the matrix is bit-identical.
+Nothing reads the columns between `reset` and `solve`.
+
+**Held by.** The solver feeds everything after it, so any changed bit
+moves the placement checksum: the probe's identity in the gate and the
+core's `0x2d44a02e` are the test.
+
+**Gain.** An estimated 35 s: appends replace the searches and the
+shifting inserts, and one sort per column replaces a shift per new
+entry.
+
+**Cost.** Twenty lines inside one struct of upstream's file. It is
+upstreamable as it stands.
+
+### 16.4 The control rules are asked once per scan (Rust)
+
+**Profile.** Inside scans the control rules cost 56 s: `rules::evaluate`
+41 s and the mirror's trial rows 15 s, asked for every bel that has
+passed the ALM rule and the input total.
+
+**Analysis.** The worker (`rules.rs`, `Worker::run`) walks the registers
+in physical order and gives each connected control signal the first
+resource of its kind's pool that holds the same signal or is empty; a
+second pass gives the signals held in those resources their data
+lines, kind by kind in a fixed order. The choice list depends on the
+kind alone, never on the register. First fit over one list succeeds
+exactly when the distinct signals of that kind do not outnumber the
+list, whatever the order they arrive in; order decides which resource
+a signal receives and which register a failure names, not whether the
+walk succeeds. The second pass is first fit again, over lists that
+depend on the kind alone, fed by the set of signals the first pass
+placed. So whether a LAB's control sets are legal is a function of the
+set of distinct signals per kind and of whether the clock is global,
+and not of the bels the registers sit in. For a scan this means the
+control verdict of a candidate register is the same at every bel of
+the LAB.
+
+**Design.** `evaluate_scan` evaluates the control rules at the first bel
+that passes the ALM rule and the input total, and keeps the answer for
+the scan. A refusal ends the scan at once with "no bel": no later bel
+can pass. An acceptance makes that bel the answer, and the scan ends
+there as it always does. The control rules therefore run at most once
+per scan, and a scan the controls refuse stops evaluating ALM rules
+for its remaining bels. `evaluate_edits` (16.1) asks them once per LAB
+by the same argument. The per-bel path and its verdicts, whose reasons
+do name a register, are untouched.
+
+**Held by.** A property test states the analysis: over random LABs and
+candidate control sets, legal and illegal well represented, the status
+of the control verdict is equal at every free register bel. It was
+written and run while this design was drafted, before any of the
+design was built: 3,000 LABs with global clocks and sparse enables and
+clears, more than 300 legal and 300 illegal cases, more than 50,000
+bels compared, no difference. It is the guard of the shortcut: a rules revision that
+gives pools per half or per register fails it, and the scan returns to
+asking per bel. The scan oracle, unchanged, continues to hold every
+scan to the capture path bel by bel, and verify mode does so in the
+flow.
+
+**Gain.** 56 s to an estimated 12 s, and less ALM-rule time through the
+early exit.
+
+**Cost.** Thirty lines in the crate and one property test. No new
+surface.
+
+### 16.5 One lookup per wire in the arch, a flat index in router2 (C++)
+
+**Profile.** Inside router2's 143 s, three hash lookups per visited
+wire cost 33 s: router2's own `wire_to_idx` (`dict<WireId, int>::at`,
+14.5 s), the base arch's pip binding map
+(`dict<PipId, NetInfo *>::do_lookup`, 12 s, under `checkPipAvailForNet`),
+and the arch's wire table (`dict<WireId, WireInfo>::at`, 6.4 s, under
+`is_pip_blocked`). The wire table is also the top of the device load.
+
+**Design, first step, in `mistral/`.** The arch answers a pip's
+availability from the destination wire's record alone. `WireInfo` gains
+the wire's bound net and the pip that drives it, and the arch overrides
+the binding API of the base arch (`bindWire`, `unbindWire`, `bindPip`,
+`unbindPip`, `getBoundWireNet`, `getBoundPipNet`, the two
+`getConflicting` queries, `checkWireAvail`, `checkPipAvail`,
+`checkPipAvailForNet`) to read and write those fields. A bound pip is
+the pip recorded on its destination wire, so `getBoundPipNet(pip)` is
+one lookup of the destination wire, the same lookup `is_pip_blocked`
+makes; `checkPipAvailForNet` does both with one. The base arch's two
+maps are no longer written.
+
+**Design, second step, in router2.** `wire_to_idx` becomes a flat
+open-addressing table private to router2: capacity a power of two at
+least twice the wire count, linear probing, the arch's own hash of the
+`WireId` mixed once. It is filled once where the dict is filled now
+and only read afterwards, including from router2's worker threads.
+
+**Identity.** Both steps change where a binding or an index is stored
+and not what it is. Nothing may depend on the iteration order of the
+base arch's maps; the first step's first task is to find every reader
+of `base_wire2net` and `base_pip2net` (the checkpoint writer, the JSON
+writer, archcheck) and confirm each goes through the API or through
+the nets.
+
+**Held by.** The probe's routed identity and report hash in the gate,
+the core's routing checksum `0x681553a4`, the checkpoint round-trip
+tests, which restore bindings through the API, and the route reuse
+tests.
+
+**Gain.** An estimated 20 to 25 s of router2, a faster bind and unbind
+in every phase, and about a second of device load.
+
+**Cost and risk.** The widest change of the six: eleven overrides in
+the arch and a table in upstream's router. Medium risk, last in the
+order, and the second step is separable and can be dropped.
+
+### 16.6 The scan's bookkeeping becomes constant time (Rust)
+
+**Profile.** `evaluate_scan` has 38 s of self time that is not rules:
+for every bel of the order it searches the patch list to decide
+whether the bel is free, copies the array of trials in view to add the
+candidate, and the ALM rule writes a rejection record nobody reads.
+
+**Design.** Three changes inside the crate. The session keeps a 60-bit
+occupancy mask per LAB, maintained by `apply_bel` at every commit; a
+scan overlays the patches on it once, and a bel is free when its bit is
+clear. The candidate travels beside the trials instead of inside a
+copy of their array: `view` and `bel_legal` take the trials and one
+extra patch, so the array is built once per scan. And the ALM rule
+becomes generic over where a rejection goes (`check_alm<R: Reject>`):
+the verdict passes the assessment, as now, and the scan passes a sink
+that discards, so the refusing branch is a return.
+
+**Identity.** The mask is a cache of `occupied` fields that `apply_bel`
+alone changes; the view holds the same references in a different
+container; the ALM rule's control flow is unchanged and only the write
+on a refusing branch differs. The oracle asserts the resident facts
+after every step, which covers the mask, and compares every scan with
+the capture path.
+
+**Held by.** The scan oracle and the property tests, unchanged, plus an
+assertion in the oracle that the occupancy mask equals the facts after
+every step.
+
+**Gain.** An estimated 15 s.
+
+**Cost.** Forty lines in the crate. No new surface.
+
+### 16.7 Sum and sequence
+
+| Design | Side | Now | Estimated after | Surface | Risk |
+| --- | --- | ---: | ---: | --- | --- |
+| 16.4 control rules once per scan | Rust | 56 s | 12 s | none | low, behind a property test |
+| 16.6 constant-time scan bookkeeping | Rust | 38 s | 23 s | none | low |
+| 16.2 scan loop filters once | C++ | 100 s | 70 s | none | low |
+| 16.1 clusters through the resident session | both | 91 s | 20 s | one function, one FFI call | medium: moves an authority |
+| 16.3 equation system append and merge | C++, upstream's file | 57 s | 22 s | none | low, bit-identical by argument and by checksum |
+| 16.5 one lookup per wire | C++, arch and upstream's router | 33 s | 10 s | none | medium: binding API overrides |
+
+Together an estimated 200 s of the core flow's 715 s. The estimates are
+for ordering the work; each unit is measured by a Time Profiler run of
+the core when it lands, and one that does not pay is recorded as that
+and removed.

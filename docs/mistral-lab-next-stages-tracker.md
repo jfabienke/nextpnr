@@ -3158,7 +3158,7 @@ an uncrowded tile costs what it cost. What landed:
 | Full core placement, legacy C++ authority, same binary, same day | Checksum `0x2d44a02e`; strict legalisation 662.1 s, HeAP 717.6 s, placement 781.1 s: the Rust default with the scan places the core in 0.86 of the legacy time, where the per-bel path took 1.40 |
 | Default-path probe identity (the gate) | `0xbb18ede9` / `0xbc1365c6`, report hash unchanged, with the scan on |
 | gtest | 65 in `build/rust-enabled` (the scan against bind, check, and unbind on a filling LAB, what it declines, the mismatch path), 52 in `build` |
-| Verify-mode placement of the core | Pending: a run of several hours, to be recorded in a follow-up entry as the conventions allow |
+| Verify-mode placement of the core | Recorded below ("The tile scan certified on the core"): zero mismatches over 5.35 billion evaluations and 167 million advisory scans |
 
 What remains in the core's strict legalisation is 167 million scans at
 about 3.2 microseconds, a hundred nanoseconds per bel evaluated, and
@@ -3217,6 +3217,73 @@ tile visit, and HeAP's cut spreader takes a tile's capacity from the
 number of bels in its bucket, so it spreads registers as if a LAB held
 forty. Correcting the capacity changes placements and is a unit of its
 own, opt-in, with its own quality evidence; it is the next one.
+
+### 2026-09-21: The tile scan certified on the core in verify mode
+
+The follow-up the tile scan's entry left pending. The core's placement
+under the recipe's options with `--lab-legality verify`, on the first
+scan build (`a905f6f5`), artefacts in
+`build/stage6-fullcore/verify-scan/`:
+
+| Check | Result |
+| --- | --- |
+| Placement | Checksum `0x2d44a02e`, the scan build's and the legacy authority's; HeAP 13,279 s, the harness's price |
+| Per-bel evaluations | 5,348,124,234, each compared across the resident session, the capture path in C++ and in Rust, and the live check: `mismatches=0 errors=0 stale-cache=0 stale-revision=0` |
+| Advisory scans | 167,119,070 over 5,119,980,450 bels, nothing skipped, every prediction compared with the live answer of the same bel, a difference fatal: the run finished normally |
+| Pack admission in verify | 15,181 pairs and 5,360 registers, `mismatches=0` |
+
+The refined scan (`e0e1cdac`) changed the scan's evaluation after this
+run had started. It has verify-mode evidence on the probe under both
+option sets; its own core run was started on 2026-09-21 in
+`build/stage6-fullcore/verify-scan-refined/` and is to be recorded when
+it ends.
+
+### 2026-09-21: Time Profiler run of the full core flow
+
+At the user's request the flow was profiled with Instruments' Time
+Profiler from the command line (`xcrun xctrace record --template 'Time
+Profiler' --launch`), the whole run from load to signoff under the
+recipe, exported (`xctrace export`, schema `time-profile`) and
+aggregated by phase from each sample's own stack. 715,373 samples,
+715.4 s of CPU. Artefacts, outside git, in
+`build/stage6-fullcore/profile/`: `core.trace` (opens in Instruments),
+the exported samples, `aggregate.py` and `inclusive.py`, and the two
+text reports.
+
+| Phase | Time | Share |
+| --- | ---: | ---: |
+| HeAP strict legalisation | 389.4 s | 54.4% |
+| router2 | 143.3 s | 20.0% |
+| Annealer refinement | 82.1 s | 11.5% |
+| HeAP solver | 74.8 s | 10.5% |
+| HeAP cut spreading and other | 20.1 s | 2.8% |
+| Device load, netlist load, pack, the rest | 5.7 s | 0.8% |
+
+Inside strict legalisation, inclusive: `try_place_cell` 282.8 s, of
+which the tile scan 157.7 s (the Rust scan 131.9 s: `rules::evaluate`
+40.9, `check_alm` 37.4, the mirror's trial rows 15.1, the scan's own
+bookkeeping 38) and the C++ loop about 100 s (`try_place_cell` self
+63.9, `checkBelAvail` 35.0); `try_place_cluster` 90.9 s, of which the
+transaction callback 85.1 s (`freeze_placement_candidate` 52.0 with the
+whole-LAB capture 34.7 s self, the C++ evaluation 13.2, the Rust
+cross-check 13.8); the per-bel dispatch 15.0 s. In router2: the
+priority queue 35.9 s, `route_arc` 21.5 s, and three hash lookups per
+wire 33 s (`dict<WireId, int>::at` 14.5, `dict<PipId, NetInfo *>`
+lookups 12.0, `dict<WireId, WireInfo>::at` 6.4). In the solver: building
+the system 57 s (`build_solve_direction` 33.8,
+`vector<pair<int, double>>::insert` 16.7, `build_equations` 6.2) against
+12 s in Eigen's conjugate gradient. The annealer has no function above
+1.5% of the run.
+
+The probe's profile is a different program: annealer 47%, solver 32%,
+strict legalisation 3%. Nothing about the legaliser can be sized from
+it.
+
+Six paths were judged worth work and are designed in section 16 of the
+design document; the control-rule design's premise, that a register's
+control verdict is the same at every bel of a LAB, was checked by a
+property test before the design was written down (3,000 random LABs,
+more than 50,000 bels compared, no difference).
 
 ## Decision log
 
@@ -3320,6 +3387,7 @@ own, opt-in, with its own quality evidence; it is the next one.
 | 2026-09-21 | tile scan | Measure the query stream before designing the per-tile query; build the scan as "first legal bel in scan order, asked after a first live refusal" rather than a mask over the tile | The probe under the recipe is 91% single legal answers, the core 99.55% refusals in runs of 30; the scan ends at the first legal bel, so a mask would evaluate bels the scan never reaches, and an unconditional batch would double the cost of uncrowded tiles |
 | 2026-09-21 | tile scan | On by default in the Rust legality modes, advisory in shadow and verify, absent in legacy; `--no-lab-tile-scan` keeps the per-bel path for comparison | Byte-identical placements on the probe under both option sets and on the core; verify mode zero mismatches on the probe; core placement 669 s against 1,092 s per bel; the legacy authority takes 781 s on the same binary the same day |
 | 2026-09-21 | tile scan | Inside the scan, ask the predicates cheapest first, skip the second register bel of a half under a property test, keep MLABs on the cheap path, and ask the batch before the first bind after a refused tile | 55% of the bels a scan evaluates on the core are second-in-half register bels and 76% fail the ALM rule alone; the batch equals the live check, so its timing is a cost choice; core placement 530 s against 669 s, byte-identical, 0.68 of the legacy authority's 781 s |
+| 2026-09-21 | profile | Size further work from a whole-run Time Profiler recording of the core, never from the probe; six hot paths designed before any is built (design 16), ordered small Rust changes first, the cluster path next, upstream's files last | Strict legalisation 54% of the core's 715 s, router2 20%, annealer 11.5%, solver 10.5%; the probe is 47% annealer and 3% legaliser; estimates are for ordering only and each unit is measured by the same recording when it lands |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
