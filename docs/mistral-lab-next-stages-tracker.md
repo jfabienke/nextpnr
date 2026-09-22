@@ -3249,8 +3249,8 @@ Profiler' --launch`), the whole run from load to signoff under the
 recipe, exported (`xctrace export`, schema `time-profile`) and
 aggregated by phase from each sample's own stack. 715,373 samples,
 715.4 s of CPU. Artefacts, outside git, in
-`build/stage6-fullcore/profile/`: `core.trace` (opens in Instruments),
-the exported samples, `aggregate.py` and `inclusive.py`, and the two
+`build/stage6-fullcore/profile/`: `core.trace` (opens in Instruments;
+moved on 2026-09-22 to the Envoy drive, `archive/nextpnr/stage6-fullcore-profile/`, as `.trace.tar.zst` with a README and `SHA256SUMS`), the exported samples, `aggregate.py` and `inclusive.py`, and the two
 text reports.
 
 | Phase | Time | Share |
@@ -3575,7 +3575,8 @@ A second Time Profiler recording of the full core flow under the recipe,
 with the tree at `a1ac20e9`, against the one the six units were designed
 from (`e0e1cdac`). Routed result unchanged: placement `0xe0b15557`,
 routing `0x681553a4`. Artefacts in `build/stage6-fullcore/profile/`
-(`after.trace`, `after_profile.txt`, `after_legaliser_inclusive.txt`).
+(`after_profile.txt`, `after_legaliser_inclusive.txt`; `after.trace`
+moved on 2026-09-22 to the Envoy drive, `archive/nextpnr/stage6-fullcore-profile/`, as `.trace.tar.zst` with a README and `SHA256SUMS`).
 
 | Phase | Before | After | Change |
 | --- | ---: | ---: | ---: |
@@ -3631,7 +3632,8 @@ front end could not deliver (instruction fetch, branch targets), and
 that was discarded after a mispredicted branch. The same trace carries a
 1 ms time profile; `build/stage6-fullcore/profile/bottleneck.py` joins
 the two by millisecond (`record_counters.sh` beside it records, exports,
-and joins; report in `counters_bottlenecks.txt`). Result unchanged:
+and joins; report in `counters_bottlenecks.txt`; the recording,
+`counters.trace`, moved on 2026-09-22 to the Envoy drive, `archive/nextpnr/stage6-fullcore-profile/`, as `.trace.tar.zst` with a README and `SHA256SUMS`). Result unchanged:
 `0xe0b15557` / `0x681553a4`. M1 Ultra: 128-byte lines, 128 KB of L1D,
 12 MB of L2 per four cores, 16 KB pages. The verify run of the entry
 above shared the machine on another core.
@@ -3825,9 +3827,9 @@ Findings, replacing the hypothesis of the entry before:
 Sizes, measured with the build's flags: `WireInfo` 104 bytes (116 as a
 dict entry, about 320 MB for the device), `BelInfo` 96 (not 88 as the
 entry before said), `dict<WireId, int>` entry 12, `CellInfo` 448,
-`NetInfo` 224. Artefacts: `misses_*.trace` (18 GB together),
-`misses_*.xml`, `misses_*.log`, `misses_report.txt` in
-`build/stage6-fullcore/profile/`.
+`NetInfo` 224. Artefacts: `misses_*.xml`, `misses_*.log`,
+`misses_report.txt` in `build/stage6-fullcore/profile/`; the recordings,
+`misses_*.trace` (18 GB together), moved the same day to the Envoy drive, `archive/nextpnr/stage6-fullcore-profile/`, as `.trace.tar.zst` with a README and `SHA256SUMS`.
 
 ## Decision log
 
