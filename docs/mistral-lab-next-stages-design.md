@@ -1888,3 +1888,126 @@ ceiling of about 19 s; the ceiling is a bound, not an estimate.
 
 The annealer comes next (section 18), designed from its own sites once
 these land.
+
+## 18. The annealer's chain moves
+
+The miss counts put the annealer at 1.54 instructions a cycle and at
+most 46% far-memory bound, the most of any phase per cycle. Attributing
+its samples to call paths (the cycles and L2 TLB recordings of the core
+flow, `callers.py` beside `misses.py`) shows where that comes from, and
+it is not layout.
+
+Each pass of the annealer tries a swap for every cell outside a cluster
+(`try_swap_position`) and a move for every cluster root (`try_swap_chain`).
+The first goes through the swap seam of Stage 5 (1c): the architecture
+assesses the swap on an overlay, the cost delta comes from the position
+overlay, and bindings change only for an accepted swap. The second
+binds live: it unbinds and rebinds every cell it moves, asks
+`isBelLocationValid` of each, computes the cost from the live
+bindings, and on a refusal binds everything back. The recipe's 15,181
+ALM pairs and 5,360 packed registers put most cells into clusters, so
+the live path is most of the annealer:
+
+| Of the annealer's 231.8 G cycles, inclusive | Cycles | L2 TLB misses |
+| --- | ---: | ---: |
+| Single swaps through the seam, inclusive | 27.3 G (12%) | 36.8 M |
+| Chain moves' legality through `isBelLocationValid` (the resident batch capture, its compare, the Rust evaluation) | 39.0 G (17%) | 51.6 M |
+| Chain moves' binds and unbinds (ALM input counts 16.0 G) | 24.1 G (10%) | 33.3 M |
+| Cost updates, mostly for chain moves: `compute_cost_changes` 51.1 G and `add_move_cell` 28.8 G (25.6 G of it from the chain path) | 79.9 G (34%) | 70.6 M |
+| `getClusterPlacement` | 7.3 G (3%) | |
+| `powf` in the timing cost | 11.4 G (5%) | 8.3 M |
+
+The rows overlap: the cost row contains `powf`, and the seam row its own
+cost updates. A single swap costs 3.9 kcycles per assessed try through
+the seam. Chain moves are not counted in the log; their path is the
+rest of the annealer, and every refused one undoes everything it bound.
+
+### 18.1 Chain moves through the swap seam (C++, upstream's file and the arch)
+
+**Design.** `try_swap_chain` plans before it binds. The plan walks the
+same queue of displaced clusters in the same order and applies the same
+refusals in the same order, reading a small occupancy overlay (bel to
+occupant, cell to bel) laid over the live bindings instead of changing
+them: `getClusterPlacement` for each cluster at its base; for each
+destination bel, the occupant the live code would find there, the
+availability of the old bel as the live code would see it after the
+steps before, a displaced cluster's new root from the same locations,
+and a displaced single cell moved to the old bel. The plan's result is
+the list of moved cells in the order the live code's `moved_cells` holds
+them, with old and new bels, or the point where the live code would have
+failed.
+
+From the plan: legality through the seam's assessment of exactly the
+bels the live code checks, the new bel of every moved cell after the
+whole move (the live code checks moved cells only, not vacated bels,
+unlike a single swap, which checks both, so the chain assessment takes
+the list of bels to certify); the region test; the cost delta from
+`add_move_cell` with the position overlay for every moved cell, in the
+same order, and `compute_cost_changes` on it; the acceptance draw under
+the same condition. An accepted move binds as the live path ends: every
+moved cell unbound and bound at its new bel with `STRENGTH_WEAK`. A
+refused or illegal move binds nothing, but reproduces what the live
+revert leaves behind: every cell the live path would have moved up to
+the point of refusal is left with `STRENGTH_WEAK`, the strength the
+revert binds with, since later moves read strengths.
+
+A move the seam cannot assess (a bel outside a LAB, more edits than the
+overlay holds, an MLAB) runs the live path as now. `BelOverlay::MAX`
+rises from 4 to cover the moves the recipe makes, measured by counting
+them; the Rust session's trial budget per LAB (`MAX_TRIALS`, 8) bounds
+what it answers without the capture path. The log gains chain counters
+(planned, assessed, unsupported, illegal, refused, committed) like the
+single swaps'.
+
+**Identity.** The plan reads what the live code would read at each
+step, because the overlay holds exactly the bindings the live code
+would have made by then; the assessment answers the question the live
+code asks; the cost functions run on the same positions; the draws are
+the same draws; and the bindings and strengths left behind are the
+same. The seam's shadow mode, the oracle of 1c, extends to chains: it
+plans and assesses, then lets the live path run, and compares the
+failure point, legality, and both deltas move by move; a mismatch is an
+error at the end of the phase.
+
+**Held by.** Shadow mode on the probe under both option sets and on the
+core with zero mismatches; the probe's and the core's placement
+checksums (`0xa99e0f68` for the probe's recipe placement, `0xe0b15557`
+for the core's) and the core's routing checksum; a gtest planning a
+chain move in the fixture against its live counterpart, with a
+displaced cluster, a displaced single cell, and each refusal.
+
+**Gain.** The binds and unbinds of refused moves (most of 24 G) and the
+legality capture (39 G) stop running for assessable moves; the
+assessment replaces them at the seam's cost per question (11.5 G for 6.9
+million single swaps today). The cost updates stay. An estimated 40 to
+50 G cycles, 13 to 17 s of the annealer's 77 s, measured when it lands.
+
+**Cost and risk.** The largest unit of the three designs since 16.1:
+about 250 lines in `placer1.cc`, the assessment entry for a list of
+bels in the arch. Medium to high risk: the plan must reproduce every
+branch of the live walk, which the shadow mode checks move by move.
+
+### 18.2 The timing weight computed once per timing update (C++, upstream's file)
+
+**Design.** `get_timing_cost` multiplies an arc's predicted delay by
+`std::pow(crit, crit_exp)` for every changed arc of every move, 11.4 G
+cycles. The criticality table is written in one place, `setup_costs`,
+after each timing analysis, and `crit_exp` is a constant. A second
+table beside it holds `std::pow(crit, crit_exp)`, written in the same
+place from the same values, and `get_timing_cost` reads it.
+
+**Identity.** The same expression with the same arguments, evaluated
+once instead of per move: bit-identical by construction.
+
+**Held by.** The probe's and the core's placement checksums.
+
+**Gain.** Up to 11.4 G cycles, about 4 s.
+
+**Cost and risk.** Ten lines. Low.
+
+### 18.3 Sequence
+
+18.2 first (small and independent), then 18.1. Dense per-cell positions
+for the cost functions, the layout change the miss counts first
+suggested, waits for the measurement after 18.1: the cost updates stay
+in both paths, and what they cost then decides it.
