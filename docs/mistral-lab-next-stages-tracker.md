@@ -3661,7 +3661,9 @@ mode (L1D, L2, and TLB miss events with event-triggered samples), which
 has to be saved once from the Instruments window and cannot be made
 from the command line; nothing below is certified as memory bound. The
 table sizes quoted below are computed from the declarations, not
-measured.
+measured. (Both were done the next day: the miss events counted per
+function, and the sizes measured, in "Cache and TLB misses of the core
+flow, counted per function".)
 
 Findings:
 
@@ -3700,7 +3702,7 @@ none designed:
 | A four-way heap for the router's queue: four 20-byte children on one 128-byte line and half the depth | router2, part of the 33.5 s | Upstream's file; pops in the same order wherever scores do not tie exactly, which the routed checksum decides |
 | The annealer's per-move reads: `dict<IdString, ArchPinInfo>` by port name, the timing analyser's `dict<CellPortKey, PerPort>`, net bounds through `CellInfo` records spread over the heap | Annealer, 44 s | Dense per-cell and per-port arrays beside the dicts; bit-identical by construction |
 | Cell positions in a dense array indexed per cell for the solver's system building | Solver, 23 s | Upstream's file; the same arithmetic in the same order |
-| A free-bel mask per tile kept on bind and unbind, read once per tile visit instead of sixty 88-byte bel records for one pointer each | Strict legalisation, a share of 38 s | Small, and the measurement says the phase is not memory bound, so expect little |
+| A free-bel mask per tile kept on bind and unbind, read once per tile visit instead of sixty 96-byte bel records for one pointer each | Strict legalisation, a share of 38 s | Small, and the measurement says the phase is not memory bound, so expect little |
 
 ### 2026-09-21: The refined scan and the units of design 16 certified on the core in verify mode
 
@@ -3725,6 +3727,107 @@ of 105 iterations with no mismatch when this run superseded it. Unit
 16.5's arch step landed after this binary; it moves the storage of wire
 and pip bindings and touches no legality path, and the gate's routed
 identity covers it.
+
+### 2026-09-22: Cache and TLB misses of the core flow, counted per function
+
+The follow-up the CPU Counters entry left open: its back-end shares bound
+memory stalls from above and did not count a miss. This entry counts
+them. Instruments' CPU Counters template in manual mode, generated from
+the command line by `build/stage6-fullcore/profile/make_counters_template.py`
+(the instrument's configuration is a JSON document under `optionsEncoded`
+in the template's keyed archive; manual mode sets `configurationType`,
+`sampleByTime`, `pmiEventAliasOrMnemonic`, `pmiThreshold`, and
+`allEventsAndFormulas`, each event a base64 keyed archive of an
+`XRCountersSetupEventOrFormula`). Three recordings of the core flow
+(recipe, seed 1, tree at `0a494709`, `record_misses.sh`), each sampling on
+one event, each reading the same eight counters (cycles, instructions,
+L1D load misses, L1D store misses, L1D TLB misses, L2 TLB data misses,
+MMU table walks for data, load-unit uops):
+
+| Trigger | Every | Samples of the process | Result |
+| --- | ---: | ---: | --- |
+| L1D load misses | 250,000 | 296,553 | `0xe0b15557` / `0x681553a4`, 45 iterations, 767,087 wires |
+| L2 TLB data misses | 4,000 | 197,338 | the same |
+| Cycles | 6,000,000 | 288,167 | the same |
+
+A sample lands in a function in proportion to its trigger's count there,
+so samples times the interval estimates each function's count of that
+event; the three runs are byte-identical, so their functions join.
+`misses.py` joins them (report `misses_report.txt`). Per-phase totals are
+the counter deltas of the cycles run; per-function counts are the
+estimates, which exceed the summed deltas by 8 to 10% on every run
+(sampling skid), so rates per function carry that error in both numerator
+and denominator.
+
+What the counters cannot say: this CPU's event database
+(`/usr/share/kpep`, 60 events) has no L2-cache-miss or memory event. The
+deepest counts are L1D misses and TLB misses. The cost of a miss is
+therefore calibrated separately: a dependent-load chase over a random
+cyclic permutation of 128-byte lines (`scratchpad` `chase.c`, idle
+machine, load average 3.5 from other sessions) measured
+
+| Working set | 128 KB | 256 KB to 1 MB | 4 MB | 8 MB | 12 to 16 MB | 32 MB | 64 MB to 1 GB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ns per load | 1.0 | 5.7 | 7.4 | 21 | 52 to 63 | 96 | 126 to 146 |
+
+An L2 TLB miss means the page lies beyond what the TLBs map, where the
+chase pays 126 to 146 ns. Counting every L2 TLB miss as one serialized
+trip at 140 ns gives an upper bound on a phase's far-memory waiting; the
+real figure is lower by whatever the core overlaps. L1D misses that stay
+near cost 5.7 ns serialized and are mostly overlapped (the legaliser
+retires 4.3 instructions a cycle with 30 billion of them).
+
+| Phase | CPU | IPC | L1D load misses | per 1k instructions | of loads | L1D TLB MPKI | L2 TLB misses | Far memory, at most |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Strict legalisation | 288 s | 4.34 | 30.1 G | 8.95 | 3.5% | 0.54 | 0.14 G | 19 s, 7% |
+| router2 | 118 s | 1.66 | 11.8 G | 21.7 | 6.1% | 8.66 | 0.23 G | 32 s, 28% |
+| Annealer | 77 s | 1.54 | 9.4 G | 28.8 | 8.2% | 13.5 | 0.25 G | 35 s, 46% |
+| HeAP solver | 73 s | 3.24 | 12.8 G | 20.6 | 5.9% | 1.27 | 0.02 G | 3 s, 4% |
+| Whole run | 580 s | 3.17 | 66.7 G | 13.4 | 4.7% | 2.49 | 0.70 G | 98 s, 17% |
+
+(CPU seconds are the CPU Counters run's; misses and IPC are the cycles
+run's deltas.)
+
+Findings, replacing the hypothesis of the entry before:
+
+- The legaliser takes 44% of the run's L1D load misses and pays little
+  for them. `check_alm` alone is 13% of the run's misses (86 per 1,000
+  cycles), the tile scan inclusive 28%, `try_place_cell` 7.5%, the bel
+  records read by `checkBelAvail` 4.7%; yet the phase misses the L2 TLB
+  0.04 times per 1,000 instructions, a tenth of the router's rate, and
+  retires 4.3 instructions a cycle. The facts are streamed from nearby
+  caches and the misses overlap. Its largest TLB-miss sites are not the
+  rules but `Arch::update_alm_input_count` (50 M) and
+  `next_random_location` (27 M). A layout change to the resident session
+  would cut misses, not time.
+- router2 is at most 28% far-memory bound. Its L2 TLB misses: the
+  priority queue's own heap array 59 M (the largest single site in the
+  run: the queue grows large enough that each pop walks pages),
+  `route_arc` itself 39 M (the per-wire state reads are inlined there), the wire index `dict<WireId, int>`
+  35 M, `score_wire_for_arc` 22 M, the arch's wire record in
+  `is_pip_blocked` 15 M, the timing analyser's port dict 9 M. A layout
+  of dense per-wire state reached by index, not hash, and a queue with
+  fewer levels are what this points at, within 32 s.
+- The annealer is the most far-memory-bound phase per cycle: at most 46%,
+  with 1,175 L2 TLB misses per million cycles. Its sites are cell and
+  net records reached through pointers: `random_bel_for_cell` 44 M,
+  `add_move_cell` 30 M, `update_alm_input_count` 25 M, the resident
+  session's batch capture (`build_batch`, `capture_cell_v2_keyed`) 24 M,
+  `memcmp` 13 M, `compute_cost_changes` 9 M, `is_alm_legal_overlay`
+  8 M, `dict<IdString, ArchPinInfo>` 6 M. `CellInfo` is 448 bytes and
+  `NetInfo` 224 (measured), each on its own heap allocation.
+- The solver's misses are streams: 12.8 G L1D misses and 14.8 store
+  misses per 1,000 instructions, from the coefficient inserts (5.4 G) and
+  Eigen's sparse products (3.6 G), with almost no TLB misses and 3.2
+  instructions a cycle. Unit 16.3 already showed the insert path is not
+  the cost.
+
+Sizes, measured with the build's flags: `WireInfo` 104 bytes (116 as a
+dict entry, about 320 MB for the device), `BelInfo` 96 (not 88 as the
+entry before said), `dict<WireId, int>` entry 12, `CellInfo` 448,
+`NetInfo` 224. Artefacts: `misses_*.trace` (18 GB together),
+`misses_*.xml`, `misses_*.log`, `misses_report.txt` in
+`build/stage6-fullcore/profile/`.
 
 ## Decision log
 
