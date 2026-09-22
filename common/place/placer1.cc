@@ -457,11 +457,20 @@ class SAPlacer
                          batch_count, batch_candidates, batch_skipped, batch_stale, batch_unsupported, batch_illegal,
                          batch_rejected, batch_committed, batch_delta_mismatches, worker_pool->spin_wakes(),
                          worker_pool->block_wakes());
+            if (cfg.netShareWeight <= 0)
+                log_info("  chain seam: planned=%" PRIu64 ", failed=%" PRIu64 ", assessed=%" PRIu64 ", illegal=%" PRIu64
+                         ", rejected=%" PRIu64 ", committed=%" PRIu64 ", unsupported=%" PRIu64 "\n",
+                         chain_planned, chain_failed, chain_assessed, chain_illegal, chain_rejected, chain_committed,
+                         chain_unsupported);
             if (cfg.swap_seam_shadow) {
                 log_info("  swap seam shadow: checked=%" PRIu64 ", mismatches=%" PRIu64 "\n", seam_shadow_checked,
                          seam_shadow_mismatches);
+                log_info("  chain seam shadow: checked=%" PRIu64 ", mismatches=%" PRIu64 "\n", chain_shadow_checked,
+                         chain_shadow_mismatches);
                 if (seam_shadow_mismatches != 0)
                     log_error("Swap seam shadow found %" PRIu64 " mismatches.\n", seam_shadow_mismatches);
+                if (chain_shadow_mismatches != 0)
+                    log_error("Chain seam shadow found %" PRIu64 " mismatches.\n", chain_shadow_mismatches);
             }
         }
 
@@ -741,8 +750,260 @@ class SAPlacer
     }
 
     // Attempt to swap a chain with a non-chain
+    // Design 18.1: a chain move planned on an occupancy overlay instead of bound. The plan walks the
+    // live code's queue of displaced clusters in the same order and fails where it would fail, reading
+    // at every step the bindings the live code would have made by then.
+    struct ChainPlan
+    {
+        // The cells the walk moves, in the order the live code's moved_cells dict inserts them: the
+        // value the dict holds (the bel before the move) and the cell's bel now, BelId() while unbound.
+        struct Moved
+        {
+            CellInfo *cell;
+            BelId before, now;
+        };
+        std::vector<Moved> moved;
+        // Bels whose occupant the walk changed, with the occupant now (nullptr: vacated).
+        std::vector<std::pair<BelId, CellInfo *>> occupants;
+        bool unsupported = false; // the live code would take a path the plan does not model
+
+        int index_of(const CellInfo *cell) const
+        {
+            for (size_t i = 0; i < moved.size(); ++i)
+                if (moved[i].cell == cell)
+                    return int(i);
+            return -1;
+        }
+    };
+
+    CellInfo *plan_occupant(const ChainPlan &plan, BelId bel) const
+    {
+        for (const auto &entry : plan.occupants)
+            if (entry.first == bel)
+                return entry.second;
+        return ctx->getBoundBelCell(bel);
+    }
+    static BelId plan_bel(const ChainPlan &plan, const CellInfo *cell)
+    {
+        const int i = plan.index_of(cell);
+        return i < 0 ? cell->bel : plan.moved[i].now;
+    }
+    static void plan_set(ChainPlan &plan, BelId bel, CellInfo *cell)
+    {
+        for (auto &entry : plan.occupants)
+            if (entry.first == bel) {
+                entry.second = cell;
+                return;
+            }
+        plan.occupants.emplace_back(bel, cell);
+    }
+    // moved_cells[cell->name] = bel
+    static void plan_note(ChainPlan &plan, CellInfo *cell, BelId bel)
+    {
+        const int i = plan.index_of(cell);
+        if (i < 0)
+            plan.moved.push_back({cell, bel, cell->bel});
+        else
+            plan.moved[i].before = bel;
+    }
+    // unbindBel of a noted cell's current bel
+    static void plan_unbind(ChainPlan &plan, CellInfo *cell)
+    {
+        auto &m = plan.moved[plan.index_of(cell)];
+        if (m.now != BelId())
+            plan_set(plan, m.now, nullptr);
+        m.now = BelId();
+    }
+    // bindBel(bel, cell) of a noted cell
+    static void plan_bind(ChainPlan &plan, BelId bel, CellInfo *cell)
+    {
+        plan_set(plan, bel, cell);
+        plan.moved[plan.index_of(cell)].now = bel;
+    }
+
+    // The walk of try_swap_chain up to its validity checks; false where the live code goes to swap_fail.
+    bool plan_chain(CellInfo *cell, BelId newBase, ChainPlan &plan)
+    {
+        std::queue<std::pair<ClusterId, BelId>> displaced_clusters;
+        displaced_clusters.emplace(cell->cluster, newBase);
+        while (!displaced_clusters.empty()) {
+            std::vector<std::pair<CellInfo *, BelId>> dest_bels;
+            auto cursor = displaced_clusters.front();
+            displaced_clusters.pop();
+            if (!ctx->getClusterPlacement(cursor.first, cursor.second, dest_bels))
+                return false;
+            for (const auto &db : dest_bels) {
+                const BelId bel = plan_bel(plan, db.first);
+                if (bel != BelId()) {
+                    plan_note(plan, db.first, bel);
+                    plan_unbind(plan, db.first);
+                }
+            }
+            for (const auto &db : dest_bels) {
+                CellInfo *bound = plan_occupant(plan, db.second);
+                const int noted = plan.index_of(db.first);
+                if (noted < 0) {
+                    plan.unsupported = true; // the live code's moved_cells.at() would throw here
+                    return false;
+                }
+                const BelId old_bel = plan.moved[noted].before;
+                if (plan_occupant(plan, old_bel) != nullptr && bound != nullptr)
+                    return false;
+                if (bound != nullptr) {
+                    if (plan.index_of(bound) >= 0) {
+                        return false;
+                    } else if (bound->belStrength > STRENGTH_STRONG) {
+                        return false;
+                    } else if (bound->cluster != ClusterId()) {
+                        Loc old_loc = ctx->getBelLocation(old_bel);
+                        Loc bound_loc = ctx->getBelLocation(plan_bel(plan, bound));
+                        Loc root_loc = ctx->getBelLocation(plan_bel(plan, ctx->getClusterRootCell(bound->cluster)));
+                        Loc new_loc =
+                                Loc(old_loc.x + (root_loc.x - bound_loc.x), old_loc.y + (root_loc.y - bound_loc.y),
+                                    old_loc.z + (root_loc.z - bound_loc.z));
+                        if (new_loc.x < 0 || new_loc.x >= ctx->getGridDimX())
+                            return false;
+                        if (new_loc.y < 0 || new_loc.y >= ctx->getGridDimY())
+                            return false;
+                        BelId new_root = ctx->getBelByLocation(new_loc);
+                        if (new_root == BelId())
+                            return false;
+                        for (auto cluster_cell : cluster2cell.at(bound->cluster)) {
+                            plan_note(plan, cluster_cell, plan_bel(plan, cluster_cell));
+                            plan_unbind(plan, cluster_cell);
+                        }
+                        displaced_clusters.emplace(bound->cluster, new_root);
+                    } else {
+                        plan_note(plan, bound, plan_bel(plan, bound));
+                        plan_unbind(plan, bound);
+                        plan_bind(plan, old_bel, bound);
+                    }
+                } else if (plan_occupant(plan, db.second) != nullptr) {
+                    return false;
+                }
+                plan_bind(plan, db.second, db.first);
+            }
+        }
+        return true;
+    }
+
+    // What the live revert leaves behind: every cell it moved bound again at its old bel, weakly.
+    static void plan_revert_strengths(const ChainPlan &plan)
+    {
+        for (const auto &m : plan.moved)
+            m.cell->belStrength = STRENGTH_WEAK;
+    }
+
+    // Chain seam statistics and the detached answer awaiting comparison in shadow mode.
+    uint64_t chain_planned = 0, chain_failed = 0, chain_assessed = 0, chain_unsupported = 0, chain_illegal = 0,
+             chain_rejected = 0, chain_committed = 0, chain_shadow_checked = 0, chain_shadow_mismatches = 0;
+    int chain_shadow_outcome = -1; // 0 walk failed, 1 illegal, 2 legal
+    wirelen_t chain_shadow_wirelen_delta = 0;
+    double chain_shadow_timing_delta = 0;
+
+    // A chain move without binding unless it is accepted: 1 committed, 0 refused, -1 not assessable
+    // (the live path runs; nothing was changed). With `dry`, only the answer is recorded for the
+    // shadow comparison: no draw, no commit, no strength change.
+    int try_swap_chain_detached(CellInfo *cell, BelId newBase, bool dry)
+    {
+        ChainPlan plan;
+        moveChange.reset(this);
+        const bool walked = plan_chain(cell, newBase, plan);
+        if (plan.unsupported) {
+            ++chain_unsupported;
+            return -1;
+        }
+        ++chain_planned;
+        auto refuse = [&](int outcome) {
+            if (dry) {
+                chain_shadow_outcome = outcome;
+                moveChange.reset(this);
+            } else {
+                plan_revert_strengths(plan);
+            }
+            return 0;
+        };
+        if (!walked) {
+            ++chain_failed;
+            return refuse(0);
+        }
+        std::vector<Placer1SwapEdit> edits;
+        for (const auto &entry : plan.occupants) {
+            CellInfo *before = ctx->getBoundBelCell(entry.first);
+            if (before == nullptr && entry.second == nullptr)
+                continue;
+            edits.push_back({entry.first, before, before != nullptr ? before->belStrength : STRENGTH_NONE, entry.second,
+                             entry.second != nullptr ? STRENGTH_WEAK : STRENGTH_NONE, entry.second != nullptr});
+        }
+        const auto assessment = cfg.assess_swap(ctx, edits);
+        if (assessment.status == Placer1SwapAssessment::Status::Unsupported) {
+            --chain_planned;
+            ++chain_unsupported;
+            return -1;
+        }
+        ++chain_assessed;
+        bool legal = assessment.status == Placer1SwapAssessment::Status::Legal;
+        for (const auto &m : plan.moved)
+            legal = legal && m.cell->testRegion(m.now);
+        if (!legal) {
+            ++chain_illegal;
+            return refuse(1);
+        }
+        // The live code visits moved_cells in the dict's iteration order, newest first.
+        BelOverlayList overlay;
+        for (auto it = plan.moved.rbegin(); it != plan.moved.rend(); ++it)
+            overlay.emplace_back(it->cell, it->now);
+        for (auto it = plan.moved.rbegin(); it != plan.moved.rend(); ++it)
+            add_move_cell(moveChange, overlay, it->cell, it->before);
+        compute_cost_changes(moveChange, overlay);
+        if (dry) {
+            chain_shadow_outcome = 2;
+            chain_shadow_wirelen_delta = moveChange.wirelen_delta;
+            chain_shadow_timing_delta = moveChange.timing_delta;
+            moveChange.reset(this);
+            return 0;
+        }
+        const double delta = lambda * (moveChange.timing_delta / last_timing_cost) +
+                             (1 - lambda) * (double(moveChange.wirelen_delta) / last_wirelen_cost);
+        n_move++;
+        if (delta < 0 || (temp > 1e-8 && (ctx->rng() / float(0x3fffffff)) <= std::exp(-delta / temp))) {
+            n_accept++;
+            if (!cfg.commit_swap(ctx, edits, assessment))
+                log_error("Detached chain commit found a changed design for cell '%s'.\n", ctx->nameOf(cell));
+            ++chain_committed;
+            commit_cost_changes(moveChange);
+            return 1;
+        }
+        ++chain_rejected;
+        plan_revert_strengths(plan);
+        return 0;
+    }
+
+    void chain_shadow_compare(CellInfo *cell, int live_outcome, wirelen_t live_wirelen_delta, double live_timing_delta)
+    {
+        ++chain_shadow_checked;
+        const int detached = chain_shadow_outcome;
+        chain_shadow_outcome = -1;
+        if (live_outcome != detached || (live_outcome == 2 && (live_wirelen_delta != chain_shadow_wirelen_delta ||
+                                                               live_timing_delta != chain_shadow_timing_delta))) {
+            if (chain_shadow_mismatches++ < 8)
+                log_warning("Chain seam shadow mismatch for '%s': live outcome=%d wl=%d tmg=%.17g, detached outcome=%d "
+                            "wl=%d tmg=%.17g\n",
+                            ctx->nameOf(cell), live_outcome, int(live_wirelen_delta), live_timing_delta, detached,
+                            int(chain_shadow_wirelen_delta), chain_shadow_timing_delta);
+        }
+    }
+
     bool try_swap_chain(CellInfo *cell, BelId newBase)
     {
+        bool shadow = false;
+        if (cfg.assess_swap && cfg.netShareWeight <= 0) {
+            const int detached = try_swap_chain_detached(cell, newBase, cfg.swap_seam_shadow);
+            if (detached >= 0 && !cfg.swap_seam_shadow)
+                return detached == 1;
+            shadow = detached >= 0;
+        }
+        int live_outcome = 0; // for the shadow comparison: 0 walk failed, 1 illegal, 2 legal
         std::vector<std::pair<CellInfo *, Loc>> cell_rel;
         dict<IdString, BelId> moved_cells;
         double delta = 0;
@@ -829,6 +1090,7 @@ class SAPlacer
             }
         }
 
+        live_outcome = 1;
         for (const auto &mm : moved_cells) {
             CellInfo *cell = ctx->cells.at(mm.first).get();
             add_move_cell(moveChange, no_overlay, cell, moved_cells.at(cell->name));
@@ -842,6 +1104,9 @@ class SAPlacer
         log_info("legal chain swap %s\n", cell->name.c_str(ctx));
 #endif
         compute_cost_changes(moveChange, no_overlay);
+        live_outcome = 2;
+        if (shadow)
+            chain_shadow_compare(cell, 2, moveChange.wirelen_delta, moveChange.timing_delta);
         delta = lambda * (moveChange.timing_delta / last_timing_cost) +
                 (1 - lambda) * (double(moveChange.wirelen_delta) / last_wirelen_cost);
         if (cfg.netShareWeight > 0) {
@@ -864,6 +1129,8 @@ class SAPlacer
 #if CHAIN_DEBUG
         log_info("Swap failed\n");
 #endif
+        if (shadow && live_outcome < 2)
+            chain_shadow_compare(cell, live_outcome, 0, 0);
         for (auto cell_pair : moved_cells) {
             CellInfo *cell = ctx->cells.at(cell_pair.first).get();
             if (cell->bel != BelId()) {

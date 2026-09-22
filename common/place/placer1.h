@@ -37,6 +37,10 @@ struct Placer1SwapEdit
     PlaceStrength expected_strength = STRENGTH_NONE;
     CellInfo *replacement = nullptr;
     PlaceStrength replacement_strength = STRENGTH_NONE;
+    // Whether the assessment certifies this bel's location after the move, as the live path's
+    // isBelLocationValid would. A swap certifies both its bels; a chain move certifies the bels its
+    // moved cells land on and not the ones it vacates (design section 18.1).
+    bool certify = true;
 };
 
 struct Placer1SwapAssessment

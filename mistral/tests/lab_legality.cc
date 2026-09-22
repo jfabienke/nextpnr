@@ -877,6 +877,50 @@ TEST_F(LabControlCaptureTest, SwapSeamAssessesAndCommitsWithoutProvisionalBindin
     }
     EXPECT_EQ(agreed, 64u);
     EXPECT_GT(illegal_seen, 0u);
+
+    // Design 18.1: certifying the listed bels only, over the whole overlay's occupancy, as a chain
+    // move's live path checks its moved cells and not the bels it vacates. One clock for all six
+    // registers, so that an illegal second ALM (a register in a refused bel) is invisible to a
+    // check of the first ALM's bels alone and the two answers can differ.
+    for (unsigned i = 0; i < 6; ++i) {
+        cells[10 + i]->disconnectPort(id_CLK);
+        cells[10 + i]->connectPort(id_CLK, nets[0]);
+        ctx->assign_ff_info(cells[10 + i]);
+    }
+    unsigned subset_agreed = 0, subset_differs = 0;
+    for (unsigned pattern = 0; pattern < 64; ++pattern) {
+        BelOverlay overlay;
+        std::vector<std::pair<BelId, CellInfo *>> binds;
+        std::array<BelId, BelOverlay::MAX> check{};
+        unsigned check_count = 0;
+        for (unsigned slot = 0; slot < 6; ++slot) {
+            if (!(pattern & (1u << slot)))
+                continue;
+            const BelId bel = alms.at(6 + slot / 4).ff_bels.at(slot % 4);
+            overlay.add(bel, cells[10 + slot]);
+            binds.emplace_back(bel, cells[10 + slot]);
+            if (slot < 4)
+                check[check_count++] = bel;
+        }
+        const bool detached = ctx->overlay_bels_legal(overlay, check, check_count);
+        for (const auto &bind : binds)
+            ctx->bindBel(bind.first, bind.second, STRENGTH_WEAK);
+        bool live = true, whole = true;
+        for (const auto &bind : binds) {
+            const bool valid = ctx->isBelLocationValid(bind.first);
+            whole = whole && valid;
+            for (unsigned k = 0; k < check_count; ++k)
+                if (check[k] == bind.first)
+                    live = live && valid;
+        }
+        for (const auto &bind : binds)
+            ctx->unbindBel(bind.first);
+        EXPECT_EQ(detached, live) << "pattern " << pattern;
+        subset_agreed += detached == live;
+        subset_differs += live != whole;
+    }
+    EXPECT_EQ(subset_agreed, 64u);
+    EXPECT_GT(subset_differs, 0u); // the generator reaches subsets that are legal where the whole is not
     for (unsigned i = 0; i < 6; ++i)
         cells[10 + i]->disconnectPort(id_CLK);
     ctx->unbindBel(a);

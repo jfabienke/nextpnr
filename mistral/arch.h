@@ -123,7 +123,7 @@ struct LABInfo
 // proposed move without binding. Linear lookup; MAX is small on purpose.
 struct BelOverlay
 {
-    static constexpr unsigned MAX = 4;
+    static constexpr unsigned MAX = 16; // a chain move of two register-packed pairs (design 18.1)
     std::array<BelId, MAX> bels{};
     std::array<const CellInfo *, MAX> cells{};
     unsigned count = 0;
@@ -806,6 +806,9 @@ struct Arch : BaseArch<ArchRanges>
     bool is_lab_ctrlset_legal_overlay(uint32_t lab, const BelOverlay &overlay) const;
     bool check_mlab_groups_overlay(uint32_t lab, const BelOverlay &overlay) const;
     bool overlay_bels_legal(const BelOverlay &overlay) const;
+    // The same for the listed bels only, over the overlay's occupancy.
+    bool overlay_bels_legal(const BelOverlay &overlay, const std::array<BelId, BelOverlay::MAX> &check,
+                            unsigned check_count) const;
     template <typename Bound> bool alm_legal_with(const ALMInfo &alm, Bound bound) const;
     template <typename Bound> int alm_input_count_with(const ALMInfo &alm, Bound bound) const;
     template <typename Bound> bool mlab_groups_with(uint32_t lab, Bound bound) const;

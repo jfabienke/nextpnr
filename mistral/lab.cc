@@ -658,12 +658,19 @@ bool Arch::is_lab_ctrlset_legal_overlay(uint32_t lab, const BelOverlay &overlay)
 // overlay BEL, without binding. Only the legacy live rules are modelled.
 bool Arch::overlay_bels_legal(const BelOverlay &overlay) const
 {
+    return overlay_bels_legal(overlay, overlay.bels, overlay.count);
+}
+
+// Equivalent to binding every overlay entry and asking isBelLocationValid for each listed BEL.
+bool Arch::overlay_bels_legal(const BelOverlay &overlay, const std::array<BelId, BelOverlay::MAX> &check,
+                              unsigned check_count) const
+{
     // Distinct LABs touched, with whether any FF BEL among them needs the control-set check.
     std::array<uint32_t, BelOverlay::MAX> labs_seen{};
     std::array<bool, BelOverlay::MAX> need_ctrlset{};
     unsigned lab_count = 0;
-    for (unsigned i = 0; i < overlay.count; ++i) {
-        const auto &data = bel_data(overlay.bels[i]);
+    for (unsigned i = 0; i < check_count; ++i) {
+        const auto &data = bel_data(check[i]);
         const bool is_ff = data.type == id_MISTRAL_FF;
         if (!is_ff && !data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB))
             return false; // callers gate on placement_candidate_supported; be safe

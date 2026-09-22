@@ -268,6 +268,8 @@ Placer1SwapAssessment mistral_assess_swap(Context *ctx, const std::vector<Placer
     Placer1SwapAssessment assessment;
     const Arch &arch = *ctx;
     BelOverlay overlay;
+    std::array<BelId, BelOverlay::MAX> certify{};
+    unsigned certify_count = 0;
     for (const auto &edit : edits) {
         if (edit.bel == BelId() || overlay.count >= BelOverlay::MAX)
             return assessment;
@@ -277,12 +279,15 @@ Placer1SwapAssessment mistral_assess_swap(Context *ctx, const std::vector<Placer
         if (arch.getBoundBelCell(edit.bel) != edit.expected)
             log_error("Detached swap assessment saw an unexpected occupant on '%s'.\n", ctx->nameOfBel(edit.bel));
         overlay.add(edit.bel, edit.replacement);
+        if (edit.certify)
+            certify[certify_count++] = edit.bel;
     }
     const auto stamp = arch.placement_revision.stamp();
     assessment.stamp_session = stamp.session.value;
     assessment.stamp_revision = stamp.revision;
-    assessment.status = arch.overlay_bels_legal(overlay) ? Placer1SwapAssessment::Status::Legal
-                                                         : Placer1SwapAssessment::Status::Illegal;
+    assessment.status = arch.overlay_bels_legal(overlay, certify, certify_count)
+                                ? Placer1SwapAssessment::Status::Legal
+                                : Placer1SwapAssessment::Status::Illegal;
     return assessment;
 }
 
