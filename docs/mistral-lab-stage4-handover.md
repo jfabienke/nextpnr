@@ -11,7 +11,7 @@ the original rationale remains in
 Handover point:
 
 - Branch: `cyclonev-compress-default`
-- Commit: `17f50fa7` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled, six hot paths designed in design 16 and closed at three kept and three negative, core flow 715 s to 575 s of CPU; the pipeline's stalls measured per phase with CPU Counters; the refined scan and units 16.6, 16.2, and 16.1 certified on the core in verify mode; cache and TLB misses counted per function)
+- Commit: `945452c2` (Stage 6 through 6h, the Rust legality authority at parity and promoted to the default, the coding rules and their gate, the live monitor, pack-time admission, the tile scan, refined; the core flow profiled, six hot paths designed in design 16 and closed at three kept and three negative, core flow 715 s to 575 s of CPU; the pipeline's stalls measured per phase with CPU Counters; the refined scan and units 16.6, 16.2, and 16.1 certified on the core in verify mode; cache and TLB misses counted per function; design 17, router2 by wire slot, a quarter faster)
 - Stages 1, 2, and 3 are closed.
 - Stage 4A through 4E are complete for the Stage 4 scope.
 - Stage 5: 1c complete, 4b retired, 2a and 2b complete (checkpoints for all
@@ -400,6 +400,11 @@ or 4E complete until its exit criteria and validation evidence are recorded.
 | `f4e42f93` | The refined scan and units 16.6, 16.2, and 16.1 certified on the core in verify mode: 5.35 billion evaluations, 167.5 million scans, 19.5 million cluster candidates, zero mismatches |
 | `0a494709` | The counters entry says what it measured: a ceiling on memory stalls, not cache usage |
 | `17f50fa7` | Cache and TLB misses of the core flow counted per function (manual-mode CPU Counters from the command line): the legaliser's misses are near and cheap, router2 at most 28% and the annealer at most 46% far-memory bound |
+| `7d5bfb64` | Design 17: router2's memory traffic (queues, wire slots, router2's index through the slot) |
+| `dcb9b87f` | Unit 17.1: router2's search queues keep their storage; the four-way heap not kept |
+| `1e3ad68e` | Unit 17.2: the arch numbers its wires into slots and keeps their routing state by slot |
+| `5686a671` | Unit 17.3: router2 finds a wire's index through the arch's slot; resumed router2 on the core 89.8 s to 67.6 s |
+| `945452c2` | Design 17 recorded |
 | `48171fab` | Stage 6 unit 6c: demand-weighted spreading behind `--spread-demand`; clears the paired probe's wire, trims the core's plateau 10% |
 
 ## Stage 5: applying the seams to the rest of the flow
