@@ -1715,3 +1715,159 @@ Together an estimated 200 s of the core flow's 715 s. The estimates are
 for ordering the work; each unit is measured by a Time Profiler run of
 the core when it lands, and one that does not pay is recorded as that
 and removed.
+
+## 17. router2's memory traffic
+
+The miss counts of the core flow (tracker, "Cache and TLB misses of the
+core flow, counted per function") put router2 at 1.66 instructions a
+cycle, 21.7 L1D load misses and 0.43 L2 TLB misses per 1,000
+instructions, and at most 28% of its time waiting on far memory (32 s of
+118 s, counting every L2 TLB miss as a serialized trip at the measured
+140 ns). The strict legaliser, by contrast, misses mostly near and
+overlaps it; its lever is branches, not layout, and it is not in this
+section.
+
+The router's L2 TLB misses name where it waits. Of about 232 million in
+the phase: the priority queue's own heap array 59 M, `route_arc` 39 M
+(the arch's destination-wire lookup inside `checkPipAvailForNet` and the
+router's per-wire state are inlined there), router2's `wire_to_idx`
+dictionary 35 M, `score_wire_for_arc` 22 M (the first touch of the
+neighbour's per-wire state), and the arch's wire record in
+`is_pip_blocked` 15 M.
+
+What one neighbour costs, read from the code: the expansion loop takes
+the current wire's adjacency from the arch (`getPipsDownhill`, a lookup
+in `dict<WireId, WireInfo>`), and for every neighbour asks the arch
+whether the pip is available (a second lookup, of the destination wire,
+and a third, of the source wire, for its blocked flag), looks up the
+neighbour's index in `wire_to_idx`, and looks it up again inside
+`score_wire_for_arc` through `wire_data()`. The arch's delay, delay
+estimate, and pip location are arithmetic on the wire id and touch no
+memory. A dictionary lookup is two dependent reads, the bucket in a
+table of about three entries per wire and the entry itself: the arch's
+table of 2.74 million wires is about 48 MB of buckets beside 320 MB of
+116-byte entries; router2's is about 48 MB beside 33 MB.
+
+The device, measured: 2,739,969 wires and 27,175,167 pips. A wire id is
+an rnode, `type << 24 | x << 17 | y << 10 | z`; 31 types occur (30 of
+libmistral's and nextpnr's own type 128, a third of all wires), in
+85,108 groups of type and tile, and numbering the z values of each group
+densely from zero takes 2,809,423 slots, 2.5% of them empty. So an rnode
+reaches a dense number through two small tables instead of a hash.
+
+An adjacency list inside router2, each neighbour's index and pip stored
+per wire, would remove the router's lookups too, but costs 12 bytes per
+pip in each direction, 650 MB; the slots below reach the same with
+tables of a few megabytes and keep router2 generic.
+
+### 17.1 The router's queues keep their storage, and have fewer levels (C++, upstream's file)
+
+**Design, first step.** `route_arc` clears its two queues between arcs
+and modes by swapping each with a new, empty `std::priority_queue`, so
+the heap array is freed and grown again from nothing for every search:
+reallocation copies, fresh pages, and their TLB misses. The queues keep
+their storage instead: a thin subclass exposes `clear()` on the
+underlying vector, and the swap becomes a clear.
+
+**Design, second step.** A four-way heap in place of the binary one:
+the four children of an entry are adjacent (80 bytes of 20-byte
+entries, within one or two 128-byte lines), and the depth is halved, so
+a pop reads half as many levels, each one or two lines. Push, pop, top,
+size, empty, and clear, with the router's comparator unchanged.
+
+**Identity.** The first step changes where the heap lives and not one
+operation on it. The second pops the same entry whenever the minimum is
+unique under the comparator, the total cost and then a random tag drawn
+per push; entries that tie on both would pop in a different order. The
+routed checksum decides; a change is not accepted, and the step is
+dropped if it moves a route.
+
+**Held by.** The gate's routed probe identity and report hash; the
+core's routing checksum `0x681553a4`, 45 iterations, 767,087 wires, from
+the route-prepared checkpoint and in the full flow.
+
+**Gain.** The queue is router2's largest TLB-miss site and 33.9 s of
+self time in the closing Time Profiler run; how much of that is the
+fresh storage and how much the depth is what the two steps measure.
+
+**Cost and risk.** About forty lines in `router2.cc`. Low.
+
+### 17.2 Wire slots: the arch reaches a wire's record by index (C++)
+
+**Design.** At the end of the constructor, after the routing graph is
+imported and before anything binds, blocks, or reserves a wire, the
+arch numbers its wires into slots: a 256-entry map from rnode type to a
+compact type index, and a table over compact type, x, and y (about
+2 MB, resident in L2) giving each group's first slot and its count. A
+wire's slot is the group's first slot plus its z; a type or tile or z
+outside the tables has none. Two arrays by slot:
+
+- the wire's routing state, 16 bytes: the bound net, the source of the
+  pip that drives it, and the flags that matter to routing (`BLOCKED`,
+  `RESERVED_ROUTE` with its uphill index), moved there from `WireInfo`;
+- a pointer to the wire's `WireInfo` (the dictionary's entries do not
+  move once the graph is built: `add_wire` and `add_pip` are called only
+  from the constructor, before the slots, and assert it).
+
+The binding API of 16.5, `is_pip_blocked`, `getPipsDownhill`,
+`getPipsUphill`, and `getWireBelPins` go through the slot. A pip's
+availability then reads the destination's 16-byte state and the
+source's, found through two tables that stay in cache, instead of two
+116-byte records found through two hash lookups. The dictionary stays
+for iteration (`getWires`, `getPips`, and everything that depends on
+their order) and for the lookups that are not hot.
+
+**Identity.** Storage only: every answer is the same, and iteration
+order is untouched.
+
+**Held by.** The binding contract test of 16.5, the checkpoint
+round-trip and route reuse tests, the gate, and the core's routing
+checksum.
+
+**Gain.** The arch's two lookups per neighbour lose their buckets and
+their record reads; part of `route_arc`'s 39 M and most of
+`is_pip_blocked`'s 15 M.
+
+**Cost and risk.** The arch only, about 150 lines. Medium: the routing
+state moves, and every user of it must follow. The binding fields are
+used only by the binding API; the flags are also written by
+`block_wire` and `reserve_route`, by the checkpoint restore, and by the
+Stage 1 control edits (`lab_control_edits.cc`), and read by the
+checkpoint writer. The fields leave `WireInfo`, so the compiler names
+every user, and the callers outside the binding API go through a flags
+accessor.
+
+### 17.3 router2 finds a wire's index through the arch's slot (C++, upstream's file)
+
+**Design.** `Router2Cfg` gains an optional slot function and slot count;
+the Mistral arch sets them from 17.2. When they are set, router2 fills a
+vector from slot to its own index, in the order it fills `flat_wires`
+now, and every `wire_to_idx.at()` becomes that vector read; without
+them, the dictionary is used as now, so other arches are unchanged.
+`score_wire_for_arc` takes the neighbour's index from `route_arc`
+instead of looking it up a second time.
+
+**Identity.** router2's indices are the same numbers in the same order;
+only how a `WireId` reaches its index changes. Unit 16.5's second step
+failed on locality, a mixed hash scattering neighbouring wires; slots
+are grouped by type and tile, as the fabric is.
+
+**Held by.** As 17.1.
+
+**Gain.** `wire_to_idx`'s 35 M TLB misses and 14 s of self time.
+
+**Cost and risk.** About sixty lines in `router2.cc`, one hook in
+`router2.h`, three lines in the arch. Low; the call through
+`std::function` per lookup is the cost to watch.
+
+### 17.4 Sequence and measurement
+
+17.1, 17.2, 17.3, each measured on its own and kept only if it pays:
+router2 resumed from the core's route-prepared checkpoint (the routing
+checksum and wall time), an L2 TLB miss recording of that resumed run
+before and after, and the core's full flow at the end. Together they
+address the sites that hold about 60% of router2's L2 TLB misses, a
+ceiling of about 19 s; the ceiling is a bound, not an estimate.
+
+The annealer comes next (section 18), designed from its own sites once
+these land.
