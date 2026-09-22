@@ -3653,9 +3653,15 @@ millisecond, are resolved: inside the solver, system building is 32%
 useful with 28% discarded while the coefficient insert is 57% useful,
 and the timing analyser's walks inside routing are 82% back end. The
 back-end share does not separate a cache miss from a busy execution
-port; that needs a counters template in manual mode (L1D, L2, and TLB
-miss events with event-triggered samples), which has to be saved once
-from the Instruments window and cannot be made from the command line.
+port, so it bounds memory stalls from above and is not a measurement of
+cache usage: the legaliser's 38 s is a ceiling, and a finding; the
+router's and the annealer's 111 s is a ceiling, and a hypothesis until
+the miss events are counted. That needs a counters template in manual
+mode (L1D, L2, and TLB miss events with event-triggered samples), which
+has to be saved once from the Instruments window and cannot be made
+from the command line; nothing below is certified as memory bound. The
+table sizes quoted below are computed from the declarations, not
+measured.
 
 Findings:
 
