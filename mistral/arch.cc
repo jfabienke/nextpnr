@@ -1257,6 +1257,9 @@ bool Arch::run_router_phase()
         } else if (router == "router2") {
             Router2Cfg cfg(getCtx());
             cfg.prerouted_hist_cost = args.reuse_routes_history;
+            // Design 17.3: router2 reaches its index of a wire through the arch's wire slot.
+            cfg.wire_slot = [this](WireId wire) { return wire_slot(wire); };
+            cfg.wire_slot_count = int(wire_routes.size());
             // Stage 6 (6f): the measured negotiation knobs travel in ArchArgs (resume-safe: nothing is
             // interned before the netlist); the rest of router2's cost terms can be overridden from the
             // environment for experiments from a checkpoint, where the common --router2-* options cannot

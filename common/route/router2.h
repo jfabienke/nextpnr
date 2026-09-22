@@ -89,6 +89,12 @@ struct Router2Cfg
 
     std::string heatmap;
     std::function<float(Context *ctx, WireId wire, PipId pip, float crit_weight)> get_base_cost = default_base_cost;
+
+    // Optional: a dense number for every wire, below wire_slot_count, that the arch computes without a
+    // hash. When set, router2 finds its own index of a wire through a vector by that number instead of
+    // a dictionary; the indices are the same.
+    std::function<int(WireId wire)> wire_slot;
+    int wire_slot_count = 0;
 };
 
 void router2(Context *ctx, const Router2Cfg &cfg);
