@@ -3876,6 +3876,42 @@ Together 22 s, a quarter, of router2 on the core. The gtest suites (67 and 54),
 the gate's routed probe identity, and the checkpoint and control-edit
 tests pass.
 
+### 2026-09-22: Design 18: chain moves through the swap seam; the cached timing weight measured and dropped
+
+**18.2, the timing weight computed once per timing update: negative.**
+Built bit-identical (core placement `0x2d44a02e`, the seam's counters
+equal), and the annealer took 79.8 s against 78.4 s, with HeAP, whose
+code did not change, moving 5 s between the same two runs: no gain
+inside the noise. The 11.4 G cycles the cycles recording credited to
+`powf` were most likely skid: a counter's interrupt lands a few
+instructions after the event that fires it, and `powf` follows
+`predict_arc_delay`'s record reads, which is where the annealer waits.
+Reverted. The rule for reading event-sampled profiles gains this: a
+cheap leaf right after a stalling load inherits the load's samples.
+
+**18.1, chain moves through the swap seam (`e6dc9299`): kept.** `try_swap_chain`
+plans the live walk on an occupancy overlay (`plan_chain`), the arch
+assesses the planned move certifying only the moved cells' new bels
+(`Placer1SwapEdit::certify`, `overlay_bels_legal` over a list of bels;
+`BelOverlay::MAX` 4 to 16), the cost delta comes from the position
+overlay in the live code's `moved_cells` order (hashlib's dict iterates
+newest first), and a refused move binds nothing but leaves every cell
+the live revert would have moved with `STRENGTH_WEAK`. A move the seam
+cannot assess runs the live path as before.
+
+| Check | Result |
+| --- | --- |
+| gtest | The seam test's overlay patterns cover all six slots now (the overlay held four before), and a new loop certifies the first ALM's bels over the whole overlay with one clock: 64 patterns agree with binding and asking, and the generator reaches subsets that are legal where the whole is not. 67 and 54 tests pass |
+| Shadow, probe, default options | 15,011 chain moves compared, 0 mismatches; 5,665,634 single swaps, 0 |
+| Shadow, probe, recipe options | 644,483 chain moves, 0 mismatches (Rust authority); the same under `--lab-legality legacy`, 0 |
+| Shadow, core | 7,024,566 chain moves and 6,933,122 single swaps compared, 0 mismatches (placement `0x2d44a02e`) |
+| Identity with the seam on | Probe `0x7f9f8105` and `0xa99e0f68`; core placement `0x2d44a02e`; core full flow placement `0xe0b15557`, routing `0x681553a4`, 45 iterations, 767,087 wires, 11.39 MHz, routed JSON and report byte-identical to the baseline's |
+| Chain counters, core | planned 7,024,566, failed in the walk 46,349, assessed 6,978,217, illegal 2,998,572, rejected 3,928,426, committed 51,219, unsupported 210,943 (moves longer than 16 bels, which run live) |
+| Core annealer | 69.0 s placement-only and 71.0 s in the full flow, against 78.4, 79.8, and 81.5 s before (the last two runs of unchanged annealer code): about 10 s. Router2 in the same full flow 62.9 s with design 17 |
+
+The probe's annealer runs 5 to 10 s and its repeats spread by more than
+a second, so its times are not a measurement; the core's are.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3987,6 +4023,7 @@ tests pass.
 | 2026-09-21 | 16.5 | The arch records a wire's binding on the wire and answers the binding API from it (kept); router2 keeps upstream's dict for its wire index (a flat mixed-hash table was slower) | Routed identity on the probe and the core in every variant; router2 90.8 s against 99.2 s with step A and 99.8 s with both, side by side; a hash that preserves the fabric's locality beats one that avoids collisions |
 | 2026-09-21 | closing | The six hot-path units are closed at three kept and three negative; further legaliser work is on the cost of the rules per bel, not on how often they are asked | Core flow 715 s to 575 s of CPU with every checksum unchanged; strict legalisation 389 s to 280 s, router2 143 s to 120 s; estimates held only where they were inclusive times of functions that stopped running |
 | 2026-09-22 | 17 | The Mistral arch numbers its wires into slots and keeps their routing state by slot; router2 reaches a wire's index through the slot when an arch offers one, and keeps its search queues between arcs; the four-way heap is not kept | Byte-identical on the core and the probe; resumed router2 on the core 89.8 s to 67.6 s; the four-way heap moves the route through tied seed entries |
+| 2026-09-22 | 18 | The annealer's cluster moves go through the swap seam whenever it is on (the default): planned on an overlay, certified on the moved cells' bels, committed only when accepted; the cached timing weight is not kept | Byte-identical on the probe and the core, shadow over 7 million core chain moves with no mismatch, core annealer about 80 s to 70 s; the timing weight gained nothing, its profile share was skid |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

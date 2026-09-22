@@ -159,7 +159,13 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   faster annealing) routes `placer1` refinement swaps through a detached
   assessment (`Arch::overlay_bels_legal` on a `BelOverlay`, cost delta from the annealer's position
   overlay). Do not assess swaps by freezing V2 records: measured 3.8x slower. Shadow mode is the
-  oracle for this path. `--sa-batch N` (1c-B) is the batched, deterministic-across-workers policy;
+  oracle for this path. Since 2026-09-22 (design 18.1) cluster moves go through it too:
+  `try_swap_chain` plans the live walk on an occupancy overlay (`plan_chain`), the arch certifies
+  only the moved cells' new bels (`Placer1SwapEdit::certify`; the live path does not check vacated
+  bels), the cost comes in the live `moved_cells` order (hashlib dicts iterate newest first), and a
+  refused move leaves the cells the live revert would have moved at `STRENGTH_WEAK`. Byte-identical,
+  shadow-checked over 7 million core chain moves, core annealer 69 s against about 80 s; moves over
+  the overlay's 16 bels run live. `--sa-batch N` (1c-B) is the batched, deterministic-across-workers policy;
   it is not byte-identical to serial (acceptance draws share the RNG stream with location draws),
   quality is inside the seed spread, and it does not scale past two workers because the annealer
   is owner-bound. The worker pool both consumers use is `common/place/placement_pool.*`.

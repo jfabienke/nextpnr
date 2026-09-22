@@ -1987,6 +1987,17 @@ about 250 lines in `placer1.cc`, the assessment entry for a list of
 bels in the arch. Medium to high risk: the plan must reproduce every
 branch of the live walk, which the shadow mode checks move by move.
 
+**Outcome (2026-09-22): kept.** Byte-identical on the probe and the
+core; shadow compared 7,024,566 chain moves on the core and 644,483 on
+the probe's recipe with no mismatch. On the core 6,978,217 moves were
+assessed and 210,943 ran live (longer than the overlay's 16 bels). The
+annealer took 69.0 s against 78.4 to 81.5 s before it, about 10 s, the
+low end of the estimate. The gtest the design named, planning a move
+against its live counterpart, was not written: the planner is private to
+the annealer, and the shadow mode compares every move of real runs; the
+seam test instead certifies bel subsets over an overlay, with a
+generator that reaches subsets legal where the whole is not.
+
 ### 18.2 The timing weight computed once per timing update (C++, upstream's file)
 
 **Design.** `get_timing_cost` multiplies an arc's predicted delay by
@@ -2004,6 +2015,13 @@ once instead of per move: bit-identical by construction.
 **Gain.** Up to 11.4 G cycles, about 4 s.
 
 **Cost and risk.** Ten lines. Low.
+
+**Outcome (2026-09-22): negative, not kept.** Bit-identical and no
+faster: the annealer 79.8 s against 78.4 s, inside the noise of the
+runs. The cycles the recording credited to `powf` were most likely skid
+from the record reads just before it in `predict_arc_delay`: a counter's
+interrupt lands a few instructions after the event, so a cheap leaf that
+follows a stalling load inherits the load's samples.
 
 ### 18.3 Sequence
 
