@@ -289,6 +289,17 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   Routed results byte-identical; core router2 91 s against 99 s. A flat mixed-hash wire index
   in router2 was slower than upstream's dict (its raw-id hash keeps the fabric's locality) and
   was not kept.
+- Wire slots (2026-09-22, design 17): once the routing graph is imported the arch numbers its
+  wires into dense slots (a type map and a (type, x, y) table, z counted from the group's first
+  slot; 2.81 million slots for 2.74 million wires) and keeps each wire's routing state (bound net,
+  bound source, flags) in a 16-byte `WireRoute` by slot; the binding API and the pip checks go
+  through `wire_slot()`, the dictionary stays for iteration and cold lookups, and `add_wire` and
+  `add_pip` assert they run before the numbering. Flags are read and written only through
+  `wire_flags` / `set_wire_flags`. router2 reaches its own index of a wire through
+  `Router2Cfg::wire_slot` when an arch sets it (generic, optional) and keeps its search queues'
+  storage between arcs. Byte-identical; resumed router2 on the core 89.8 s to 67.6 s. A four-way
+  heap moves the route (seed entries tie) and was not kept. The core's route-prepared checkpoint
+  for router experiments is `build/stage6-fullcore/ckpt/` with `resume.sh` (outside git).
 - Stage 6 (6h): `--row-cost W` weighs a vertical tile W horizontal tiles in HeAP's solver, cut
   spreader (cut along the axis longer in cost units), and strict legaliser (box W times wider than
   tall, candidates scored by weighted distance) through `PlacerHeapCfg::anisotropic`; the fabric

@@ -3831,6 +3831,51 @@ entry before said), `dict<WireId, int>` entry 12, `CellInfo` 448,
 `misses_report.txt` in `build/stage6-fullcore/profile/`; the recordings,
 `misses_*.trace` (18 GB together), moved the same day to the Envoy drive, `archive/nextpnr/stage6-fullcore-profile/`, as `.trace.tar.zst` with a README and `SHA256SUMS`.
 
+### 2026-09-22: Design 17 landed: router2 reaches wires by slot, not by hash
+
+Units 17.1 (first step), 17.2, and 17.3 of design section 17, measured
+from the core's route-prepared checkpoint
+(`build/stage6-fullcore/ckpt/core_prepared.json`, written by the
+baseline binary under the recipe's options; a resumed router reproduces
+the full flow's routing checksum `0x681553a4`, 45 iterations, 767,087
+wires). `resume.sh` beside it runs one binary from it. Every run below
+ends at that checksum, and the routed JSON (without its `creator` line)
+and the report are byte-identical to the baseline's.
+
+| Binary | router2, resumed | Runs |
+| --- | ---: | --- |
+| Baseline (`7d5bfb64`, before the units) | 89.8 s | 89.4, 89.7, 90.0, 92.4 |
+| 17.1 first step (`dcb9b87f`): the queues keep their storage | 88.7 s | 88.3, 88.7, 91.3 |
+| + 17.2 (`1e3ad68e`): wire slots in the arch | 78.7 s | 75.3, 76.4, 81.0, 83.2 (and 96.5, see below) |
+| + 17.3 (`5686a671`): router2's index through the slot | 67.6 s | 66.0, 67.5, 67.6, 70.7 |
+
+(Medians; the machine carried other work during these runs, load
+average 4 to 11 from two Verilator simulations and a stuck system
+service; one 17.2 run at 96.5 s under a load of 11.5 is an outlier and
+is shown, not used.)
+
+- 17.1, first step: the two search queues are cleared between arcs
+  instead of being replaced; about 1 s. The second step, a four-way
+  heap, was built and moves the route (routing checksum `0x823226a7`, 54
+  iterations): the router's seed entries all carry the random tag 0, and
+  seeds at one location tie on score, so the pop order among them
+  depends on the heap's shape. Not kept, as the design's identity rule
+  says.
+- 17.2: the device's 2,739,969 wires numbered into 2,809,423 slots
+  (the table spans 228,780 type-and-tile groups, 85,108 of them
+  occupied); `WireRoute` (16 bytes: bound net, bound source, flags) by
+  slot, `WireInfo` down from 104 to 80 bytes. The flags left `WireInfo`;
+  the checkpoint writer and restore, the Stage 1 control edits, and 31
+  test sites use `wire_flags` / `set_wire_flags`.
+- 17.3: `Router2Cfg::wire_slot` and `wire_slot_count`, set by the
+  Mistral arch; router2 keeps a vector from slot to its own index and
+  fills its dictionary only for arches without slots.
+  `score_wire_for_arc` takes the index `route_arc` already has.
+
+Together 22 s, a quarter, of router2 on the core. The gtest suites (67 and 54),
+the gate's routed probe identity, and the checkpoint and control-edit
+tests pass.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -3941,6 +3986,7 @@ entry before said), `dict<WireId, int>` entry 12, `CellInfo` 448,
 | 2026-09-21 | 16.3 | The equation system keeps upstream's sorted insert; append-and-merge is bit-identical and no faster | Core HeAP 342.40 s against 342.41 s with the checksum unchanged; the columns are small because contributions merge on arrival, which the design's reading of the profile missed |
 | 2026-09-21 | 16.5 | The arch records a wire's binding on the wire and answers the binding API from it (kept); router2 keeps upstream's dict for its wire index (a flat mixed-hash table was slower) | Routed identity on the probe and the core in every variant; router2 90.8 s against 99.2 s with step A and 99.8 s with both, side by side; a hash that preserves the fabric's locality beats one that avoids collisions |
 | 2026-09-21 | closing | The six hot-path units are closed at three kept and three negative; further legaliser work is on the cost of the rules per bel, not on how often they are asked | Core flow 715 s to 575 s of CPU with every checksum unchanged; strict legalisation 389 s to 280 s, router2 143 s to 120 s; estimates held only where they were inclusive times of functions that stopped running |
+| 2026-09-22 | 17 | The Mistral arch numbers its wires into slots and keeps their routing state by slot; router2 reaches a wire's index through the slot when an arch offers one, and keeps its search queues between arcs; the four-way heap is not kept | Byte-identical on the core and the probe; resumed router2 on the core 89.8 s to 67.6 s; the four-way heap moves the route through tied seed entries |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

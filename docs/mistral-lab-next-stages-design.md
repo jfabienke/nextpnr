@@ -1792,6 +1792,13 @@ fresh storage and how much the depth is what the two steps measure.
 
 **Cost and risk.** About forty lines in `router2.cc`. Low.
 
+**Outcome (2026-09-22): the first step kept, the second not.** Keeping
+the storage is byte-identical and worth about 1 s: the queue's misses
+are the heap array itself, not its reallocation. The four-way heap moves
+the route (routing checksum `0x823226a7`, 54 iterations): seed entries
+are pushed with random tag 0, and seeds at one location tie on score, so
+which of them pops first depends on the heap's shape.
+
 ### 17.2 Wire slots: the arch reaches a wire's record by index (C++)
 
 **Design.** At the end of the constructor, after the routing graph is
@@ -1837,6 +1844,10 @@ checkpoint writer. The fields leave `WireInfo`, so the compiler names
 every user, and the callers outside the binding API go through a flags
 accessor.
 
+**Outcome (2026-09-22): kept.** Byte-identical; `WireInfo` 80 bytes
+from 104. Resumed router2 on the core 78.7 s against 88.7 s, about
+10 s.
+
 ### 17.3 router2 finds a wire's index through the arch's slot (C++, upstream's file)
 
 **Design.** `Router2Cfg` gains an optional slot function and slot count;
@@ -1859,6 +1870,12 @@ are grouped by type and tile, as the fabric is.
 **Cost and risk.** About sixty lines in `router2.cc`, one hook in
 `router2.h`, three lines in the arch. Low; the call through
 `std::function` per lookup is the cost to watch.
+
+**Outcome (2026-09-22): kept.** Byte-identical; resumed router2 on the
+core 67.6 s against 78.7 s, about 11 s. The call through
+`std::function` did not show. Design 17 together: 89.8 s to 67.6 s, a
+quarter of router2, against a far-memory ceiling of 32 s for the whole
+phase.
 
 ### 17.4 Sequence and measurement
 
