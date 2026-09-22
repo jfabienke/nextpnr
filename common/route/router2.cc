@@ -313,6 +313,13 @@ struct Router2
         };
     };
 
+    // A search queue whose storage outlives the search: route_arc clears it between arcs instead of
+    // swapping in a new one, so the heap array is not freed and grown again for every arc.
+    struct WireQueue : std::priority_queue<QueuedWire, std::vector<QueuedWire>, QueuedWire::Greater>
+    {
+        void clear() { c.clear(); }
+    };
+
     bool hit_test_pip(BoundingBox &bb, Loc l) { return l.x >= bb.x0 && l.x <= bb.x1 && l.y >= bb.y0 && l.y <= bb.y1; }
 
     double curr_cong_weight, hist_cong_weight, estimate_weight;
@@ -326,7 +333,7 @@ struct Router2
 
         std::vector<std::pair<store_index<PortRef>, size_t>> route_arcs;
 
-        std::priority_queue<QueuedWire, std::vector<QueuedWire>, QueuedWire::Greater> fwd_queue, bwd_queue;
+        WireQueue fwd_queue, bwd_queue;
         // Special case where one net has multiple logical arcs to the same physical sink
         pool<WireId> processed_sinks;
 
@@ -842,14 +849,8 @@ struct Router2
 
         for (; mode < 2; mode++) {
             // Clear out the queues
-            if (!t.fwd_queue.empty()) {
-                std::priority_queue<QueuedWire, std::vector<QueuedWire>, QueuedWire::Greater> new_queue;
-                t.fwd_queue.swap(new_queue);
-            }
-            if (!t.bwd_queue.empty()) {
-                std::priority_queue<QueuedWire, std::vector<QueuedWire>, QueuedWire::Greater> new_queue;
-                t.bwd_queue.swap(new_queue);
-            }
+            t.fwd_queue.clear();
+            t.bwd_queue.clear();
             // Unvisit any previously visited wires
             reset_wires(t);
 
