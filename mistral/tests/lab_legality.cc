@@ -81,8 +81,9 @@ void expect_v2_rust_parity(const NpnrLabFactsV2 &input, const NpnrLabAssessmentV
 WireId reserved_source(const Context &ctx, WireId destination)
 {
     const auto &wire = ctx.wires.at(destination);
-    EXPECT_NE(wire.flags & WireInfo::RESERVED_ROUTE, 0u);
-    const auto index = unsigned(wire.flags & 0xff);
+    const uint64_t flags = ctx.wire_flags(destination);
+    EXPECT_NE(flags & WireInfo::RESERVED_ROUTE, 0u);
+    const auto index = unsigned(flags & 0xff);
     EXPECT_LT(index, wire.wires_uphill.size());
     return index < wire.wires_uphill.size() ? wire.wires_uphill[index] : WireId();
 }
@@ -1693,11 +1694,11 @@ TEST_F(LabControlCaptureTest, WireAndPipBindingsLiveOnTheWireAndKeepTheBaseContr
     EXPECT_EQ(net->wires.count(dst), 0u);
 
     // A blocked wire refuses every pip into it, bound or not.
-    const uint64_t flags = ctx->wires.at(dst).flags;
-    ctx->wires.at(dst).flags = flags | WireInfo::BLOCKED;
+    const uint64_t flags = ctx->wire_flags(dst);
+    ctx->set_wire_flags(dst, flags | WireInfo::BLOCKED);
     EXPECT_FALSE(ctx->checkPipAvail(pip));
     EXPECT_FALSE(ctx->checkPipAvailForNet(pip, net));
-    ctx->wires.at(dst).flags = flags;
+    ctx->set_wire_flags(dst, flags);
     EXPECT_TRUE(ctx->checkPipAvail(pip));
 
     ctx->unbindWire(src);
@@ -1986,8 +1987,8 @@ TEST_F(LabControlCaptureTest, NativeConsumerPreservesEnableAndClearSelections)
         const auto bel = ctx->labs[0].alms[i].ff_bels[0];
         touched[2 * i] = ctx->getBelPinWire(bel, id_CLK);
         touched[2 * i + 1] = ctx->getBelPinWire(bel, id_ENA);
-        saved_flags[2 * i] = ctx->wires.at(touched[2 * i]).flags;
-        saved_flags[2 * i + 1] = ctx->wires.at(touched[2 * i + 1]).flags;
+        saved_flags[2 * i] = ctx->wire_flags(touched[2 * i]);
+        saved_flags[2 * i + 1] = ctx->wire_flags(touched[2 * i + 1]);
         ctx->labs[0].alms[i].clk_ena_idx[0] = -1;
     }
     const auto enable_plan = evaluate_lab_controls_native(*ctx, 0);
@@ -2002,7 +2003,7 @@ TEST_F(LabControlCaptureTest, NativeConsumerPreservesEnableAndClearSelections)
         EXPECT_EQ(reserved_source(*ctx, touched[2 * i + 1]), ctx->labs[0].ena_wires[i]);
     }
     for (unsigned i = 0; i < touched.size(); ++i)
-        ctx->wires.at(touched[i]).flags = saved_flags[i];
+        ctx->set_wire_flags(touched[i], saved_flags[i]);
     clear_bindings();
 
     std::array<WireId, 6> clear_touched;
@@ -2016,7 +2017,7 @@ TEST_F(LabControlCaptureTest, NativeConsumerPreservesEnableAndClearSelections)
         clear_touched[3 * i + 1] = ctx->getBelPinWire(bel, id_ENA);
         clear_touched[3 * i + 2] = ctx->getBelPinWire(bel, id_ACLR);
         for (unsigned j = 0; j < 3; ++j)
-            clear_saved_flags[3 * i + j] = ctx->wires.at(clear_touched[3 * i + j]).flags;
+            clear_saved_flags[3 * i + j] = ctx->wire_flags(clear_touched[3 * i + j]);
         ctx->labs[0].alms[i].aclr_idx[0] = -1;
     }
     const auto clear_plan = evaluate_lab_controls_native(*ctx, 0);
@@ -2030,7 +2031,7 @@ TEST_F(LabControlCaptureTest, NativeConsumerPreservesEnableAndClearSelections)
         EXPECT_EQ(reserved_source(*ctx, clear_touched[3 * i + 2]), ctx->labs[0].aclr_wires[i]);
     }
     for (unsigned i = 0; i < clear_touched.size(); ++i)
-        ctx->wires.at(clear_touched[i]).flags = clear_saved_flags[i];
+        ctx->set_wire_flags(clear_touched[i], clear_saved_flags[i]);
 }
 
 TEST_F(LabControlCaptureTest, IllegalNativeEvaluationPublishesNoPreparationState)
@@ -2045,7 +2046,7 @@ TEST_F(LabControlCaptureTest, IllegalNativeEvaluationPublishesNoPreparationState
     lab.aclr_used = {true, false};
     lab.alms[0].clk_ena_idx[0] = 17;
     const auto destination = ctx->getBelPinWire(lab.alms[0].ff_bels[0], id_CLK);
-    const auto flags = ctx->wires.at(destination).flags;
+    const auto flags = ctx->wire_flags(destination);
     const auto capture = capture_lab_controls(*ctx, 0);
     const auto evaluation = evaluate_lab_controls_native(*ctx, 0);
     EXPECT_FALSE(evaluation.legal);
@@ -2053,7 +2054,7 @@ TEST_F(LabControlCaptureTest, IllegalNativeEvaluationPublishesNoPreparationState
     expect_no_plan(evaluate_lab_controls_legacy(*ctx, 0, capture));
     EXPECT_EQ(lab.aclr_used, (std::array<bool, 2>{true, false}));
     EXPECT_EQ(lab.alms[0].clk_ena_idx[0], 17);
-    EXPECT_EQ(ctx->wires.at(destination).flags, flags);
+    EXPECT_EQ(ctx->wire_flags(destination), flags);
     lab.aclr_used = saved_aclr_used;
     lab.alms[0].clk_ena_idx[0] = saved_clk_ena_idx;
 }
@@ -2120,7 +2121,7 @@ TEST_F(LabControlCaptureTest, PreparedControlEditsPreflightAndRollbackFailures)
             continue;
         if (std::none_of(original_wires.begin(), original_wires.end(),
                          [&](const auto &saved) { return saved.first == edit.wire; }))
-            original_wires.emplace_back(edit.wire, ctx->wires.at(edit.wire).flags);
+            original_wires.emplace_back(edit.wire, ctx->wire_flags(edit.wire));
     }
     auto expect_original_state = [&] {
         EXPECT_EQ(lab.aclr_used, original_used);
@@ -2129,7 +2130,7 @@ TEST_F(LabControlCaptureTest, PreparedControlEditsPreflightAndRollbackFailures)
             EXPECT_EQ(lab.alms[alm].aclr_idx, original_aclr[alm]);
         }
         for (const auto &saved : original_wires)
-            EXPECT_EQ(ctx->wires.at(saved.first).flags, saved.second);
+            EXPECT_EQ(ctx->wire_flags(saved.first), saved.second);
     };
 
     auto interrupted = *preflight.prepared;
@@ -2144,10 +2145,10 @@ TEST_F(LabControlCaptureTest, PreparedControlEditsPreflightAndRollbackFailures)
     const WireId changed_wire = wire_edit->wire;
     const uint64_t changed_expected = wire_edit->expected;
     const uint64_t disturbed = changed_expected ^ WireInfo::BLOCKED;
-    ctx->wires.at(changed_wire).flags = disturbed;
+    ctx->set_wire_flags(changed_wire, disturbed);
     EXPECT_EQ(apply_prepared_control_edits(*ctx, std::move(changed)), ControlEditStatus::ChangedValue);
-    EXPECT_EQ(ctx->wires.at(changed_wire).flags, disturbed);
-    ctx->wires.at(changed_wire).flags = changed_expected;
+    EXPECT_EQ(ctx->wire_flags(changed_wire), disturbed);
+    ctx->set_wire_flags(changed_wire, changed_expected);
     expect_original_state();
 
     const auto clk_wire = ctx->getBelPinWire(lab.alms[0].ff_bels[0], id_CLK);
@@ -2167,7 +2168,7 @@ TEST_F(LabControlCaptureTest, PreparedControlEditsPreflightAndRollbackFailures)
     }
     lab.aclr_used = original_used;
     for (const auto &saved : original_wires)
-        ctx->wires.at(saved.first).flags = saved.second;
+        ctx->set_wire_flags(saved.first, saved.second);
 }
 
 #ifndef NO_RUST
@@ -2405,7 +2406,7 @@ TEST_F(LabControlCaptureTest, MlabGroupingAndWriteReservationsRemainHostOwned)
         wires[2 * i + 1] = ctx->getBelPinWire(bel, id_WE);
     }
     for (unsigned i = 0; i < wires.size(); ++i)
-        saved_flags[i] = ctx->wires.at(wires[i]).flags;
+        saved_flags[i] = ctx->wire_flags(wires[i]);
     EXPECT_TRUE(ctx->check_mlab_groups(lab));
     auto v2_input = capture_lab_v2(*ctx, lab, NPNR_LAB_QUERY_WHOLE_LAB, UINT32_MAX, 1200);
     auto v2_result = evaluate_lab_v2_cpp(v2_input);
@@ -2420,7 +2421,7 @@ TEST_F(LabControlCaptureTest, MlabGroupingAndWriteReservationsRemainHostOwned)
     ctx->assign_control_sets(lab);
     std::array<uint32_t, 4> reference_flags;
     for (unsigned i = 0; i < wires.size(); ++i)
-        reference_flags[i] = ctx->wires.at(wires[i]).flags;
+        reference_flags[i] = ctx->wire_flags(wires[i]);
     for (unsigned i = 0; i < 2; ++i) {
         EXPECT_EQ(reserved_source(*ctx, wires[2 * i]), ctx->labs[lab].clk_wires[0]);
         EXPECT_EQ(reserved_source(*ctx, wires[2 * i + 1]), ctx->labs[lab].ena_wires[0]);
@@ -2429,10 +2430,10 @@ TEST_F(LabControlCaptureTest, MlabGroupingAndWriteReservationsRemainHostOwned)
     for (auto mode : {LabControlMode::Shadow, LabControlMode::Verify, LabControlMode::Rust}) {
         ctx->args.lab_controls = mode;
         for (unsigned i = 0; i < wires.size(); ++i)
-            ctx->wires.at(wires[i]).flags = saved_flags[i];
+            ctx->set_wire_flags(wires[i], saved_flags[i]);
         ctx->assign_control_sets(lab);
         for (unsigned i = 0; i < wires.size(); ++i)
-            EXPECT_EQ(ctx->wires.at(wires[i]).flags, reference_flags[i]);
+            EXPECT_EQ(ctx->wire_flags(wires[i]), reference_flags[i]);
         ctx->bindBel(ctx->labs[lab].alms[9].ff_bels[0], cells[0], STRENGTH_WEAK);
         EXPECT_TRUE(ctx->is_lab_ctrlset_legal(lab));
         EXPECT_FALSE(ctx->check_mlab_groups(lab)); // FF-only legality does not certify this LAB.
@@ -2456,7 +2457,7 @@ TEST_F(LabControlCaptureTest, MlabGroupingAndWriteReservationsRemainHostOwned)
     for (auto *ram : rams)
         ctx->unbindBel(ram->bel);
     for (unsigned i = 0; i < wires.size(); ++i)
-        ctx->wires.at(wires[i]).flags = saved_flags[i];
+        ctx->set_wire_flags(wires[i], saved_flags[i]);
     ctx->args.lab_controls = LabControlMode::Legacy;
     // The fixture's context is shared: take the test's cells out again (its nets are the fixture's).
     for (auto *ram : rams) {
@@ -2773,8 +2774,8 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     lab0.alms[1].carry_mode = true;
     lab0.aclr_used = {true, false};
     const WireId reserved = lab0.clk_wires[0];
-    const uint64_t flags_before = ctx->wires.at(reserved).flags;
-    ctx->wires.at(reserved).flags = WireInfo::RESERVED_ROUTE | 2;
+    const uint64_t flags_before = ctx->wire_flags(reserved);
+    ctx->set_wire_flags(reserved, WireInfo::RESERVED_ROUTE | 2);
     // A route-through buffer at a LUT BEL, as lab_pre_route leaves: the
     // restore must give it comb facts (MLAB group -1), or the bitstream
     // takes the LUTRAM path for its LAB.
@@ -2812,7 +2813,7 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     lab0.alms[0] = alm0_before;
     lab0.alms[1] = alm1_before;
     lab0.aclr_used = aclr_before;
-    ctx->wires.at(reserved).flags = flags_before;
+    ctx->set_wire_flags(reserved, flags_before);
     ctx->unbindBel(root_bel);
     ctx->unbindBel(lab0.alms[1].lut_bels[0]);
     ctx->ports.clear();
@@ -2825,7 +2826,7 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     EXPECT_TRUE(lab0.alms[0].l6_mode);
     EXPECT_TRUE(lab0.alms[1].carry_mode);
     EXPECT_EQ(lab0.aclr_used, (std::array<bool, 2>{true, false}));
-    EXPECT_EQ(ctx->wires.at(reserved).flags, WireInfo::RESERVED_ROUTE | 2);
+    EXPECT_EQ(ctx->wire_flags(reserved), WireInfo::RESERVED_ROUTE | 2);
     EXPECT_EQ(route_order(), route_before);
     EXPECT_EQ(ctx->getBoundWireNet(src), clk);
     EXPECT_EQ(ctx->getBoundPipNet(pip), clk);
@@ -2843,7 +2844,7 @@ TEST_F(LabControlCaptureTest, CheckpointRoundTripRestoresPackingStateAndIteratio
     lab0.alms[0] = alm0_before;
     lab0.alms[1] = alm1_before;
     lab0.aclr_used = aclr_before;
-    ctx->wires.at(reserved).flags = flags_before;
+    ctx->set_wire_flags(reserved, flags_before);
     ctx->unbindBel(root_bel);
 
     for (CellInfo *ci : {root, child_a, child_b}) {
@@ -3423,12 +3424,12 @@ TEST_F(LabControlCaptureTest, RouteReuseKeepsOnlyRoutesTheCurrentDesignStillAllo
     // D: a pip the current flags forbid makes the route unavailable.
     {
         previous["rr_net"] = route_for(path, source);
-        const uint64_t flags_before = ctx->wires.at(sink).flags;
-        ctx->wires.at(sink).flags = WireInfo::BLOCKED;
+        const uint64_t flags_before = ctx->wire_flags(sink);
+        ctx->set_wire_flags(sink, WireInfo::BLOCKED);
         report = apply_route_reuse(*ctx, previous);
         EXPECT_EQ(report.unavailable, 1u);
         EXPECT_TRUE(net->wires.empty());
-        ctx->wires.at(sink).flags = flags_before;
+        ctx->set_wire_flags(sink, flags_before);
     }
 
     // F: a wire taken by another net makes the route unavailable; no previous

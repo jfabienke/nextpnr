@@ -616,9 +616,10 @@ bool Arch::writeCheckpoint(std::ostream &out, const std::string &phase) const
     // flag exists to prevent.
     Json::array wire_flags;
     for (auto &wire : wires) {
-        if (wire.second.flags == 0)
+        const uint64_t flags = Arch::wire_flags(wire.first);
+        if (flags == 0)
             continue;
-        wire_flags.push_back(Json::array{getWireName(wire.first).str(ctx), std::to_string(wire.second.flags)});
+        wire_flags.push_back(Json::array{getWireName(wire.first).str(ctx), std::to_string(flags)});
     }
     reserved_count = wire_flags.size();
     physical_obj["wire_flags"] = wire_flags;
@@ -1010,7 +1011,7 @@ bool Arch::checkpointRestore()
     size_t reserved_count = 0, routed_nets = 0;
     for (const auto &entry : root["physical"]["wire_flags"].array_items()) {
         WireId wire = wire_by_name(ctx, entry[0].string_value(), "physical.wire_flags");
-        wires.at(wire).flags = parse_u64(entry[1].string_value(), "wire flags");
+        set_wire_flags(wire, parse_u64(entry[1].string_value(), "wire flags"));
         ++reserved_count;
     }
     if (rank >= 3) {

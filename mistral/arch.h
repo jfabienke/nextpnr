@@ -201,24 +201,25 @@ struct WireInfo
 
     std::vector<BelPin> bel_pins;
 
-    // flags for special wires (currently unused)
-    uint64_t flags;
-
-    // if the RESERVED_ROUTE mask is set in flags, then only wires_uphill[flags&0xFF] may drive this wire - used for
-    // control set preallocations
+    // Flags of a wire, kept in its WireRoute (Arch::wire_flags). If the RESERVED_ROUTE mask is set,
+    // then only wires_uphill[flags&0xFF] may drive this wire - used for control set preallocations
     static const uint64_t RESERVED_ROUTE = 0x100;
     // No pip may target this wire at all. Used for the PLL reference-clock spine: those routing
     // muxes are programmed by raw CRAM writes at bitstream time, so any fabric net routed through
     // them is silently clobbered -- measured as a wrong answer on silicon (MISTRAL_GAPS G2/G4).
     static const uint64_t BLOCKED = 0x200;
+};
 
-    // Design section 16.5: the wire's binding lives with the wire. The base arch keeps two hash
-    // maps, wire to net and pip to net, and the router asks about a pip for every wire it visits,
-    // a lookup beside the one of this record that the blocked-pip test makes anyway. A wire is
-    // bound to at most one net, through at most one pip, whose destination is the wire: that pip
-    // is recorded by its source, and a wire bound directly has none.
+// The routing state of a wire, 16 bytes in an array by wire slot (design sections 16.5 and 17.2):
+// the router asks about a pip for every wire it visits, and the answer needs only this. A wire is
+// bound to at most one net, through at most one pip, whose destination is the wire: that pip is
+// recorded by its source, and a wire bound directly has none. The flags are WireInfo::BLOCKED and
+// WireInfo::RESERVED_ROUTE with the reserved uphill index in the low byte.
+struct WireRoute
+{
     NetInfo *bound_net = nullptr;
     CycloneV::rnode_t bound_src = invalid_rnode;
+    uint32_t flags = 0;
 };
 
 // This transforms a WireIds, and adds the mising half of the pair to create a PipId
@@ -538,15 +539,15 @@ struct Arch : BaseArch<ArchRanges>
     WireId getWireByName(IdStringList name) const override;
     IdStringList getWireName(WireId wire) const override;
     DelayQuad getWireDelay(WireId wire) const override { return DelayQuad(0); }
-    const std::vector<BelPin> &getWireBelPins(WireId wire) const override { return wires.at(wire).bel_pins; }
+    const std::vector<BelPin> &getWireBelPins(WireId wire) const override { return wire_info(wire).bel_pins; }
     AllWireRange getWires() const override { return AllWireRange(wires); }
-    // The binding API over the wire records (design section 16.5), each function the base arch's
-    // line for line with its two maps replaced by WireInfo::bound_net and bound_src. The base
-    // maps are not written.
+    // The binding API over the wires' routing state (design sections 16.5 and 17.2), each function
+    // the base arch's line for line with its two maps replaced by WireRoute::bound_net and bound_src.
+    // The base maps are not written.
     void bindWire(WireId wire, NetInfo *net, PlaceStrength strength) override
     {
         NPNR_ASSERT(wire != WireId());
-        WireInfo &data = wires.at(wire);
+        WireRoute &data = wire_route(wire);
         NPNR_ASSERT(data.bound_net == nullptr);
         net->wires[wire].pip = PipId();
         net->wires[wire].strength = strength;
@@ -559,7 +560,7 @@ struct Arch : BaseArch<ArchRanges>
     void unbindWire(WireId wire) override
     {
         NPNR_ASSERT(wire != WireId());
-        WireInfo &data = wires.at(wire);
+        WireRoute &data = wire_route(wire);
         NPNR_ASSERT(data.bound_net != nullptr);
         auto &net_wires = data.bound_net->wires;
         auto it = net_wires.find(wire);
@@ -575,7 +576,7 @@ struct Arch : BaseArch<ArchRanges>
     {
         NPNR_ASSERT(pip != PipId());
         const WireId dst(pip.dst);
-        WireInfo &data = wires.at(dst);
+        WireRoute &data = wire_route(dst);
         NPNR_ASSERT(data.bound_net == nullptr); // neither this pip nor another drives the wire
         data.bound_net = net;
         data.bound_src = pip.src;
@@ -589,7 +590,7 @@ struct Arch : BaseArch<ArchRanges>
         ++lab_routing_epoch;
         NPNR_ASSERT(pip != PipId());
         const WireId dst(pip.dst);
-        WireInfo &data = wires.at(dst);
+        WireRoute &data = wire_route(dst);
         NPNR_ASSERT(data.bound_net != nullptr && data.bound_src == pip.src);
         data.bound_net->wires.erase(dst);
         data.bound_net = nullptr;
@@ -599,19 +600,19 @@ struct Arch : BaseArch<ArchRanges>
     bool checkWireAvail(WireId wire) const override { return getBoundWireNet(wire) == nullptr; }
     NetInfo *getBoundWireNet(WireId wire) const override
     {
-        auto found = wires.find(wire);
-        return found == wires.end() ? nullptr : found->second.bound_net;
+        const WireRoute *route = find_wire_route(wire);
+        return route == nullptr ? nullptr : route->bound_net;
     }
     NetInfo *getConflictingWireNet(WireId wire) const override { return getBoundWireNet(wire); }
     NetInfo *getBoundPipNet(PipId pip) const override
     {
-        auto found = wires.find(WireId(pip.dst));
-        return found == wires.end() ? nullptr : pip_net(pip, found->second);
+        const WireRoute *route = find_wire_route(WireId(pip.dst));
+        return route == nullptr ? nullptr : pip_net(pip, *route);
     }
     NetInfo *getConflictingPipNet(PipId pip) const override { return getBoundPipNet(pip); }
-    // The net bound through `pip`, given its destination wire's record: the wire's net when this
-    // pip is the one that drives it.
-    static NetInfo *pip_net(PipId pip, const WireInfo &dst_data)
+    // The net bound through `pip`, given its destination wire's routing state: the wire's net when
+    // this pip is the one that drives it.
+    static NetInfo *pip_net(PipId pip, const WireRoute &dst_data)
     {
         return dst_data.bound_src == pip.src ? dst_data.bound_net : nullptr;
     }
@@ -632,26 +633,26 @@ struct Arch : BaseArch<ArchRanges>
     WireId getPipDstWire(PipId pip) const override { return WireId(pip.dst); };
     UpDownhillPipRange getPipsDownhill(WireId wire) const override
     {
-        return UpDownhillPipRange(wires.at(wire).wires_downhill, wire, false);
+        return UpDownhillPipRange(wire_info(wire).wires_downhill, wire, false);
     }
     UpDownhillPipRange getPipsUphill(WireId wire) const override
     {
-        return UpDownhillPipRange(wires.at(wire).wires_uphill, wire, true);
+        return UpDownhillPipRange(wire_info(wire).wires_uphill, wire, true);
     }
 
-    bool is_pip_blocked(PipId pip) const { return is_pip_blocked(pip, wires.at(WireId(pip.dst))); }
-    // The same with the destination wire's record in hand, for a caller that needs it anyway.
-    bool is_pip_blocked(PipId pip, const WireInfo &dst_data) const
+    bool is_pip_blocked(PipId pip) const { return is_pip_blocked(pip, wire_route(WireId(pip.dst))); }
+    // The same with the destination wire's routing state in hand, for a caller that needs it anyway.
+    bool is_pip_blocked(PipId pip, const WireRoute &dst_data) const
     {
         if ((dst_data.flags & WireInfo::BLOCKED) != 0)
             return true;
         {
-            auto sit = wires.find(WireId(pip.src));
-            if (sit != wires.end() && (sit->second.flags & WireInfo::BLOCKED) != 0)
+            const WireRoute *src_data = find_wire_route(WireId(pip.src));
+            if (src_data != nullptr && (src_data->flags & WireInfo::BLOCKED) != 0)
                 return true;
         }
         if ((dst_data.flags & WireInfo::RESERVED_ROUTE) != 0) {
-            if (WireId(pip.src) != dst_data.wires_uphill.at(dst_data.flags & 0xFF))
+            if (WireId(pip.src) != wire_info(WireId(pip.dst)).wires_uphill.at(dst_data.flags & 0xFF))
                 return true;
         }
         return false;
@@ -661,13 +662,13 @@ struct Arch : BaseArch<ArchRanges>
     // whether the pip is bound (design section 16.5).
     bool checkPipAvail(PipId pip) const override
     {
-        const WireInfo &dst_data = wires.at(WireId(pip.dst));
+        const WireRoute &dst_data = wire_route(WireId(pip.dst));
         return !is_pip_blocked(pip, dst_data) && pip_net(pip, dst_data) == nullptr;
     }
 
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override
     {
-        const WireInfo &dst_data = wires.at(WireId(pip.dst));
+        const WireRoute &dst_data = wire_route(WireId(pip.dst));
         if (is_pip_blocked(pip, dst_data))
             return false;
         const NetInfo *bound = pip_net(pip, dst_data);
@@ -964,6 +965,62 @@ struct Arch : BaseArch<ArchRanges>
     static const std::vector<std::string> availableRouters;
 
     dict<WireId, WireInfo> wires;
+    // Wire slots (design section 17.2): a dense number for every wire, reached from its rnode
+    // through two small tables instead of a hash. The z values of each group of one rnode type in
+    // one tile are numbered densely from the group's first slot. Built by build_wire_slots() once
+    // the routing graph is imported; no wire or pip is added after that, so the WireInfo pointers
+    // into `wires` stay valid. A slot with no wire (2.5% of them) has a null WireInfo and an
+    // unbound, unflagged route.
+    std::array<uint8_t, 256> wire_slot_type{}; // rnode type -> compact type + 1; 0 when absent
+    int wire_slot_dim_x = 0, wire_slot_dim_y = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> wire_slot_groups; // (compact type, x, y) -> first slot, count
+    std::vector<WireRoute> wire_routes;                          // by slot
+    std::vector<WireInfo *> wire_infos;                          // by slot
+    std::vector<std::pair<WireId, uint64_t>> pending_wire_flags; // flags given to add_wire before the slots
+    void build_wire_slots();
+    // The slot of `wire`'s number, or -1 when its type, tile, or z lies outside the tables. A slot
+    // inside them may be empty.
+    int wire_slot(WireId wire) const
+    {
+        const unsigned type = wire_slot_type[CycloneV::rn2t(wire.node)];
+        const int x = int(CycloneV::rn2x(wire.node)), y = int(CycloneV::rn2y(wire.node));
+        if (type == 0 || x >= wire_slot_dim_x || y >= wire_slot_dim_y)
+            return -1;
+        const auto &group = wire_slot_groups[(size_t(type - 1) * wire_slot_dim_x + x) * wire_slot_dim_y + y];
+        const uint32_t z = CycloneV::rn2z(wire.node);
+        return z < group.second ? int(group.first + z) : -1;
+    }
+    // The routing state of `wire`, or null for an id that numbers no slot. An empty slot answers
+    // as an unbound, unflagged wire, as the dictionary's miss did.
+    const WireRoute *find_wire_route(WireId wire) const
+    {
+        const int slot = wire_slot(wire);
+        return slot < 0 ? nullptr : &wire_routes[slot];
+    }
+    const WireRoute &wire_route(WireId wire) const
+    {
+        const WireRoute *route = find_wire_route(wire);
+        NPNR_ASSERT(route != nullptr);
+        return *route;
+    }
+    WireRoute &wire_route(WireId wire)
+    {
+        const int slot = wire_slot(wire);
+        NPNR_ASSERT(slot >= 0 && wire_infos[slot] != nullptr);
+        return wire_routes[slot];
+    }
+    const WireInfo &wire_info(WireId wire) const
+    {
+        const int slot = wire_slot(wire);
+        NPNR_ASSERT(slot >= 0 && wire_infos[slot] != nullptr);
+        return *wire_infos[slot];
+    }
+    uint64_t wire_flags(WireId wire) const { return wire_route(wire).flags; }
+    void set_wire_flags(WireId wire, uint64_t flags)
+    {
+        NPNR_ASSERT(flags <= UINT32_MAX);
+        wire_route(wire).flags = uint32_t(flags);
+    }
 
     // List of LABs
     std::vector<LABInfo> labs;

@@ -172,6 +172,7 @@ Arch::Arch(ArchArgs args)
     }
 
     log_info("    imported %d wires and %d pips\n", int(wires.size()), pip_count);
+    build_wire_slots();
 
     // VENDOR-LEG MIMICRY (data feeds): env VUP_BLOCK_NODES="TYPE:x,y,z;..." hard-blocks
     // arbitrary routing nodes for ALL routers (general router included -- unlike
@@ -559,8 +560,10 @@ WireId Arch::add_wire(int x, int y, IdString name, uint64_t flags)
         WireId id;
         while (wires.count(id = WireId(CycloneV::rnode(CycloneV::rnode_type_t((z >> 10) + 128), x, y, (z & 0x3FF)))))
             z++;
+        NPNR_ASSERT(wire_routes.empty()); // wires are numbered into slots once, after the last one
         wires[id].name_override = name;
-        wires[id].flags = flags;
+        if (flags != 0)
+            pending_wire_flags.emplace_back(id, flags);
         npnr_wirebyname[full_name] = id;
         return id;
     }
@@ -568,10 +571,10 @@ WireId Arch::add_wire(int x, int y, IdString name, uint64_t flags)
 
 void Arch::block_wire(WireId w)
 {
-    auto it = wires.find(w);
-    if (it == wires.end())
+    const int slot = wire_slot(w);
+    if (slot < 0 || wire_infos[slot] == nullptr)
         return;
-    it->second.flags |= WireInfo::BLOCKED;
+    wire_routes[slot].flags |= WireInfo::BLOCKED;
     placement_revision.note_mutation(PlacementMutation::Routing);
 }
 
@@ -589,7 +592,7 @@ void Arch::reserve_route(WireId src, WireId dst)
 
     NPNR_ASSERT(idx != -1);
 
-    dst_data.flags = WireInfo::RESERVED_ROUTE | unsigned(idx);
+    set_wire_flags(dst, WireInfo::RESERVED_ROUTE | unsigned(idx));
     placement_revision.note_mutation(PlacementMutation::Routing);
 }
 
@@ -599,8 +602,54 @@ bool Arch::wires_connected(WireId src, WireId dst) const
     return getBoundPipNet(pip) != nullptr;
 }
 
+void Arch::build_wire_slots()
+{
+    // Groups of one rnode type in one tile, each numbered densely by z from its first slot, in
+    // (type, x, y) order so that the wires of a tile sit together.
+    NPNR_ASSERT(wire_routes.empty());
+    std::array<bool, 256> present{};
+    for (auto &wire : wires) {
+        const auto node = wire.first.node;
+        present[CycloneV::rn2t(node)] = true;
+        wire_slot_dim_x = std::max(wire_slot_dim_x, int(CycloneV::rn2x(node)) + 1);
+        wire_slot_dim_y = std::max(wire_slot_dim_y, int(CycloneV::rn2y(node)) + 1);
+    }
+    int types = 0;
+    for (int t = 0; t < 256; t++)
+        if (present[t])
+            wire_slot_type[t] = uint8_t(++types);
+    NPNR_ASSERT(types < 256);
+    auto group_of = [&](CycloneV::rnode_t node) {
+        return (size_t(wire_slot_type[CycloneV::rn2t(node)] - 1) * wire_slot_dim_x + CycloneV::rn2x(node)) *
+                       wire_slot_dim_y +
+               CycloneV::rn2y(node);
+    };
+    wire_slot_groups.assign(size_t(types) * wire_slot_dim_x * wire_slot_dim_y, {0, 0});
+    for (auto &wire : wires) {
+        auto &count = wire_slot_groups[group_of(wire.first.node)].second;
+        count = std::max(count, CycloneV::rn2z(wire.first.node) + 1);
+    }
+    uint32_t next = 0;
+    for (auto &group : wire_slot_groups) {
+        group.first = next;
+        next += group.second;
+    }
+    wire_routes.assign(next, WireRoute());
+    wire_infos.assign(next, nullptr);
+    for (auto &wire : wires) {
+        const int slot = wire_slot(wire.first);
+        NPNR_ASSERT(slot >= 0 && wire_infos[slot] == nullptr);
+        wire_infos[slot] = &wire.second;
+    }
+    for (auto &pending : pending_wire_flags)
+        set_wire_flags(pending.first, pending.second);
+    pending_wire_flags.clear();
+    log_info("    numbered %d wires into %u slots in %zu groups\n", int(wires.size()), next, wire_slot_groups.size());
+}
+
 PipId Arch::add_pip(WireId src, WireId dst)
 {
+    NPNR_ASSERT(wire_routes.empty()); // pips are added before the wires are numbered into slots
     wires[src].wires_downhill.push_back(dst);
     wires[dst].wires_uphill.push_back(src);
     return PipId(src.node, dst.node);

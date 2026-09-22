@@ -26,7 +26,7 @@ uint64_t read_value(const Arch &arch, uint32_t lab, const PreparedControlEdit &e
     const auto &lab_data = arch.labs.at(lab);
     switch (edit.kind) {
     case ControlEditKind::WireFlags:
-        return arch.wires.at(edit.wire).flags;
+        return arch.wire_flags(edit.wire);
     case ControlEditKind::AclrUsed:
         return lab_data.aclr_used.at(edit.index);
     case ControlEditKind::ClkEnaIndex:
@@ -42,7 +42,7 @@ void write_value(Arch &arch, uint32_t lab, const PreparedControlEdit &edit, uint
     auto &lab_data = arch.labs.at(lab);
     switch (edit.kind) {
     case ControlEditKind::WireFlags:
-        arch.wires.at(edit.wire).flags = value;
+        arch.set_wire_flags(edit.wire, value);
         return;
     case ControlEditKind::AclrUsed:
         lab_data.aclr_used.at(edit.index) = bool(value);
