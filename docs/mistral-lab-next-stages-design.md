@@ -2122,6 +2122,16 @@ its worst, and the median router2 time is lower.
 `router2.h`, an option in the arch. Low: the default is unchanged, and
 routing legality is checked by router1 on every run.
 
+**Outcome (2026-09-23): negative, removed.** Resumed from the five
+route-prepared checkpoints, one run at a time: the heap routes three
+seeds of five where the binary heap routes four (seed 2 now ends at its
+cap of 100), the median Fmax of the routed seeds falls from 11.17 to
+10.77 MHz, and the worst seed (10.73) falls below the baseline's worst
+(10.92). It is about 12% faster per iteration and needs more of them.
+Which tied seed entry pops first matters to how the negotiation
+converges, and here it did not help. The option and the arity switch
+are reverted; the queues keep their storage (17.1).
+
 ### 19.2 Rows and LAB entries priced where the annealer decides (C++, upstream's file and the arch)
 
 **Why.** Section 9.5 measured where the fabric wires go: a LAB is

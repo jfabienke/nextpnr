@@ -3993,6 +3993,53 @@ routing 1.32; the core's is not decomposed), so the placement shape and
 the wires are the comparable measures, and design 19.2's terms price
 exactly the two where the difference is largest.
 
+### 2026-09-23: Unit 19.1 negative; unit 19.2 screened
+
+**19.1, router2's four-way heap: negative, removed.** Route-prepared
+checkpoints of seeds 1 to 5 written by the baseline binary
+(`quality.py prepare`); each seed routed from its checkpoint one run at a
+time by the same binary with and without `--router2-quad-heap`. The runs
+without it reproduce the full-flow baseline exactly (resumed routing
+equals the uninterrupted run).
+
+| Seed | Binary heap: Fmax, iterations, router2 | Four-way heap |
+| ---: | --- | --- |
+| 1 | 11.39 MHz, 45, 69 s | 11.36 MHz, 54, 71 s |
+| 2 | 10.94 MHz, 51, 81 s | not routed (1 overused at 100) |
+| 3 | 11.87 MHz, 64, 89 s | 10.77 MHz, 53, 70 s |
+| 4 | not routed | not routed |
+| 5 | 10.92 MHz, 46, 72 s | 10.73 MHz, 64, 91 s |
+
+Speed rule: REJECT (a seed that routed stops routing, the median of the
+routed seeds 11.17 to 10.77 MHz, the worst below the baseline's worst).
+About 12% faster per iteration (1.31 to 1.42 s against 1.39 to 1.59 s),
+on a machine carrying other work. Reverted; the queues keep their
+storage (17.1).
+
+**19.2, rows and LAB entries in the annealer: screened.** Seeds 1 and
+2, two at a time; the baseline's seeds 1 and 2 are 11.39 and 10.94 MHz,
+767,087 and 778,792 wires, 1.91 and 1.89 rows, 1.61 and 1.62 LABs per
+net.
+
+| Weights | Fmax, seeds 1 and 2 | Iterations | Wires | Rows per net | LABs per net |
+| --- | --- | --- | --- | ---: | ---: |
+| entry 1 | 11.67, 11.15 | 40, 55 | 758,714, 769,129 | 1.92, 1.89 | 1.53, 1.53 |
+| entry 2 | 12.06, 10.25 | 46, 36 | 754,299, 765,267 | 1.92, 1.90 | 1.50, 1.50 |
+| entry 4 | 11.42, 11.59 | 58, 59 | 755,028, 764,569 | 1.93, 1.91 | 1.47, 1.48 |
+| row 2 | 11.79, 11.52 | 52, 70 | 759,310, 774,738 | 1.81, 1.82 | 1.59, 1.61 |
+| row 4 | 11.74, 11.80 | 45, 45 | 761,470, 769,081 | 1.79, 1.77 | 1.58, 1.59 |
+| row 8 | 11.74, 11.10 | 74, 72 | 758,945, 769,668 | 1.75, 1.74 | 1.58, 1.60 |
+
+Each term moves its own measure and nothing else: the entry weight
+brings LABs per net from 1.61 to 1.47, the row weight rows per net from
+1.91 to 1.74, and wires fall 1 to 2%. Quartus is at 0.84 and 1.44: a
+greedy refinement of HeAP's placement moves the shape by about a sixth
+of the distance, as the design said it might. Row 4 and row 4 with entry
+4 go to five seeds.
+
+The harness's compare now takes medians over routed seeds and fails a
+candidate with an unrouted seed, instead of refusing to compare.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -4106,6 +4153,7 @@ exactly the two where the difference is largest.
 | 2026-09-22 | 17 | The Mistral arch numbers its wires into slots and keeps their routing state by slot; router2 reaches a wire's index through the slot when an arch offers one, and keeps its search queues between arcs; the four-way heap is not kept | Byte-identical on the core and the probe; resumed router2 on the core 89.8 s to 67.6 s; the four-way heap moves the route through tied seed entries |
 | 2026-09-22 | 18 | The annealer's cluster moves go through the swap seam whenever it is on (the default): planned on an overlay, certified on the moved cells' bels, committed only when accepted; the cached timing weight is not kept | Byte-identical on the probe and the core, shadow over 7 million core chain moves with no mismatch, core annealer about 80 s to 70 s; the timing weight gained nothing, its profile share was skid |
 | 2026-09-23 | policy | Lift byte identity as the acceptance rule for placement and routing changes, at the user's direction; determinism and legality stay exact; judge changes over five core seeds with `mistral/tests/quality.py`: every seed routes, no seed below the baseline's worst, quality changes lift the median Fmax by more than the baseline's spread, speed changes stay inside its range and are faster; opt-in until a promotion row | The refactor through design 18 held every result to the byte and so could not move the Quartus gap (11.39 MHz on 28,652 ALMs against 25.18 MHz on 20,576) |
+| 2026-09-23 | 19.1 | The four-way router heap is not kept: over five seeds it routes one seed fewer and lowers the median Fmax; reverted | Speed rule REJECT; 12% faster per iteration, more iterations |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

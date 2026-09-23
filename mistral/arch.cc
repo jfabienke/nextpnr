@@ -1272,8 +1272,6 @@ bool Arch::run_router_phase()
             cfg.reroute_contested_only = args.router2_reroute_contested;
             if (args.router2_unit_cost)
                 cfg.get_base_cost = [](Context *, WireId, PipId, float) { return 1.0f; };
-            if (args.router2_quad_heap)
-                cfg.queue_arity = 4;
             if (const char *e = getenv("MISTRAL_R2_PRESENT_FLOOR"))
                 cfg.present_cong_floor = float(atof(e));
             if (const char *e = getenv("MISTRAL_R2_CRIT_FLOOR"))

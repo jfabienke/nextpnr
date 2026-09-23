@@ -272,10 +272,11 @@ def cmd_compare(args):
     base, cand = load(args.config, args.base), load(args.config, args.candidate)
     print_table(base)
     print_table(cand)
-    bf = [primary_fmax(r) for r in base['runs']]
-    cf = [primary_fmax(r) for r in cand['runs']]
-    if None in bf or None in cf:
-        print('verdict: a run has no Fmax; not comparable')
+    # Medians and ranges over the routed seeds; an unrouted candidate seed fails the rule outright.
+    bf = [primary_fmax(r) for r in base['runs'] if r['routed'] and primary_fmax(r) is not None]
+    cf = [primary_fmax(r) for r in cand['runs'] if r['routed'] and primary_fmax(r) is not None]
+    if not bf or not cf:
+        print('verdict: REJECT: no routed seeds to compare')
         return 1
     b_med, c_med = statistics.median(bf), statistics.median(cf)
     spread = max(bf) - min(bf)
@@ -288,8 +289,8 @@ def cmd_compare(args):
         why = 'median gain exceeds the baseline spread' if ok else 'fails: needs every seed routed, the floor, ' \
               'and a median gain above the baseline spread'
     else:
-        bt = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in base['runs']])
-        ct = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in cand['runs']])
+        bt = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in base['runs'] if r['routed']])
+        ct = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in cand['runs'] if r['routed']])
         inside = min(bf) <= c_med <= max(bf)
         ok = all_route and floor and inside and ct < bt
         print(f"  median wall (placement + routing) {bt:.0f} -> {ct:.0f} s (orientation only unless run serially)")

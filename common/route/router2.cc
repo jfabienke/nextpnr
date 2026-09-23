@@ -336,67 +336,10 @@ struct Router2
     };
 
     // A search queue whose storage outlives the search: route_arc clears it between arcs instead of
-    // swapping in a new one, so the heap array is not freed and grown again for every arc. With arity
-    // 2 it is exactly std::priority_queue (push_back and push_heap, pop_heap and pop_back); with arity
-    // 4 (Router2Cfg::queue_arity) the four children of an entry are adjacent and a pop reads half as
-    // many levels, and entries that tie under Greater may pop in another order (design section 19.1).
-    struct WireQueue
+    // swapping in a new one, so the heap array is not freed and grown again for every arc.
+    struct WireQueue : std::priority_queue<QueuedWire, std::vector<QueuedWire>, QueuedWire::Greater>
     {
-        std::vector<QueuedWire> heap;
-        QueuedWire::Greater greater;
-        bool four_way = false;
-
-        bool empty() const { return heap.empty(); }
-        size_t size() const { return heap.size(); }
-        const QueuedWire &top() const { return heap.front(); }
-        void clear() { heap.clear(); }
-        void push(const QueuedWire &entry)
-        {
-            if (!four_way) {
-                heap.push_back(entry);
-                std::push_heap(heap.begin(), heap.end(), greater);
-                return;
-            }
-            size_t i = heap.size();
-            heap.push_back(entry);
-            while (i > 0) {
-                const size_t parent = (i - 1) / 4;
-                if (!greater(heap[parent], entry))
-                    break;
-                heap[i] = heap[parent];
-                i = parent;
-            }
-            heap[i] = entry;
-        }
-        void pop()
-        {
-            if (!four_way) {
-                std::pop_heap(heap.begin(), heap.end(), greater);
-                heap.pop_back();
-                return;
-            }
-            const QueuedWire last = heap.back();
-            heap.pop_back();
-            const size_t n = heap.size();
-            if (n == 0)
-                return;
-            size_t i = 0;
-            for (;;) {
-                const size_t first = 4 * i + 1;
-                if (first >= n)
-                    break;
-                size_t best = first;
-                const size_t end = std::min(first + 4, n);
-                for (size_t k = first + 1; k < end; k++)
-                    if (greater(heap[best], heap[k]))
-                        best = k;
-                if (!greater(last, heap[best]))
-                    break;
-                heap[i] = heap[best];
-                i = best;
-            }
-            heap[i] = last;
-        }
+        void clear() { c.clear(); }
     };
 
     bool hit_test_pip(BoundingBox &bb, Loc l) { return l.x >= bb.x0 && l.x <= bb.x1 && l.y >= bb.y0 && l.y <= bb.y1; }
@@ -931,7 +874,6 @@ struct Router2
             // Clear out the queues
             t.fwd_queue.clear();
             t.bwd_queue.clear();
-            t.fwd_queue.four_way = t.bwd_queue.four_way = cfg.queue_arity == 4;
             // Unvisit any previously visited wires
             reset_wires(t);
 
