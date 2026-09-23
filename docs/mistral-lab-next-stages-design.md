@@ -2029,3 +2029,95 @@ follows a stalling load inherits the load's samples.
 for the cost functions, the layout change the miss counts first
 suggested, waits for the measurement after 18.1: the cost updates stay
 in both paths, and what they cost then decides it.
+
+## 19. Beyond byte identity: quality over seeds
+
+Every unit from Stage 4 to design 18 was held to byte identity: a change
+had to leave the placement and the routing unchanged to the byte, and
+its worth was time. That rule made the refactor safe (the evaluator
+moved to Rust, the legaliser to batch queries, router2 to wire slots,
+the annealer to a detached seam, all without one result changing) and
+it is also why none of it moved the result: the core signs off at 11.39
+MHz on 28,652 ALMs where Quartus reaches 25.18 MHz on 20,576. From
+2026-09-23, at the user's direction, a change may move placements and
+routes, and is judged by what it does to them over seeds.
+
+**What stays exact.** Legality is not a quality knob: the evaluator's
+answers keep their verify and shadow oracles and the three guards for a
+shortcut (CLAUDE.md), router1's legality pass and the signoff
+assertions stay. Determinism stays: the same inputs, seed, and thread
+count give the same bytes run to run, and a resumed checkpoint equals
+the uninterrupted run; without it no comparison means anything. And
+every capability arrives opt-in and becomes a default only by a decision
+row with the evidence below.
+
+**The acceptance rule.** Five seeds of the core recipe's full flow, and
+three of the probe as a smoke test. Every seed routes to completion, and
+no seed's Fmax falls below the worst of the baseline's seeds. A quality
+change must lift the median Fmax above the baseline's median by more
+than the baseline's own spread (its maximum minus its minimum); a speed
+change must keep the median Fmax inside the baseline's range and lower
+the median wall time. Routed or not, iterations, fabric wires, ALMs and
+LABs used, and design 9.5's shape of the placement (rows a net touches,
+LABs its sinks sit in other than the driver's) are reported with every
+set. Seed statistics come from parallel runs; a wall-time claim needs
+serial runs on a quiet machine.
+
+**The harness.** `mistral/tests/quality.py` runs a binary over seeds of
+a named configuration (`core`, the recipe that routes the full core;
+`probe`, the gate's default path), several at a time, collects the
+report's Fmax, the log's iterations and wires, the telemetry's phase
+times, and the placed shape from the routed JSON, and compares two sets
+under the rule (`compare --kind quality|speed`). `--determinism` repeats
+the first seed and requires identical bytes; `--drop` removes a flag of
+the configuration, for references such as the recipe without the unit
+wire cost. Outputs stay under `build/quality/`.
+
+**The units.** Each is designed here before it is built, and recorded
+kept or dropped in the tracker by the rule above.
+
+- 19.1, speed: router2's four-way heap, built and dropped under 17.1
+  because it moves the route.
+- 19.2, quality: the placement cost model that 9.5 named as the
+  remaining gap, rows and LAB entries per net priced where the annealer
+  decides.
+- 19.3, quality: criticality-aware routing cost, the unit cost for
+  arcs that are not critical and the delay cost for those that are.
+- 19.4, quality: registers packed with their LUTs beyond 6g's 56%.
+- 19.5, speed: parallel annealing that includes chain moves, which
+  18.1 detached from the live design.
+
+### 19.1 router2's four-way heap (C++, upstream's file)
+
+**Why.** Router2's priority queue was the largest TLB-miss site of the
+whole flow (59 million L2 TLB misses) and 33.9 s of self time before
+design 17. Under 17.1 a four-way heap routed seed 1 at 1.72 s per
+iteration against 1.97 s, and was dropped only because it moved the
+route: 54 iterations instead of 45, because the router's seed entries
+are all pushed with random tag 0 and those that tie on score pop in an
+order that depends on the heap's shape. Under the rule of this section
+that is no longer disqualifying; whether it pays over seeds is the
+question.
+
+**Design.** `WireQueue` becomes a heap of selectable arity. With arity
+2 it is exactly `std::priority_queue`: `push_back` then `std::push_heap`,
+`std::pop_heap` then `pop_back`, with the router's comparator, so the
+default path is unchanged to the byte. With arity 4 the four children
+of an entry are adjacent (80 bytes of 20-byte entries, within one or two
+128-byte lines) and a pop reads half as many levels. The storage is kept
+between arcs in both. `Router2Cfg::queue_arity` selects it; the Mistral
+arch sets it from `--router2-quad-heap` in `ArchArgs` (not a settings
+key, which would shift the IdString table).
+
+**Measurement.** The heap changes routing only, so placement is shared:
+the harness gains `prepare`, which writes a route-prepared checkpoint for
+each seed, and `run --resume-dir`, which routes from them. A resumed run
+equals the uninterrupted one to the byte (Stage 5 2a/2b), so the quality
+of resumed runs is the full flow's, and routing them one after another
+gives serial router times. The speed rule applies: every seed routes,
+the median Fmax stays inside the baseline's range, no seed falls below
+its worst, and the median router2 time is lower.
+
+**Cost and risk.** Fifty lines in `router2.cc`, one field in
+`router2.h`, an option in the arch. Low: the default is unchanged, and
+routing legality is checked by router1 on every run.

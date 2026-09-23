@@ -56,6 +56,8 @@ cargo clippy --manifest-path rust/Cargo.toml --offline -p npnr_mistral_lab -p np
 cargo fmt    --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral_lab_ffi -p npnr_mistral_monitor -- --check  # not --all: it reformats upstream rust/nextpnr
 git diff --check
 mistral/tests/gate.sh   # all of the above, both gtest suites, the probe identity, clang-format on changed files; 58 s
+mistral/tests/quality.py run --bin B --tag T [--config core|probe] [--seeds 1-5]   # quality over seeds
+mistral/tests/quality.py compare BASE CAND [--kind quality|speed]                  # the acceptance rule
 
 # Backend self-check, arch regressions (tests/ is a submodule)
 build/nextpnr-generic --uarch example --test
@@ -369,9 +371,15 @@ reported) and 3c-4 (`--reuse-routes-history`, history seeding for preserved rout
 removed, its record and landing commit in the tracker. Every new capability
 is off by default and unpromoted, except the Rust legality authority and the annealer's overlay
 seam, promoted on 2026-09-19 (tracker entry "Promotion"); the concurrency paths (`--threads` for
-placement, `--placer-lookahead`, `--sa-batch`) stay off by a recorded decision. Hard rules that still apply: the
-serial search order and RNG stream are the reference, every reuse path must be validated against
-full recomputation, and nothing may silently certify a partial result.
+placement, `--placer-lookahead`, `--sa-batch`) stay off by a recorded decision. Since 2026-09-23 byte identity is no
+longer the acceptance rule for placement and routing changes (design section 19, tracker decision
+2026-09-23): determinism (the same inputs, seed, and threads give the same bytes; a resumed
+checkpoint equals the uninterrupted run) and legality (the evaluator's oracles and the shortcut
+guards below, router1's check, the signoff guards) are the reference, and quality is judged over
+five core seeds with `mistral/tests/quality.py` (every seed routes, no seed below the baseline's
+worst, a quality change lifts the median Fmax by more than the baseline's spread, a speed change
+keeps it inside the baseline's range and lowers wall time). Every reuse path must still be
+validated against full recomputation, and nothing may silently certify a partial result.
 
 ## Conventions
 
