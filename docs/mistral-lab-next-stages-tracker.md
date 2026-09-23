@@ -4420,6 +4420,12 @@ override, so `--placer-heap-critexp` is still ignored on this arch. On
 - **Exponent 4 at weight 100** is 0.16 MHz better on the median of two
   seeds, inside the noise. It goes to five seeds with the full set.
 
+Exponent 4 in the full set on five seeds (tag `f-w100-e4-crit-5s`):
+12.51, 12.36, 12.66, 12.82, and seed 5 not routed (cap of 100). The
+median of the four routed seeds, 12.59, equals the set at exponent 7,
+and iterations climb to 96 and 99 on seeds 3 and 4. REJECT against the
+set; the set keeps exponent 7.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
