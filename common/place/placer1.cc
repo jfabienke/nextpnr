@@ -67,6 +67,31 @@ class SAPlacer
         }
     };
 
+    // Design 19.2: a net's pins per row (driver and sinks) and sinks per tile, for the terms that
+    // price the distinct rows a net touches and the tiles its sinks enter other than the driver's.
+    // Histograms are small unordered (key, count) lists without zero counts, so their sizes are the
+    // distinct counts.
+    struct NetShape
+    {
+        std::vector<std::pair<int, int>> rows, tiles;
+        int driver_tile = -1;
+        wirelen_t cost = 0;
+        bool tracked = false;
+    };
+    static void hist_add(std::vector<std::pair<int, int>> &hist, int key, int by)
+    {
+        for (size_t i = 0; i < hist.size(); ++i)
+            if (hist[i].first == key) {
+                hist[i].second += by;
+                if (hist[i].second == 0) {
+                    hist[i] = hist.back();
+                    hist.pop_back();
+                }
+                return;
+            }
+        hist.emplace_back(key, by);
+    }
+
     // Position overlay for detached swap evaluation: cost computations see the
     // moved cells at their proposed BELs instead of their live bindings. The
     // live paths pass the empty `no_overlay`, so they are unchanged.
@@ -131,6 +156,8 @@ class SAPlacer
         }
 
         net_bounds.resize(ctx->nets.size());
+        if (cfg.row_weight > 0 || cfg.entry_weight > 0)
+            net_shapes.resize(ctx->nets.size());
         net_arc_tcost.resize(ctx->nets.size());
         net_arc_crit.resize(ctx->nets.size());
         old_udata.reserve(ctx->nets.size());
@@ -280,6 +307,8 @@ class SAPlacer
             diameter = 3;
             log_info("Running simulated annealing placer for refinement.\n");
             batch_mode = cfg.assess_swap && cfg.swap_batch > 0 && cfg.netShareWeight <= 0;
+            if (batch_mode && !net_shapes.empty())
+                log_error("The annealer's row and entry weights cannot be combined with batched refinement yet.\n");
         }
         auto saplace_start = std::chrono::high_resolution_clock::now();
 
@@ -354,6 +383,8 @@ class SAPlacer
                     NPNR_ASSERT(incr.nx1 == gold.nx1);
                     NPNR_ASSERT(incr.ny0 == gold.ny0);
                     NPNR_ASSERT(incr.ny1 == gold.ny1);
+                    if (!net_shapes.empty() && net_shapes[i].tracked)
+                        NPNR_ASSERT(net_shapes[i].cost == compute_shape(no_overlay, net).cost);
                 }
             }
 
@@ -1255,6 +1286,36 @@ class SAPlacer
         return bb;
     }
 
+    int tile_key(Loc loc) const { return loc.y * (max_x + 1) + loc.x; }
+    wirelen_t shape_cost(const NetShape &shape) const
+    {
+        wirelen_t entries = wirelen_t(shape.tiles.size());
+        for (const auto &tile : shape.tiles)
+            if (tile.first == shape.driver_tile) {
+                --entries;
+                break;
+            }
+        return cfg.row_weight * std::max<wirelen_t>(wirelen_t(shape.rows.size()) - 1, 0) + cfg.entry_weight * entries;
+    }
+    // The same pins get_net_bounds counts: the driver, and every sink that is placed or pseudo.
+    NetShape compute_shape(const BelOverlayList &overlay, NetInfo *net)
+    {
+        NetShape shape;
+        shape.tracked = true;
+        const Loc driver = overlay_loc(overlay, net->driver.cell);
+        hist_add(shape.rows, driver.y, 1);
+        shape.driver_tile = tile_key(driver);
+        for (auto user : net->users) {
+            if (!user.cell->isPseudo() && overlay_bel(overlay, user.cell) == BelId())
+                continue;
+            const Loc loc = overlay_loc(overlay, user.cell);
+            hist_add(shape.rows, loc.y, 1);
+            hist_add(shape.tiles, tile_key(loc), 1);
+        }
+        shape.cost = shape_cost(shape);
+        return shape;
+    }
+
     // Get the timing cost for an arc of a net. Criticality is read from the
     // per-arc table refreshed by setup_costs() after each timing run: the value
     // is the same float the analyser holds, without a hashed CellPortKey lookup
@@ -1281,6 +1342,8 @@ class SAPlacer
             if (ignore_net(no_overlay, ni))
                 continue;
             net_bounds[ni->udata] = get_net_bounds(no_overlay, ni);
+            if (!net_shapes.empty() && int(ni->users.entries()) <= cfg.shape_fanout_max)
+                net_shapes[ni->udata] = compute_shape(no_overlay, ni);
             if (cfg.timing_driven && int(ni->users.entries()) < cfg.timingFanoutThresh)
                 for (auto usr : ni->users.enumerate()) {
                     net_arc_crit[ni->udata][usr.index.idx()] = tmg.get_criticality(CellPortKey(usr.value));
@@ -1295,6 +1358,8 @@ class SAPlacer
         wirelen_t cost = 0;
         for (const auto &net : net_bounds)
             cost += net.hpwl(cfg);
+        for (const auto &shape : net_shapes)
+            cost += shape.cost;
         return cost;
     }
 
@@ -1331,6 +1396,16 @@ class SAPlacer
         std::vector<BoundingBox> new_net_bounds;
         std::vector<std::pair<std::pair<decltype(NetInfo::udata), store_index<PortRef>>, double>> new_arc_costs;
 
+        // Design 19.2: the pins a move carries on nets whose shape is priced, and the shapes after it.
+        struct ShapeMove
+        {
+            decltype(NetInfo::udata) net;
+            Loc from, to;
+            bool driver;
+        };
+        std::vector<ShapeMove> shape_moves;
+        std::vector<std::pair<decltype(NetInfo::udata), NetShape>> new_shapes;
+
         wirelen_t wirelen_delta = 0;
         double timing_delta = 0;
 
@@ -1361,6 +1436,8 @@ class SAPlacer
             bounds_changed_nets_y.clear();
             changed_arcs.clear();
             new_arc_costs.clear();
+            shape_moves.clear();
+            new_shapes.clear();
             wirelen_delta = 0;
             timing_delta = 0;
         }
@@ -1635,6 +1712,8 @@ class SAPlacer
                 continue;
             if (ignore_net(overlay, pn))
                 continue;
+            if (!net_shapes.empty() && net_shapes[pn->udata].tracked)
+                mc.shape_moves.push_back({pn->udata, old_loc, curr_loc, port.second.type == PORT_OUT});
             BoundingBox &curr_bounds = mc.new_net_bounds[pn->udata];
             // Incremental bounding box updates
             // Note that everything other than full updates are applied immediately rather than being queued,
@@ -1797,6 +1876,33 @@ class SAPlacer
             if (md.already_bounds_changed_x[bc] == MoveChangeData::NO_CHANGE)
                 md.wirelen_delta += md.new_net_bounds[bc].hpwl(cfg) - net_bounds[bc].hpwl(cfg);
 
+        // Design 19.2: each priced net once, with all the pins the move carries on it.
+        for (size_t i = 0; i < md.shape_moves.size(); ++i) {
+            const auto net = md.shape_moves[i].net;
+            bool seen = false;
+            for (size_t j = 0; j < i && !seen; ++j)
+                seen = md.shape_moves[j].net == net;
+            if (seen)
+                continue;
+            NetShape shape = net_shapes[net];
+            for (size_t j = i; j < md.shape_moves.size(); ++j) {
+                const auto &move = md.shape_moves[j];
+                if (move.net != net)
+                    continue;
+                hist_add(shape.rows, move.from.y, -1);
+                hist_add(shape.rows, move.to.y, 1);
+                if (move.driver) {
+                    shape.driver_tile = tile_key(move.to);
+                } else {
+                    hist_add(shape.tiles, tile_key(move.from), -1);
+                    hist_add(shape.tiles, tile_key(move.to), 1);
+                }
+            }
+            shape.cost = shape_cost(shape);
+            md.wirelen_delta += shape.cost - net_shapes[net].cost;
+            md.new_shapes.emplace_back(net, std::move(shape));
+        }
+
         if (cfg.timing_driven) {
             for (const auto &tc : md.changed_arcs) {
                 double old_cost = net_arc_tcost.at(tc.first).at(tc.second.idx());
@@ -1816,6 +1922,9 @@ class SAPlacer
             net_bounds[bc] = md.new_net_bounds[bc];
         for (const auto &tc : md.new_arc_costs)
             net_arc_tcost[tc.first.first].at(tc.first.second.idx()) = tc.second;
+        for (auto &shape : md.new_shapes)
+            net_shapes[shape.first] = std::move(shape.second);
+        md.new_shapes.clear();
         curr_wirelen_cost += md.wirelen_delta;
         curr_timing_cost += md.timing_delta;
         // Every commit, whichever path made it (batched, live for unsupported swaps, or chain
@@ -1897,6 +2006,8 @@ class SAPlacer
     // Map net arcs to their timing cost (criticality * delay ns)
     std::vector<std::vector<double>> net_arc_tcost;
     std::vector<std::vector<float>> net_arc_crit; // criticality per arc, refreshed in setup_costs()
+    // Design 19.2: the priced shape of each net (empty when both weights are 0).
+    std::vector<NetShape> net_shapes;
 
     // Fast lookup for cell to clusters
     dict<ClusterId, std::vector<CellInfo *>> cluster2cell;

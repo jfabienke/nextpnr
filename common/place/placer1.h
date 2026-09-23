@@ -65,6 +65,10 @@ struct Placer1Cfg
     int timingFanoutThresh;
     bool timing_driven;
     int hpwl_scale_x, hpwl_scale_y;
+    // Design 19.2: wirelength added per distinct row a net touches beyond the first, and per tile its
+    // sinks occupy other than the driver's, for nets of up to shape_fanout_max sinks; 0 = off.
+    int row_weight = 0, entry_weight = 0;
+    int shape_fanout_max = 64;
 
     // Assess a two-cell swap's legality against the live design without
     // mutating it. When set, the annealer evaluates the swap's cost delta from

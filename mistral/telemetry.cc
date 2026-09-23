@@ -67,6 +67,8 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"spread_congestion", a.spread_congestion},
             {"register_packing", a.register_packing},
             {"row_cost", double(a.row_cost)},
+            {"sa_row_weight", a.sa_row_weight},
+            {"sa_entry_weight", a.sa_entry_weight},
             {"router2_unit_cost", a.router2_unit_cost},
             {"router2_quad_heap", a.router2_quad_heap},
             {"router2_reroute", a.router2_reroute},

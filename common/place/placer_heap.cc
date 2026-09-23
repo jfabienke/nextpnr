@@ -474,6 +474,8 @@ class HeAPPlacer
             placer1_cfg.swap_seam_shadow = cfg.swap_seam_shadow;
             placer1_cfg.swap_batch = cfg.swap_batch;
             placer1_cfg.threads = cfg.swap_threads;
+            placer1_cfg.row_weight = cfg.sa_row_weight;
+            placer1_cfg.entry_weight = cfg.sa_entry_weight;
             if (!placer1_refine(ctx, placer1_cfg)) {
                 return false;
             }

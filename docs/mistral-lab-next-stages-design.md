@@ -2121,3 +2121,62 @@ its worst, and the median router2 time is lower.
 **Cost and risk.** Fifty lines in `router2.cc`, one field in
 `router2.h`, an option in the arch. Low: the default is unchanged, and
 routing legality is checked by router1 on every run.
+
+### 19.2 Rows and LAB entries priced where the annealer decides (C++, upstream's file and the arch)
+
+**Why.** Section 9.5 measured where the fabric wires go: a LAB is
+entered through row wires, so every extra row a net touches costs a
+stair of two or three wires, and every LAB its sinks enter costs about
+one more. Quartus's placement touches 1.52 rows per net and enters a LAB
+with one fabric wire; nextpnr's full core touches 1.80 rows per net and
+enters 1.40 other LABs per net (the harness's measure, nets of up to 64
+sinks), and spends 1.83 fabric wires per LAB entry. The placer's
+objective does not see either. HPWL prices a net's bounding box: two
+sinks five rows apart cost the same as sinks in all six rows between,
+and a net whose ten sinks sit in ten LABs of one row costs the same as
+one whose sinks share two. `--row-cost` (6h) made a vertical tile dearer
+in HeAP, and the annealer inherits it, truncated: `Placer1Cfg` keeps its
+scales as integers, so 2.5 arrives as 2.
+
+**Design.** The annealer's per-net cost gains two terms beside the
+bounding box:
+
+    cost(net) = sx * (x1 - x0) + sy * (y1 - y0)
+              + wr * (rows(net) - 1) + we * entries(net)
+
+where `rows` counts the distinct rows of the driver and sinks and
+`entries` the distinct tiles of sinks other than the driver's. Both are
+generic geometry (a row is a y, a LAB a tile), so the terms live in
+placer1 behind `Placer1Cfg` weights, and Mistral sets them from
+`--sa-row-weight` and `--sa-entry-weight` (`ArchArgs`), off by default;
+the scales become floats so the row cost arrives whole.
+
+Each net keeps two small histograms, rows and sink tiles with their pin
+counts, for nets of up to 64 sinks (larger nets, clocks and enables,
+keep the bounding box alone; a histogram of thousands of pins would be
+slow to update and the router spreads them on global and dedicated
+lines anyway). A move records, per net it touches, the pins that move
+and where; `compute_cost_changes` applies them to a copy of the
+histograms and prices the change in distinct rows and tiles;
+`commit_cost_changes` keeps it. The seam's detached path and the live
+path go through the same code with their own positions, so shadow mode
+still compares them.
+
+**What it cannot do.** The terms act in refinement, which starts at a
+temperature of 1e-7 and so descends greedily from HeAP's placement; they
+do not reach HeAP's analytic solver, which needs a convex objective.
+Whether a greedy descent finds enough is the measurement's question; a
+refinement at a positive temperature, affordable since 18.1, is the next
+lever if it does not.
+
+**Measurement.** A screening grid on seeds 1 and 2 (row weight 0, 2, 4,
+8 against entry weight 0, 1, 2, 4, in bounding-box units, where one
+horizontal tile is 1), then the best on five seeds against the baseline
+under the quality rule. Rows and LAB entries per net must fall; fabric
+wires, router iterations, and Fmax say whether it paid. The float scale
+alone is a separate arm.
+
+**Cost and risk.** About 200 lines in `placer1.cc`, options in the arch.
+Medium: incremental histograms must stay exact, which a debug recompute
+of every net's cost after each temperature step checks, as the bounding
+boxes already are in debug mode. The default path is unchanged.

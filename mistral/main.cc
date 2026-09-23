@@ -118,6 +118,12 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("row-cost", po::value<float>(),
                            "weight of a vertical tile against a horizontal one in placement (solver, spreader, "
                            "legaliser); the fabric enters LABs through row wires (off by default; experimental)");
+    specific.add_options()("sa-row-weight", po::value<int>(),
+                           "annealer cost per distinct row a net touches beyond the first, in horizontal tiles "
+                           "(the fabric enters LABs by row wires; off by default; experimental)");
+    specific.add_options()("sa-entry-weight", po::value<int>(),
+                           "annealer cost per tile a net's sinks occupy other than the driver's, in horizontal "
+                           "tiles (off by default; experimental)");
     specific.add_options()("router2-reroute", po::value<int>(),
                            "rip up and re-route every arc every N router2 iterations, not only the arcs on overused "
                            "wires (off by default; experimental)");
@@ -258,6 +264,10 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     if (vm.count("telemetry"))
         chipArgs.telemetry_path = vm["telemetry"].as<std::string>();
     chipArgs.lab_tile_scan = vm.count("no-lab-tile-scan") == 0;
+    if (vm.count("sa-row-weight"))
+        chipArgs.sa_row_weight = std::max(0, vm["sa-row-weight"].as<int>());
+    if (vm.count("sa-entry-weight"))
+        chipArgs.sa_entry_weight = std::max(0, vm["sa-entry-weight"].as<int>());
     if (vm.count("row-cost")) {
         chipArgs.row_cost = vm["row-cost"].as<float>();
         if (chipArgs.row_cost <= 0.0f)

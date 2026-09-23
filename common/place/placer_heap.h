@@ -169,6 +169,8 @@ struct PlacerHeapCfg
     bool swap_seam_shadow = false;
     int swap_batch = 0;
     unsigned swap_threads = 1;
+    // Design 19.2: the refinement's row and entry weights (Placer1Cfg::row_weight, entry_weight).
+    int sa_row_weight = 0, sa_entry_weight = 0;
 
     bool disableCtrlSet;
 
