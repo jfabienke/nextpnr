@@ -73,6 +73,7 @@ struct ArchArgs
     bool router2_reroute_contested = false; // Stage 6 (6f): that re-route queues only nets on wires with history
     bool router2_unit_cost = false;         // Stage 6 (6f): router2 costs every wire one unit instead of its delay
     bool router2_crit_cost = false;         // Design 19.3: unit cost for non-critical arcs, delay cost for critical
+    float router2_crit_threshold = 0;       // Design 19.3b: arcs below this criticality keep the unit cost
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
     // Designs 14 and 16.1: the Rust session's batch forms in the Rust legality modes, the strict

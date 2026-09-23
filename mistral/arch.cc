@@ -1211,6 +1211,28 @@ bool Arch::route()
         return true;
     }
     route_build(std::move(prepared));
+    // Design 19 diagnostic: MISTRAL_DUMP_ARC_DELAYS=file writes every routed arc's driver and sink tiles and
+    // its routing delay (the timing analyser's own), to relate an arc's delay to its span.
+    if (const char *e = getenv("MISTRAL_DUMP_ARC_DELAYS")) {
+        FILE *f = fopen(e, "w");
+        if (!f)
+            log_error("cannot write %s\n", e);
+        fprintf(f, "net,dx0,dy0,sx,sy,delay_ns\n");
+        for (auto &net : ctx.nets) {
+            const NetInfo *ni = net.second.get();
+            if (!ni->driver.cell || ni->driver.cell->bel == BelId())
+                continue;
+            Loc d = getBelLocation(ni->driver.cell->bel);
+            for (auto &usr : ni->users) {
+                if (!usr.cell || usr.cell->bel == BelId())
+                    continue;
+                Loc s = getBelLocation(usr.cell->bel);
+                fprintf(f, "%s,%d,%d,%d,%d,%.4f\n", ni->name.c_str(&ctx), d.x, d.y, s.x, s.y,
+                        ctx.getDelayNS(ctx.getNetinfoRouteDelayQuad(ni, usr).maxDelay()));
+            }
+        }
+        fclose(f);
+    }
     return true;
 }
 
@@ -1274,8 +1296,9 @@ bool Arch::run_router_phase()
             cfg.reroute_contested_only = args.router2_reroute_contested;
             if (args.router2_crit_cost) {
                 // Design 19.3: the unit cost for arcs that are not critical, the delay cost for those that are,
-                // blended by router2's own weight w = max(floor, 1 - crit^2). The unit is the mean pip delay, so
-                // both terms and router2's to-go estimate are in nanoseconds.
+                // blended by router2's own weight w = max(floor, 1 - crit^2). A wire costs w + (1 - w) * delay / U,
+                // where U is the mean pip delay: one unit, as under the unit cost, for an arc with no criticality.
+                // Arcs below the criticality threshold keep the unit cost outright (19.3b).
                 double sum = 0;
                 size_t count = 0;
                 for (PipId pip : getPips()) {
@@ -1283,9 +1306,14 @@ bool Arch::run_router_phase()
                     ++count;
                 }
                 const float unit = count ? float(sum / double(count)) : 1.0f;
-                log_info("router2 criticality cost: unit %.3f ns (mean over %zu pips)\n", unit, count);
-                cfg.get_base_cost = [unit](Context *ctx, WireId wire, PipId pip, float crit_weight) {
-                    return crit_weight * unit + (1.0f - crit_weight) * default_base_cost(ctx, wire, pip, crit_weight);
+                const float threshold = args.router2_crit_threshold;
+                log_info("router2 criticality cost: unit %.3f ns (mean over %zu pips), threshold %.3f\n", unit, count,
+                         threshold);
+                cfg.get_base_cost = [unit, threshold](Context *ctx, WireId wire, PipId pip, float crit_weight) {
+                    const float crit = std::sqrt(std::max(0.0f, 1.0f - crit_weight));
+                    if (crit < threshold)
+                        return 1.0f;
+                    return crit_weight + (1.0f - crit_weight) * default_base_cost(ctx, wire, pip, crit_weight) / unit;
                 };
             } else if (args.router2_unit_cost) {
                 cfg.get_base_cost = [](Context *, WireId, PipId, float) { return 1.0f; };
