@@ -85,7 +85,8 @@ std::vector<std::string> monitor_option_lines(const ArchArgs &a)
             stringf("alm-pairing %d  spread-demand %d  spread-congestion %s  register-packing %s  row-cost %g",
                     int(a.alm_pairing), int(a.spread_demand), onoff(a.spread_congestion), onoff(a.register_packing),
                     double(a.row_cost)),
-            stringf("router2 unit-cost %s  reroute %d%s", onoff(a.router2_unit_cost), int(a.router2_reroute),
+            stringf("router2 unit-cost %s  crit-cost %s  reroute %d%s", onoff(a.router2_unit_cost),
+                    onoff(a.router2_crit_cost), int(a.router2_reroute),
                     a.router2_reroute_contested ? " (contested only)" : ""),
     };
 }

@@ -138,6 +138,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-unit-cost",
                            "router2 costs every wire one unit instead of its delay (fewer wires, slower paths; "
                            "off by default; experimental)");
+    specific.add_options()("router2-crit-cost",
+                           "router2 costs a wire by blending one unit and its delay by the arc's criticality "
+                           "(replaces --router2-unit-cost; off by default; experimental)");
     specific.add_options()("reuse-routes-history", po::value<float>(),
                            "seed router2's history cost on every preserved wire so the dirty nets route around "
                            "them from the first iteration (1.0 = off, default; experimental)");
@@ -262,6 +265,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     }
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
+    chipArgs.router2_crit_cost = vm.count("router2-crit-cost") != 0;
     chipArgs.register_packing = vm.count("register-packing") != 0;
     if (vm.count("telemetry"))
         chipArgs.telemetry_path = vm["telemetry"].as<std::string>();

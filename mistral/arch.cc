@@ -1272,8 +1272,24 @@ bool Arch::run_router_phase()
             // be used because they intern their settings key before the checkpoint replays its table.
             cfg.reroute_period = args.router2_reroute;
             cfg.reroute_contested_only = args.router2_reroute_contested;
-            if (args.router2_unit_cost)
+            if (args.router2_crit_cost) {
+                // Design 19.3: the unit cost for arcs that are not critical, the delay cost for those that are,
+                // blended by router2's own weight w = max(floor, 1 - crit^2). The unit is the mean pip delay, so
+                // both terms and router2's to-go estimate are in nanoseconds.
+                double sum = 0;
+                size_t count = 0;
+                for (PipId pip : getPips()) {
+                    sum += getCtx()->getDelayNS(getPipDelay(pip).maxDelay() + getDelayEpsilon());
+                    ++count;
+                }
+                const float unit = count ? float(sum / double(count)) : 1.0f;
+                log_info("router2 criticality cost: unit %.3f ns (mean over %zu pips)\n", unit, count);
+                cfg.get_base_cost = [unit](Context *ctx, WireId wire, PipId pip, float crit_weight) {
+                    return crit_weight * unit + (1.0f - crit_weight) * default_base_cost(ctx, wire, pip, crit_weight);
+                };
+            } else if (args.router2_unit_cost) {
                 cfg.get_base_cost = [](Context *, WireId, PipId, float) { return 1.0f; };
+            }
             if (const char *e = getenv("MISTRAL_R2_PRESENT_FLOOR"))
                 cfg.present_cong_floor = float(atof(e));
             if (const char *e = getenv("MISTRAL_R2_CRIT_FLOOR"))
