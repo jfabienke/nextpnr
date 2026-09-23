@@ -4334,6 +4334,73 @@ Five seeds:
 Kept opt-in (`--router2-crit-cost --router2-crit-threshold 0`). It is
 next measured together with the placement settings.
 
+### 2026-09-23: Timing-driven placement: HeAP's timing weight screened
+
+HeAP weighs an arc in its solver by `1 + timingWeight * crit^e`. These
+were never tuned for the core. Screened on top of 19.2 and 19.6 (rows 4,
+entries 4, affinity 2, reach 5), seeds 1 and 2
+(`build/quality/sweep_tmg.sh`).
+
+| Setting | Routed | Fmax | Iterations | Wires | Entries per net |
+| --- | ---: | --- | --- | --- | --- |
+| weight 10 (default) | 2 | 11.57, 12.26 | 27, 28 | 737,553, 743,925 | 1.40, 1.41 |
+| weight 30 | 1 | cap of 100, 11.77 | 100, 33 | 742,335, 732,886 | 1.40 |
+| weight 100 | 2 | 12.80, 12.39 | 59, 64 | 738,738, 734,590 | 1.41, 1.41 |
+| exponent 4 | 2 | 11.57, 12.26 (the default's placements exactly) | 27, 28 | 737,553, 743,925 | 1.40, 1.41 |
+| weight 30, exponent 4 | 1 | the weight-30 runs exactly | | | |
+
+- **Weight 100** gives the best seeds so far, a median of 12.60 on the
+  two seeds.
+- **Weight 30** lost seed 1. The response is not monotonic, so it is
+  judged over five seeds.
+- **The exponent does nothing** because the arch overrides it:
+  `mistral/arch.cc` sets `criticalityExponent = 7` after the settings
+  are read, so `--placer-heap-critexp` never takes effect on this arch.
+  At 7, only arcs very close to the worst slack get the timing weight,
+  which is why a weight of 100 is needed to see an effect. Sweeping the
+  exponent needs an arch option.
+
+### 2026-09-23: The Fmax set passes the quality rule: median 11.17 to 12.59 MHz
+
+Units 19.2, 19.6 and 19.3b with HeAP's timing weight at 100, seeds 1 to
+5 three at a time, seed 1 repeated (`build/quality/run_combo.sh`, tag
+`f-w100-crit-5s`, binary `nextpnr-mistral.u19-3b`). The options on top
+of the recipe are:
+
+    --sa-row-weight 4 --sa-entry-weight 4 --heap-lab-affinity 2 --heap-lab-reach 5
+    --placer-heap-timingweight 100 --router2-crit-cost --router2-crit-threshold 0
+
+| Seed | Baseline | Fmax set | Iterations | Wires | LABs | Entries per net |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 11.39 | **13.40** | 45 | 736,786 | 4,157 | 1.412 |
+| 2 | 10.94 | **12.41** | 26 | 733,044 | 4,174 | 1.410 |
+| 3 | 11.87 | **12.93** | 63 | 733,038 | 4,134 | 1.406 |
+| 4 | not routed | **12.59** | 30 | 726,337 | 4,165 | 1.404 |
+| 5 | 10.92 | **12.48** | 43 | 730,877 | 4,146 | 1.409 |
+
+**Quality rule: ACCEPT.**
+
+- The median gains 1.42 MHz (12.7%), above the baseline's spread of
+  0.95.
+- Every seed routes, including seed 4. The worst seed (12.41) is above
+  the baseline's best (11.87).
+- Seed 1 repeated is identical.
+- Wires fall 5% (median 733,038 against 772,377), iterations are 26 to
+  63, and placement takes 257 to 351 s against 376 to 440 (orientation
+  only: parallel runs).
+
+The three parts add up:
+- the placement units (19.2, 19.6) gave 11.75;
+- the timing weight gave 12.60 on seeds 1 and 2;
+- the routing cost adds 0.6 on seed 1 (12.80 to 13.40) and nothing on
+  seed 2 (12.39 to 12.41).
+
+A timing weight of 300 lost seed 2 (cap of 100) after 12.94 on seed 1,
+so 100 is the setting.
+
+Every option in the set is opt-in. Making the set the core recipe, or a
+default, is a promotion and needs its own decision row.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
