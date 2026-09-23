@@ -3912,6 +3912,37 @@ cannot assess runs the live path as before.
 The probe's annealer runs 5 to 10 s and its repeats spread by more than
 a second, so its times are not a measurement; the core's are.
 
+### 2026-09-23: The quality baseline over five core seeds (design 19)
+
+The reference every unit of design 19 is judged against: the core
+recipe (`mistral/tests/quality.py`, configuration `core`) at `faf70aa0`,
+seeds 1 to 5, four at a time, with seed 1 repeated.
+
+| Seed | Routed | Fmax | Iterations | Wires | ALMs | LABs | Rows per net | LABs per net |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | yes | 11.39 MHz | 45 | 767,087 | 28,652 | 4,189 | 1.796 | 1.396 |
+| 2 | yes | 10.94 MHz | 51 | 778,792 | 28,716 | 4,183 | 1.775 | 1.405 |
+| 3 | yes | 11.87 MHz | 64 | 770,569 | 28,780 | 4,187 | 1.789 | 1.399 |
+| 4 | **no** | - | cap of 100 with 1 wire overused | 785,042 | | | | |
+| 5 | yes | 10.92 MHz | 46 | 774,185 | 28,677 | 4,184 | 1.786 | 1.397 |
+
+Median Fmax of the routed seeds 11.17 MHz, range 10.92 to 11.87 (spread
+0.95). Seed 1 repeated is identical to the byte, and seeds 1 to 3
+reproduce the earlier records exactly (11.39, 10.94, 11.87 MHz at 45, 51,
+64 iterations). Shape measures are nets of up to 64 sinks with every pin
+in a LAB.
+
+Seed 4 does not route under the recipe: router2 reaches its cap of 100
+iterations one wire short and hands over to router1, which never
+finishes on the core; the run was stopped after 80 minutes. The rule's
+"every seed routes" is therefore a bar the baseline itself misses, so a
+candidate must do better than the baseline there. The harness now stops
+such a run (`--timeout`, 30 minutes by default) and records it as not
+routed. The delay-cost reference (`--drop=--router2-unit-cost`) was not
+run: at the recipe's cap of 100 it would not converge (it needed 125
+iterations under a cap of 200, 2026-09-18), so it belongs to 19.3's
+design with its cap.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

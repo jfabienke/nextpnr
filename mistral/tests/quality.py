@@ -6,7 +6,7 @@ byte identity. This runs a binary over several seeds of a named configuration, c
 quality and time of every run, and compares two such sets against the acceptance rule.
 
   quality.py run --bin BIN --tag TAG [--config core|probe] [--seeds 1-5] [--parallel 4]
-                 [--determinism] [--drop OPTION ...] [-- extra nextpnr options]
+                 [--determinism] [--drop=OPTION ...] [--timeout MIN] [-- extra nextpnr options]
   quality.py compare BASE_TAG CANDIDATE_TAG [--config core|probe] [--kind quality|speed]
   quality.py prepare --bin BIN --dir DIR [--config ...] [--seeds 1-5] [--parallel 4] [--drop ...]
   quality.py run ... --resume-dir DIR      (route from DIR's checkpoints; routing-only changes)
@@ -24,6 +24,10 @@ The acceptance rule (tracker decision 2026-09-23):
   quality: median Fmax above the baseline median by more than the baseline's spread (max - min);
   speed: median Fmax within the baseline's range, and median wall time lower.
 Wall times from parallel runs are for orientation only; timing claims need serial runs.
+
+A run that router2 cannot finish within its iteration cap goes on to router1, which never finishes
+on the core; `--timeout` (minutes per run, 30 by default) stops it and records it as not routed.
+Pass a dropped flag with `=` (`--drop=--router2-unit-cost`), or argparse reads it as an option.
 """
 import argparse
 import collections
@@ -156,18 +160,23 @@ def inputs_for(config, seed, resume_dir):
     return inputs
 
 
-def run_one(binary, config, tag, seed, extra, suffix='', drop=(), resume_dir=None):
+def run_one(binary, config, tag, seed, extra, suffix='', drop=(), resume_dir=None, timeout_min=30):
     d = run_dir(config, tag)
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, f's{seed}{suffix}')
     cmd = [binary] + config_options(config, drop) + inputs_for(config, seed, resume_dir) + [
         '--seed', str(seed), '--log', stem + '.log', '--telemetry', stem + '.telemetry.json', '--report',
         stem + '.report.json', '--write', stem + '.routed.json'] + extra
-    proc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    result = {'seed': seed, 'exit': proc.returncode}
+    try:
+        proc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                              timeout=timeout_min * 60)
+        returncode, stderr = proc.returncode, proc.stderr
+    except subprocess.TimeoutExpired:
+        returncode, stderr = 'timeout', ''
+    result = {'seed': seed, 'exit': returncode}
     if os.path.exists(stem + '.log'):
         result.update(parse_log(stem + '.log'))
-    result['routed'] = proc.returncode == 0 and result.get('overused') == 0 and result.get('finished', False)
+    result['routed'] = returncode == 0 and result.get('overused') == 0 and result.get('finished', False)
     if os.path.exists(stem + '.report.json'):
         report = json.load(open(stem + '.report.json'))
         result['fmax'] = {k: v['achieved'] for k, v in report.get('fmax', {}).items()}
@@ -176,8 +185,8 @@ def run_one(binary, config, tag, seed, extra, suffix='', drop=(), resume_dir=Non
         result['placement_s'], result['routing_s'] = phases.get('placement_s'), phases.get('routing_s')
     if os.path.exists(stem + '.routed.json'):
         result.update(placement_shape(stem + '.routed.json'))
-    if proc.returncode != 0:
-        result['stderr_tail'] = proc.stderr[-400:]
+    if returncode != 0:
+        result['stderr_tail'] = stderr[-400:]
     return result
 
 
@@ -210,7 +219,7 @@ def cmd_run(args, extra):
     jobs = [(s, '') for s in seeds] + ([(seeds[0], '_repeat')] if args.determinism else [])
     with ThreadPoolExecutor(max_workers=args.parallel) as pool:
         results = list(pool.map(lambda job: run_one(binary, args.config, args.tag, job[0], extra, job[1],
-                                                    args.drop, args.resume_dir), jobs))
+                                                    args.drop, args.resume_dir, args.timeout), jobs))
     runs = [r for (s, suffix), r in zip(jobs, results) if not suffix]
     summary = {'tag': args.tag, 'config': args.config, 'binary': binary, 'drop': args.drop, 'extra': extra,
                'resume_dir': args.resume_dir, 'runs': runs}
@@ -300,6 +309,7 @@ def main():
     run.add_argument('--determinism', action='store_true')
     run.add_argument('--drop', action='append', default=[], help='remove a flag of the configuration')
     run.add_argument('--resume-dir', help='route from the route-prepared checkpoints in this directory')
+    run.add_argument('--timeout', type=float, default=30, help='minutes per run before it counts as not routed')
     prep = sub.add_parser('prepare')
     prep.add_argument('--bin', required=True)
     prep.add_argument('--dir', required=True)
