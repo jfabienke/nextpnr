@@ -60,6 +60,14 @@ CONFIGS = {
     },
 }
 LAB_BELS = ('MISTRAL_COMB', 'MISTRAL_MCOMB', 'MISTRAL_FF')
+# Wire categories as Quartus's fit report counts them (tracker, "The core against Quartus"): row
+# wires R3/R6/R14, column wires C2/C4/C12, LAB input lines (block), local lines (a LAB into itself).
+WIRE_CATEGORIES = {'H3': 'row_wires', 'H6': 'row_wires', 'H14': 'row_wires', 'V2': 'column_wires',
+                   'V4': 'column_wires', 'V12': 'column_wires', 'TD': 'input_lines', 'LD': 'local_lines'}
+# Quartus 17.0.2's fit of the identical core netlist, measured the same way (tracker, 2026-09-23).
+QUARTUS_CORE = {'fmax': 25.18, 'alms_used': 23885, 'labs': 3219, 'rows_per_net': 1.435,
+                'lab_entries_per_net': 0.839, 'row_wires': 87405, 'column_wires': 41427, 'input_lines': 76045,
+                'local_lines': 18515, 'cells_per_lab': 15.93}
 NET_FANOUT_MAX = 64  # nets with more sinks (clocks, resets, enables) do not enter the per-net shape
 
 
@@ -89,6 +97,7 @@ def placement_shape(routed_json):
         module = next(iter(json.load(f)['modules'].values()))
     loc = {}
     alms, labs = set(), set()
+    lab_cells = 0
     for name, cell in module['cells'].items():
         bel = cell.get('attributes', {}).get('NEXTPNR_BEL', '')
         parts = bel.split('.')
@@ -96,6 +105,7 @@ def placement_shape(routed_json):
             continue
         x, y, z = int(parts[1]), int(parts[2]), int(parts[3])
         loc[name] = (x, y)
+        lab_cells += cell.get('type') != 'MISTRAL_BUF'
         alms.add((x, y, z // 6))
         labs.add((x, y))
     drivers, sinks = {}, collections.defaultdict(list)
@@ -120,7 +130,19 @@ def placement_shape(routed_json):
         rows += len({dy} | {loc[u][1] for u in users})
         entries += len({loc[u] for u in users} - {(dx, dy)})
         counted += 1
-    return {'alms': len(alms), 'labs': len(labs), 'nets_measured': counted,
+    wires, seen = collections.Counter(), set()
+    for net in module.get('netnames', {}).values():
+        parts = net.get('attributes', {}).get('ROUTING', '').split(';')
+        for i in range(0, len(parts) - 2, 3):
+            wire = parts[i]
+            if wire and wire not in seen:
+                seen.add(wire)
+                category = WIRE_CATEGORIES.get(wire.split('.')[0])
+                if category:
+                    wires[category] += 1
+    return {**{k: wires.get(k, 0) for k in set(WIRE_CATEGORIES.values())},
+            'cells_per_lab': lab_cells / len(labs) if labs else None,
+            'alms': len(alms), 'labs': len(labs), 'nets_measured': counted,
             'rows_per_net': rows / counted if counted else None,
             'lab_entries_per_net': entries / counted if counted else None}
 
@@ -260,6 +282,16 @@ def print_table(summary):
     fm = [primary_fmax(r) for r in summary['runs'] if primary_fmax(r) is not None]
     if fm:
         print(f"  Fmax median {statistics.median(fm):.2f}, range {min(fm):.2f} to {max(fm):.2f} MHz")
+    routed = [r for r in summary['runs'] if r['routed'] and r.get('row_wires') is not None]
+    if routed and summary['config'] == 'core':
+        med = lambda k: statistics.median([r[k] for r in routed])
+        q = QUARTUS_CORE
+        print(f"  against Quartus (medians of routed seeds / Quartus): row wires {med('row_wires'):.0f} "
+              f"({med('row_wires') / q['row_wires']:.2f}x), column wires {med('column_wires'):.0f} "
+              f"({med('column_wires') / q['column_wires']:.2f}x), input lines {med('input_lines'):.0f} "
+              f"({med('input_lines') / q['input_lines']:.2f}x), local lines {med('local_lines'):.0f} "
+              f"({med('local_lines') / q['local_lines']:.2f}x), cells per LAB {med('cells_per_lab'):.1f} "
+              f"({q['cells_per_lab']:.1f}), rows/net {q['rows_per_net']}, LABs/net {q['lab_entries_per_net']}")
     if 'deterministic' in summary:
         print(f"  determinism (seed repeated): {'identical' if summary['deterministic'] else 'DIFFERENT'}")
 
