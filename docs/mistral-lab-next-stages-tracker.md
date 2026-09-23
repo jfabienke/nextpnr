@@ -4061,6 +4061,32 @@ the options stay, off by default, unpromoted: they pay on routability
 and every shape and wire measure, and the levers that change how full
 HeAP makes each LAB are expected to compose with them.
 
+### 2026-09-23: Density sweep: spreading denser does not fill LABs
+
+HeAP's spreading knobs on top of unit 19.2 (rows 4, entries 4), seeds 1
+and 2 (`build/quality/sweep_density.sh`): the cut spreader's target
+occupancy `MISTRAL_HEAP_BETA` (default 0.5) and the congestion
+inflation's threshold `MISTRAL_SPREAD_CONGESTION_K` (default 2).
+
+| Setting | Routed | Fmax, seeds 1 and 2 | Wires | LABs used | Cells per LAB |
+| --- | ---: | --- | --- | --- | ---: |
+| beta 0.5, K 2 (the 19.2 set) | 2 | 11.99, 11.13 | 747,590, 760,411 | 4,190, 4,184 | 13.2 |
+| beta 0.6 | 2 | 11.27, 10.15 | 753,554, 768,049 | 4,161, 4,096 | 13.3 |
+| beta 0.7 | 0 | cap of 100 on both | 763,569, 826,970 | | |
+| beta 0.85 | 1 | 10.31 | 772,092, (826,522) | 4,180 | 13.2 |
+| beta 0.7, no `--spread-congestion` | 0 | stopped at 40 minutes | | | |
+| K 3 | 2 | 11.59, 11.13 | 750,700, 766,067 | 4,188, 4,130 | 13.2 |
+| beta 0.7, K 3 | 0 | | | | |
+
+Reading. A denser spreading target does not make LABs fuller: at beta
+0.85 cells per LAB stay at 13.2 and 4,180 LABs are used; it only
+crowds the routing (more wires, seeds that do not route) and costs
+Fmax. How full a LAB gets is set where the legaliser meets the LAB's
+limits (input lines, control sets) with the unrelated cells the spreader
+brings into it; Quartus fills its LABs to 15.9 cells with cells that
+share inputs. That is design 19.6's lever, not the spreader's. The knobs
+stay at their defaults.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
