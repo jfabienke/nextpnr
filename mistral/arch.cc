@@ -936,6 +936,8 @@ bool Arch::run_placement()
             }
             cfg.sa_row_weight = args.sa_row_weight; // Design 19.2: rows and LAB entries per net
             cfg.sa_entry_weight = args.sa_entry_weight;
+            cfg.lab_affinity_weight = args.heap_lab_affinity; // Design 19.6: LAB affinity when legalising
+            cfg.lab_affinity_reach = args.heap_lab_reach;
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };

@@ -438,6 +438,10 @@ class HeAPPlacer
         log_info("  of which solving equations: %.02fs\n", solve_time);
         log_info("  of which spreading cells: %.02fs\n", cl_time);
         log_info("  of which strict legalisation: %.02fs\n", sl_time);
+        if (cfg.lab_affinity_weight > 0)
+            log_info("  lab affinity: weight=%.2f, reach=%.2f, tiles tried=%" PRIu64 ", placed=%" PRIu64
+                     ", placed away from the solver's tile=%" PRIu64 "\n",
+                     cfg.lab_affinity_weight, cfg.lab_affinity_reach, affinity_tries, affinity_placed, affinity_moved);
         if (cfg.place_cluster_transaction)
             log_info("  frozen cluster transactions: attempted=%" PRIu64 ", committed=%" PRIu64 ", rejected=%" PRIu64
                      ", unsupported=%" PRIu64 "\n",
@@ -495,6 +499,7 @@ class HeAPPlacer
     uint64_t frozen_cluster_committed = 0;
     uint64_t frozen_cluster_rejected = 0;
     uint64_t frozen_cluster_unsupported = 0;
+    uint64_t affinity_tries = 0, affinity_placed = 0, affinity_moved = 0; // design 19.6
     uint64_t frozen_cluster_batches = 0;
     uint64_t frozen_cluster_discarded = 0;
     uint64_t frozen_cluster_batch_max = 0;
@@ -1236,6 +1241,12 @@ class HeAPPlacer
                 }
             }
 
+            // Design 19.6: the tiles of the cell's placed neighbours, best first by distance from the
+            // solver's position plus the nets that would enter a new LAB; the first tile the cell or
+            // its cluster legally fits wins. The search below is the fallback.
+            if (p->cfg.lab_affinity_weight > 0 && try_lab_affinity(ci))
+                return;
+
             if (p->cfg.ff_bel_bucket != BelBucketId() && !p->cfg.disableCtrlSet) {
                 // Try placing based on same control set in window first
                 int32_t ctrl_set = -1;
@@ -1312,6 +1323,96 @@ class HeAPPlacer
       private:
         HeAPPlacer *p;
         Context *ctx;
+
+        // Design 19.6. The cells whose nets the candidate tiles are scored by: the cell, or every
+        // member of its cluster.
+        std::vector<CellInfo *> affinity_members(CellInfo *ci)
+        {
+            if (ci->cluster == ClusterId())
+                return {ci};
+            return p->cluster2cells.at(ci->cluster);
+        }
+        // The nets whose shape the score prices: a driver and at most 64 sinks, not global.
+        static bool affinity_net(const NetInfo *net)
+        {
+            return net != nullptr && net->driver.cell != nullptr && net->users.entries() <= 64 &&
+                   net->users.entries() >= 1;
+        }
+        // Placed pins of `net` outside `members`, as tiles.
+        void affinity_pin_tiles(const NetInfo *net, const std::vector<CellInfo *> &members,
+                                std::vector<std::pair<int, int>> &tiles)
+        {
+            auto add = [&](const CellInfo *cell) {
+                if (cell == nullptr || cell->bel == BelId())
+                    return;
+                if (std::find(members.begin(), members.end(), cell) != members.end())
+                    return;
+                const Loc l = ctx->getBelLocation(cell->bel);
+                tiles.emplace_back(l.x, l.y);
+            };
+            add(net->driver.cell);
+            for (const auto &user : net->users)
+                add(user.cell);
+        }
+
+        bool try_lab_affinity(CellInfo *ci)
+        {
+            const auto members = affinity_members(ci);
+            const int x0 = p->cell_locs.at(ci->name).x, y0 = p->cell_locs.at(ci->name).y;
+            const float sx = p->cfg.hpwl_scale_x, sy = p->cfg.hpwl_scale_y;
+            const float reach = p->cfg.lab_affinity_reach, weight = p->cfg.lab_affinity_weight;
+            // Each priced net of the members, once, with its placed pins outside the members.
+            std::vector<std::vector<std::pair<int, int>>> nets;
+            std::vector<const NetInfo *> seen;
+            std::vector<std::pair<int, int>> tiles{{x0, y0}};
+            for (CellInfo *member : members)
+                for (const auto &port : member->ports) {
+                    const NetInfo *net = port.second.net;
+                    if (!affinity_net(net) || std::find(seen.begin(), seen.end(), net) != seen.end())
+                        continue;
+                    seen.push_back(net);
+                    nets.emplace_back();
+                    affinity_pin_tiles(net, members, nets.back());
+                    for (const auto &t : nets.back())
+                        if (sx * std::abs(t.first - x0) + sy * std::abs(t.second - y0) <= reach &&
+                            std::find(tiles.begin(), tiles.end(), t) == tiles.end())
+                            tiles.push_back(t);
+                }
+            if (tiles.size() < 2)
+                return false; // only the solver's tile: the search below tries it first anyway
+            std::vector<std::pair<float, size_t>> order;
+            for (size_t i = 0; i < tiles.size(); ++i) {
+                const auto &t = tiles[i];
+                int entries = 0;
+                for (const auto &pins : nets)
+                    if (std::find(pins.begin(), pins.end(), t) == pins.end())
+                        ++entries;
+                order.emplace_back(sx * std::abs(t.first - x0) + sy * std::abs(t.second - y0) + weight * entries, i);
+            }
+            std::stable_sort(order.begin(), order.end(),
+                             [](const std::pair<float, size_t> &a, const std::pair<float, size_t> &b) {
+                                 return a.first < b.first;
+                             });
+            need_to_explore = 0; // the first legal bel of a tile is taken, as at radius 0
+            for (const auto &o : order) {
+                const auto &t = tiles[o.second];
+                if (t.first < 0 || t.first >= int(fb->size()) || t.second < 0 ||
+                    t.second >= int(fb->at(t.first).size()) || fb->at(t.first).at(t.second).empty())
+                    continue;
+                ++p->affinity_tries;
+                if (ci->cluster == ClusterId())
+                    try_place_cell(ci, t.first, t.second);
+                else
+                    try_place_cluster(ci, t.first, t.second);
+                if (placed) {
+                    ++p->affinity_placed;
+                    if (o.second != 0)
+                        ++p->affinity_moved;
+                    return true;
+                }
+            }
+            return false;
+        }
 
         int ripup_radius, chain_ripup_radius, total_iters, total_iters_noreset;
         int legalised_count = 0;

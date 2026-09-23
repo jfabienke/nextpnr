@@ -124,6 +124,12 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("sa-entry-weight", po::value<int>(),
                            "annealer cost per tile a net's sinks occupy other than the driver's, in horizontal "
                            "tiles (off by default; experimental)");
+    specific.add_options()("heap-lab-affinity", po::value<float>(),
+                           "HeAP's legaliser first tries the tiles of a cell's placed neighbours, scored by distance "
+                           "plus this weight per net that would enter a new LAB (off by default; experimental)");
+    specific.add_options()("heap-lab-reach", po::value<float>(),
+                           "how far from the solver's position (in weighted tiles) a neighbour's tile is tried "
+                           "(default 2.5)");
     specific.add_options()("router2-reroute", po::value<int>(),
                            "rip up and re-route every arc every N router2 iterations, not only the arcs on overused "
                            "wires (off by default; experimental)");
@@ -260,6 +266,10 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     if (vm.count("telemetry"))
         chipArgs.telemetry_path = vm["telemetry"].as<std::string>();
     chipArgs.lab_tile_scan = vm.count("no-lab-tile-scan") == 0;
+    if (vm.count("heap-lab-affinity"))
+        chipArgs.heap_lab_affinity = std::max(0.0f, vm["heap-lab-affinity"].as<float>());
+    if (vm.count("heap-lab-reach"))
+        chipArgs.heap_lab_reach = std::max(0.0f, vm["heap-lab-reach"].as<float>());
     if (vm.count("sa-row-weight"))
         chipArgs.sa_row_weight = std::max(0, vm["sa-row-weight"].as<int>());
     if (vm.count("sa-entry-weight"))

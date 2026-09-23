@@ -69,6 +69,8 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"row_cost", double(a.row_cost)},
             {"sa_row_weight", a.sa_row_weight},
             {"sa_entry_weight", a.sa_entry_weight},
+            {"heap_lab_affinity", double(a.heap_lab_affinity)},
+            {"heap_lab_reach", double(a.heap_lab_reach)},
             {"router2_unit_cost", a.router2_unit_cost},
             {"router2_reroute", a.router2_reroute},
             {"router2_reroute_contested", a.router2_reroute_contested},
