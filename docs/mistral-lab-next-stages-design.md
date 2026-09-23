@@ -2205,3 +2205,65 @@ Fmax by more than the baseline's spread (+0.58 and +0.27 MHz against
 Cells per LAB do not move (13.16 in every set): the annealer moves cells
 between LABs but cannot change how full HeAP left them, which is what
 the next levers are for. The options stay, off, to compose with them.
+
+### 19.6 LAB affinity in the strict legaliser (C++, upstream's file and the arch)
+
+**Why.** Units 19.2 showed where the LAB structure of a placement is
+decided: the annealer moved LAB entries per net from 1.61 to 1.48 and
+rows from 1.91 to 1.82, but cells per LAB stayed at 13.2 in every set
+against Quartus's 15.9, and LABs used at 4,186 of 4,191 against 3,219.
+The strict legaliser is where cells get their LABs, and it does not look
+at connectivity. A cell's search starts at radius 0, where the number of
+candidates to compare (`need_to_explore = 2 * radius`) is zero: in the
+common, uncrowded case the cell takes the first legal bel of the tile
+the analytic solver rounded it to. Only when that tile is full does the
+radius grow, and then candidates are compared by the distance from the
+cell's input drivers alone, over randomly drawn tiles. Connected cells
+that the solver put a tile apart stay a tile apart: in adjacent LABs,
+each an entry of the net, where Quartus puts them in one LAB and joins
+them with its local lines.
+
+**Design.** When the legaliser places a cell (or a cluster's root), it
+considers, beside the tile the random search draws, the tiles of the
+cell's placed neighbours: the driver of each input net and the placed
+sinks of each output net, for nets of up to 64 sinks, within a reach of
+`R` tiles of the solver's position (anisotropic, `R / hpwl_scale_y`
+rows). For each candidate tile it takes the first legal bel through the
+same scan as now (the tile scan of design 14 answers it in one call),
+and scores the legal ones:
+
+    score(tile) = sx * |x - x_solver| + sy * |y - y_solver|
+                + W * entries_added(cell, tile)
+
+where `entries_added` counts the cell's nets that have no other pin in
+that tile yet (each is a LAB the net must now enter). The lowest score
+wins; ties keep the order the candidates were enumerated in (the solver's
+tile first, then neighbours in net and pin order), so the result is
+deterministic. The distance term keeps the solver's intent; the entry
+term pulls a cell into a LAB its nets already use. With `W = 0` the
+search is today's.
+
+`PlacerHeapCfg::lab_affinity_weight` and `lab_affinity_reach` (generic:
+a tile is a location, as it is to the spreader); the Mistral arch sets
+them from `--heap-lab-affinity W` and `--heap-lab-reach R` in `ArchArgs`,
+off by default.
+
+**What it changes.** Placements, and the RNG sequence (fewer random
+draws are needed when a neighbour's tile is legal). Legality is the
+same check as now: every bel the legaliser binds is certified by
+`isBelLocationValid`, so crowding a LAB can only make candidates
+illegal, never admit an illegal one. Fuller LABs meet the LAB input limit
+and the control sets sooner; the measure of that is legalisation time
+and the stall exit (6a), which must not trigger.
+
+**Measurement.** On top of 19.2 (rows 4, entries 4) and the best density
+setting of the sweep: `W` of 1, 2, 4 in distance units and `R` of 1 and
+2, screened on seeds 1 and 2, the best on five seeds under the quality
+rule. Cells per LAB and LABs used must rise toward Quartus's, LAB entries
+per net and local lines must move the same way, and legalisation must
+not stall.
+
+**Cost and risk.** About 120 lines in `placer_heap.cc` (the candidate
+enumeration and scoring beside the existing search), options in the
+arch. Medium: it changes where most cells land, so the routed result
+can move a lot either way; the harness decides.
