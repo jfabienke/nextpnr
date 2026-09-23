@@ -2193,3 +2193,15 @@ alone is a separate arm.
 Medium: incremental histograms must stay exact, which a debug recompute
 of every net's cost after each temperature step checks, as the bounding
 boxes already are in debug mode. The default path is unchanged.
+
+**Outcome (2026-09-23): kept opt-in, not promoted.** Screened on seeds 1
+and 2, then row weight 4, and row weight 4 with entry weight 4, on five
+seeds. Both route all five seeds, where the baseline does not route seed
+4; both move every gap measure the right way (with both weights: LABs
+entered per net 1.61 to 1.48, rows 1.91 to 1.82, wires 2.5% fewer,
+column wires 5% fewer, local lines 17% more); neither lifts the median
+Fmax by more than the baseline's spread (+0.58 and +0.27 MHz against
+0.95), and row weight 4 alone puts a seed below the baseline's worst.
+Cells per LAB do not move (13.16 in every set): the annealer moves cells
+between LABs but cannot change how full HeAP left them, which is what
+the next levers are for. The options stay, off, to compose with them.

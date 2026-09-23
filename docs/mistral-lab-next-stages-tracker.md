@@ -4040,6 +4040,27 @@ of the distance, as the design said it might. Row 4 and row 4 with entry
 The harness's compare now takes medians over routed seeds and fails a
 candidate with an unrouted seed, instead of refusing to compare.
 
+### 2026-09-23: Unit 19.2 on five seeds: every seed routes, Fmax inside the spread
+
+Row weight 4, and row weight 4 with entry weight 4, on the core recipe
+over seeds 1 to 5 (`sa-r4-5s`, `sa-r4e4-5s`), against the baseline. Medians
+over routed seeds.
+
+| Set | Routed | Fmax median (range) | Worst seed | Wires | Row wires | Column wires | Input lines | Local lines | Rows per net | LABs per net | Cells per LAB |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 4 of 5 | 11.17 (10.92 to 11.87) | 10.92 | 772,377 | 197,876 | 106,996 | 128,934 | 3,447 | 1.907 | 1.611 | 13.16 |
+| Row 4 | **5 of 5** | 11.74 (10.77 to 11.98) | 10.77 | 764,462 | 193,456 | 103,900 | 128,491 | 3,591 | 1.782 | 1.587 | 13.17 |
+| Row 4, entry 4 | **5 of 5** | 11.43 (11.13 to 11.99) | 11.13 | 753,156 | 188,819 | 101,585 | 124,418 | 4,029 | 1.815 | 1.477 | 13.16 |
+| Quartus 17 | | 25.18 | | | 87,405 | 41,427 | 76,045 | 18,515 | 1.435 | 0.839 | 15.93 |
+
+Quality rule: REJECT for both (the gain is below the baseline's spread
+of 0.95 MHz; row weight 4 alone also puts seed 4 at 10.77, below the
+baseline's worst). Both route seed 4, which the baseline does not, so
+routability improves; seed 4 routes in 69 and 59 iterations. Decision:
+the options stay, off by default, unpromoted: they pay on routability
+and every shape and wire measure, and the levers that change how full
+HeAP makes each LAB are expected to compose with them.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -4154,6 +4175,7 @@ candidate with an unrouted seed, instead of refusing to compare.
 | 2026-09-22 | 18 | The annealer's cluster moves go through the swap seam whenever it is on (the default): planned on an overlay, certified on the moved cells' bels, committed only when accepted; the cached timing weight is not kept | Byte-identical on the probe and the core, shadow over 7 million core chain moves with no mismatch, core annealer about 80 s to 70 s; the timing weight gained nothing, its profile share was skid |
 | 2026-09-23 | policy | Lift byte identity as the acceptance rule for placement and routing changes, at the user's direction; determinism and legality stay exact; judge changes over five core seeds with `mistral/tests/quality.py`: every seed routes, no seed below the baseline's worst, quality changes lift the median Fmax by more than the baseline's spread, speed changes stay inside its range and are faster; opt-in until a promotion row | The refactor through design 18 held every result to the byte and so could not move the Quartus gap (11.39 MHz on 28,652 ALMs against 25.18 MHz on 20,576) |
 | 2026-09-23 | 19.1 | The four-way router heap is not kept: over five seeds it routes one seed fewer and lowers the median Fmax; reverted | Speed rule REJECT; 12% faster per iteration, more iterations |
+| 2026-09-23 | 19.2 | Keep `--sa-row-weight` and `--sa-entry-weight` opt-in and unpromoted: five seeds route where the baseline routes four and every gap measure moves the right way, but the Fmax gain (+0.27 to +0.58 MHz) is inside the baseline's spread | Quality rule REJECT for promotion; kept because it pays on routability and composes with the density levers |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
