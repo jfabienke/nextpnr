@@ -2267,3 +2267,50 @@ not stall.
 enumeration and scoring beside the existing search), options in the
 arch. Medium: it changes where most cells land, so the routed result
 can move a lot either way; the harness decides.
+
+### 19.4 The second register of an ALM half (arch, then packing; silicon first)
+
+**Why.** 6g packs 5,360 of the core's 9,632 LUT-driven registers beside
+their LUT. Of the rest, 3,980 are refused because their LUT's register
+slot is taken (292 more are control-set conflicts): the LUT drives two or
+more registers, and the ALM rule admits one register per half, because
+it refuses the second register bel of every half outright (`lab.cc`,
+"TODO: why are these FFs broken?"). That refusal also takes 20 of a
+LAB's 40 register bels out of play. It has no evidence behind it:
+`MISTRAL_GAPS.md` has no finding on it, and the model wires both
+registers of a half identically, each able to take the half's LUT output
+(`PKREG`) or the E/F input, each with an output mux (the second also has
+the `L` local output). Quartus puts 95% of LUT-driven registers in their
+LUT's ALM (exec probe); a LUT that drives two registers keeps both.
+
+**Design, in three steps, each gating the next.**
+
+1. *Ground truth from Quartus, no board.* A small WYSIWYG design on the
+   NAS in which LUTs drive two registers, fixed by location assignments
+   to both register bels of one half, fitted by Quartus 17.0.2; its
+   bitstream decoded with libmistral and compared, bit by bit in the
+   ALM's configuration, with the same placement written by nextpnr with
+   the refusal lifted (an environment override, test only). The IO
+   registers were completed the same way (`MISTRAL_GAPS.md`, the
+   qrbase/qrout differentials). Either the bits agree, or the difference
+   is the missing piece of the model.
+2. *Silicon.* A golden-checksum design on the DE10-Nano: a network of
+   LUTs each driving two registers, both in its half, whose state after
+   a fixed number of cycles is checked against a simulated golden value
+   (the method that verified the DSP block, `MISTRAL_GAPS.md` G7). Built
+   by nextpnr with the refusal lifted. This needs the board.
+3. *Only if both pass:* the refusal becomes an option
+   (`--alm-both-registers`, `ArchArgs`, the Rust and C++ rules alike,
+   with the verify harness and the property tests updated), register
+   packing places a LUT's second register on its half's second bel, and
+   the unit is measured on five seeds.
+
+**What it could change.** Up to 3,980 more registers beside their LUT
+(from 56% to about 97% of LUT-driven registers), a LAB's register
+capacity from 20 to 40, one LAB entry fewer for each such register, and
+the density lever that 19.2 and the sweep could not reach.
+
+**Risk.** The refusal may exist for a reason no one wrote down; steps 1
+and 2 are there to find it before anything depends on the answer. A
+silicon claim is recorded only from a test that can fail (the lesson of
+the voided loopback claims in `MISTRAL_GAPS.md`).
