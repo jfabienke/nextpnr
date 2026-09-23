@@ -79,8 +79,12 @@ def run_dir(config, tag):
 
 
 def placement_shape(routed_json):
-    """ALMs and LABs used, and per net (2 to NET_FANOUT_MAX sinks, all in LABs) the rows it
-    touches and the LABs its sinks sit in other than the driver's: design 9.5's measures."""
+    """ALMs and LABs used, and per net (1 to NET_FANOUT_MAX sinks, all in LABs) the rows it
+    touches and the LABs its sinks sit in other than the driver's: design 9.5's measures. Nets driven
+    by route-through buffers (MISTRAL_BUF, inserted by lab_pre_route after placement, in the
+    register's own ALM) are not the design's: each splits a fabric net at the register, and its
+    half inside the ALM would count one row and no entry, so it is left out, as it is absent from
+    the netlist Quartus fits (build/quality/quartus-core/shape.py)."""
     with open(routed_json) as f:
         module = next(iter(json.load(f)['modules'].values()))
     loc = {}
@@ -96,13 +100,15 @@ def placement_shape(routed_json):
         labs.add((x, y))
     drivers, sinks = {}, collections.defaultdict(list)
     for name, cell in module['cells'].items():
+        route_through = cell.get('type') == 'MISTRAL_BUF'
         for port, bits in cell.get('connections', {}).items():
             direction = cell.get('port_directions', {}).get(port)
             for bit in bits:
                 if not isinstance(bit, int):
                     continue
                 if direction == 'output':
-                    drivers[bit] = name
+                    if not route_through:
+                        drivers[bit] = name
                 elif direction == 'input':
                     sinks[bit].append(name)
     rows, entries, counted = 0, 0, 0

@@ -2128,9 +2128,12 @@ routing legality is checked by router1 on every run.
 entered through row wires, so every extra row a net touches costs a
 stair of two or three wires, and every LAB its sinks enter costs about
 one more. Quartus's placement touches 1.52 rows per net and enters a LAB
-with one fabric wire; nextpnr's full core touches 1.80 rows per net and
-enters 1.40 other LABs per net (the harness's measure, nets of up to 64
-sinks), and spends 1.83 fabric wires per LAB entry. The placer's
+with one fabric wire. On the full core, measured the same way (the
+harness's definitions, nets of up to 64 sinks, route-through buffers
+left out), Quartus's fit touches 1.44 rows per net and enters 0.84 LABs
+per net besides the driver's; nextpnr's baseline touches 1.91 and enters
+1.61, and uses 2.3 times Quartus's fabric wires and a fifth of its local
+lines (tracker, "The core against Quartus, measured the same way"). The placer's
 objective does not see either. HPWL prices a net's bounding box: two
 sinks five rows apart cost the same as sinks in all six rows between,
 and a net whose ten sinks sit in ten LABs of one row costs the same as

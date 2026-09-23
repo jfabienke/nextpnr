@@ -3920,17 +3920,21 @@ seeds 1 to 5, four at a time, with seed 1 repeated.
 
 | Seed | Routed | Fmax | Iterations | Wires | ALMs | LABs | Rows per net | LABs per net |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | yes | 11.39 MHz | 45 | 767,087 | 28,652 | 4,189 | 1.796 | 1.396 |
-| 2 | yes | 10.94 MHz | 51 | 778,792 | 28,716 | 4,183 | 1.775 | 1.405 |
-| 3 | yes | 11.87 MHz | 64 | 770,569 | 28,780 | 4,187 | 1.789 | 1.399 |
+| 1 | yes | 11.39 MHz | 45 | 767,087 | 28,652 | 4,189 | 1.917 | 1.608 |
+| 2 | yes | 10.94 MHz | 51 | 778,792 | 28,716 | 4,183 | 1.893 | 1.618 |
+| 3 | yes | 11.87 MHz | 64 | 770,569 | 28,780 | 4,187 | 1.908 | 1.609 |
 | 4 | **no** | - | cap of 100 with 1 wire overused | 785,042 | | | | |
-| 5 | yes | 10.92 MHz | 46 | 774,185 | 28,677 | 4,184 | 1.786 | 1.397 |
+| 5 | yes | 10.92 MHz | 46 | 774,185 | 28,677 | 4,184 | 1.907 | 1.612 |
 
 Median Fmax of the routed seeds 11.17 MHz, range 10.92 to 11.87 (spread
 0.95). Seed 1 repeated is identical to the byte, and seeds 1 to 3
 reproduce the earlier records exactly (11.39, 10.94, 11.87 MHz at 45, 51,
 64 iterations). Shape measures are nets of up to 64 sinks with every pin
-in a LAB.
+in a LAB, without the nets that route-through buffers (`MISTRAL_BUF`,
+inserted after placement in a register's own ALM) drive: each splits a
+fabric net at its register and would add a net of one row and no entry
+that the netlist Quartus fits does not have (the first count included
+them: 1.80 rows and 1.40 entries per net).
 
 Seed 4 does not route under the recipe: router2 reaches its cap of 100
 iterations one wire short and hands over to router1, which never
@@ -3942,6 +3946,52 @@ routed. The delay-cost reference (`--drop=--router2-unit-cost`) was not
 run: at the recipe's cap of 100 it would not converge (it needed 125
 iterations under a cap of 200, 2026-09-18), so it belongs to 19.3's
 design with its cap.
+
+### 2026-09-23: The core against Quartus, measured the same way
+
+Quartus 17.0.2's fit of the identical core netlist (WYSIWYG hand-over,
+`core_probe_20260917/q33` on NAS01, production settings, 33 MHz
+constraint) set beside the design 19 baseline. Quartus's placement was
+extracted with the exec probe's TimeQuest script (`dump_loc.tcl`, run
+against the fitted database; 51,297 cell locations) and measured with
+the harness's definitions by `build/quality/quartus-core/shape.py`
+(nets of up to 64 sinks with every pin in a LAB); its LAB count matches
+the fit report exactly (3,219). Wires by type: the fit report's
+"Fitter Resource Usage Summary" against nextpnr's routed JSON (seed 1),
+matched by the graph's own counts (V2/C2 117,357 against 119,108, the
+LAB input lines TD against block 285,892 against 289,320, local LD
+84,580 against 84,580).
+
+| Measure | nextpnr (baseline, median of routed seeds) | Quartus 17.0.2 | nextpnr / Quartus |
+| --- | ---: | ---: | ---: |
+| Fmax (each tool's own model) | 11.17 MHz (10.92 to 11.87; seed 4 does not route) | 25.18 MHz (slow 1100 mV 100 C) | 0.44 |
+| ALMs | 28,696 occupied | 23,885 used in final placement; 20,576 needed after dense-packing recovery | 1.20 (used), 1.39 (needed) |
+| LABs | 4,186 of 4,191 (100%) | 3,219 (77%) | 1.30 |
+| Registers | 15,647 | 14,590 (duplicates merged) | 1.07 |
+| Rows a net touches | 1.91 | 1.44 | 1.33 |
+| LABs a net's sinks enter besides the driver's | 1.61 | 0.84 | 1.92 |
+| Fabric wires (H3/R3, H6/R6, H14/R14, V2/C2, V4/C4, V12/C12), nextpnr seed 1 | 300,517 | 128,832 | 2.33 |
+| of which row wires H3, H6, H14 | 194,268 | 87,405 | 2.22 |
+| of which column wires V2, V4, V12 | 106,249 | 41,427 | 2.56 |
+| LAB input lines (TD / block) | 128,583 | 76,045 | 1.69 |
+| Local lines (LD / local, a LAB's outputs back into itself) | 3,462 | 18,515 | 0.19 |
+| Placement and routing time | about 8.5 min, one thread, M1 Ultra | fitter 26.6 min (placement 6.2), `--parallel=2`, Ryzen 7 2700 | different machines |
+
+Reading. The gap is placement, as 9.5 argued from the exec probe, and
+the core says it more sharply. Quartus puts a net's sinks in the
+driver's own LAB so often that its average net enters fewer than one
+other LAB, and it reaches those sinks through the LAB's local lines,
+the cheapest wire the fabric has (18,515 in use against nextpnr's 3,462).
+nextpnr's nets enter 1.9 times as many other LABs, and every entry costs
+a fabric wire and a LAB input line, which is where its 2.3 times the
+fabric wires and 1.7 times the input lines come from; it also touches a
+third more rows, and column wires, the stairs, are its largest excess
+(2.6 times). It fills every LAB of the device where Quartus leaves a
+quarter empty. The Fmax ratio mixes the timing models (the exec probe's
+1.8 times decomposed as rewrite 1.12, timing model 1.22, placement and
+routing 1.32; the core's is not decomposed), so the placement shape and
+the wires are the comparable measures, and design 19.2's terms price
+exactly the two where the difference is largest.
 
 ## Decision log
 
