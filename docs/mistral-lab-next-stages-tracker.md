@@ -4239,6 +4239,101 @@ and unpromoted. The design's next settings are a steeper blend or a
 criticality threshold that leaves all but the most critical arcs on the
 unit cost.
 
+### 2026-09-23: Where the critical path's time goes: detours as large as distance
+
+The baseline's routed seeds (1, 2, 3, 5), re-routed from their
+checkpoints to identical results, with every arc's routing delay dumped
+(`MISTRAL_DUMP_ARC_DELAYS`, about 217,000 arcs per seed; the timing
+analyser's own delay). The reference for an arc is the delay this router
+achieves for arcs of the same span over the four designs: the 10th
+percentile of that span's arcs, widening the span until 30 arcs are
+found (`build/quality/crit_split.py`, `arcs_s*.csv`).
+
+| Span (columns, rows) | Arcs | 10th percentile | Median |
+| --- | ---: | ---: | ---: |
+| (0, 0) | 121,666 | 0.02 ns | 0.02 ns |
+| (1, 0) | 36,588 | 0.33 | 0.55 |
+| (0, 1) | 32,492 | 0.79 | 0.90 |
+| (5, 0) | 6,725 | 0.60 | 0.62 |
+| (0, 5) | 2,728 | 1.19 | 1.57 |
+| (10, 0) | 1,851 | 0.88 | 1.15 |
+| (0, 10) | 670 | 1.39 | 2.12 |
+| (20, 0) | 546 | 1.39 | 2.08 |
+| (30, 5) | 244 | 1.96 | 3.25 |
+
+Each seed's critical path, split:
+
+| Seed | Path | Distance | Detour | Logic | Arcs |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 87.8 ns | 39.4 | 35.4 | 12.5 | 53 |
+| 2 | 91.4 | 38.3 | 40.5 | 12.1 | 69 |
+| 3 | 84.3 | 40.0 | 30.4 | 13.3 | 56 |
+| 5 | 91.6 | 30.4 | 49.1 | 11.6 | 50 |
+
+Over the four: detour 44%, distance 42%, logic 14%.
+
+- **The median reference.** Against the median delay of the span
+  instead, the detour is still 31% of the paths' routing delay (94 of
+  303 ns).
+- **Fanout is not the cause.** At a span of 10 columns, fanout raises
+  the median delay from 0.88 ns (one sink) to 1.44 ns (65 sinks or
+  more). Single-sink arcs on the paths carry 31 ns of the detour.
+- **Examples:** a 31-column arc of 4.38 ns (reference 1.24), a 5-by-3
+  arc of 7.85 ns (1.06), and a one-column arc of 6.14 ns (0.33).
+
+The critical path's arcs are routed by wire count, not delay. The
+routing side of Fmax is as large as the placement side, which the first
+form of 19.3 did not show because it failed to converge.
+
+(The report's `detailed_net_timings` are arrival times at endpoints, not
+arc delays; a first split from them was wrong and is not used.)
+
+### 2026-09-23: Unit 19.3b: the criticality cost at the unit's own scale routes every seed
+
+The first form of 19.3 scaled every wire to nanoseconds (0.184 ns per
+unit). That changed the balance against router2's to-go estimate for
+every arc, not only the critical ones. 19.3b keeps a non-critical arc's
+wire at exactly one unit and prices a critical arc's wire at
+`w + (1 - w) * delay / U`. `--router2-crit-threshold T` keeps the unit
+cost for arcs below criticality T. All runs resume from the baseline's
+route-prepared checkpoints (binary `nextpnr-mistral.u19-3b`).
+
+Screening, seeds 1 and 2:
+
+| Threshold | Fmax | Iterations | Wires |
+| --- | --- | --- | --- |
+| 1.01 (control) | 11.39, 10.94 | 45, 51 | 767,087, 778,792: the baseline's routes exactly |
+| 0.97 | 11.31, 11.70 | 67, 72 | 767,972, 779,439 |
+| 0.9 | 11.64, 11.70 | 43, 72 | 768,626, 779,439 |
+| 0 | 11.65, 11.64 | 58, 98 | 766,473, 776,854 |
+
+Five seeds:
+
+| Seed | Baseline | T = 0.9 | T = 0 | Iterations at T = 0 | Wires at T = 0 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 11.39 | 11.64 | 11.65 | 58 | 766,473 |
+| 2 | 10.94 | 11.70 | 11.64 | 98 | 776,854 |
+| 3 | 11.87 | 11.06 | 11.86 | 64 | 768,672 |
+| 4 | not routed | 10.57 | 10.84 | 80 | 784,482 |
+| 5 | 10.92 | 10.77 | 11.40 | 66 | 773,043 |
+| Median | 11.17 | 11.06 | 11.64 | | |
+
+- **T = 0.** Every seed routes, including seed 4, which the baseline
+  does not. The median rises 0.48 MHz, and seeds 1, 2 and 5 gain 0.26 to
+  0.70. Wires are unchanged; iterations rise to 58 to 98 against 45 to
+  64.
+- **T = 0.9.** Worse: the median falls to 11.06, and seeds 3 and 5 lose
+  Fmax.
+- **Quality rule, T = 0: REJECT.** The gain is inside the spread, and
+  seed 4 (10.84) is below the baseline's worst (10.92), though the
+  baseline has no seed 4 to compare.
+- **Size of the gain.** It is small against the 24 ns of detour above
+  the median on each path. Routing the worst path better makes the next
+  one critical, and the core has many paths near the worst.
+
+Kept opt-in (`--router2-crit-cost --router2-crit-threshold 0`). It is
+next measured together with the placement settings.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
