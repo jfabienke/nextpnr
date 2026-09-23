@@ -4216,6 +4216,29 @@ LAB stay at 13.2.
 The harness now names only the failed criteria in a verdict; it
 listed every criterion before.
 
+### 2026-09-23: Unit 19.3 negative in its first form: no seed routes
+
+`--router2-crit-cost` (commit 7131d306), resumed from the baseline's
+route-prepared checkpoints (`build/quality/ckpt/core-base`), seeds 1 to 5
+three at a time (`build/quality/run_19_3.sh`, tag `crit-5s`).
+
+| Seed | Routed | Iterations | Wires | Overused at the cap |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | no | cap of 100 | 870,311 | 264 |
+| 2 | no | cap of 100 | 881,911 | 452 |
+| 3 | no | cap of 100 | 876,659 | 46 |
+| 4 | no | cap of 100 | 897,352 | 1,244 |
+| 5 | no | cap of 100 | 875,218 | 230 |
+
+router1's fallback was stopped by the harness at 40 minutes on every
+seed. Wires rise 13 to 16% over the baseline's routed seeds (767,087 to
+778,792). Blending by `1 - crit²` hands too many arcs to the delay cost.
+They crowd the fast wires as the full delay cost did (842,300 wires,
+125 iterations under a cap of 200, 2026-09-18). The option stays opt-in
+and unpromoted. The design's next settings are a steeper blend or a
+criticality threshold that leaves all but the most critical arcs on the
+unit cost.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

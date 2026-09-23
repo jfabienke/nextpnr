@@ -2407,3 +2407,8 @@ plumbing. Risk: critical arcs take the same short wires and congest them
 (`present_cong_floor`) keeps them paying for overuse. If convergence
 suffers, a steeper blend (`w` squared) or a criticality threshold is the
 next setting, not a new mechanism.
+
+**Outcome (2026-09-23): negative in its first form.** No core seed
+routed within the cap of 100. Wires rose 13 to 16%, and 46 to 1,244
+wires were still overused at the cap. The blend moves too many arcs off
+the unit cost. The threshold form is the next setting to screen.
