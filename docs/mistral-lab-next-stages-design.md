@@ -2281,7 +2281,12 @@ LAB's 40 register bels out of play. It has no evidence behind it:
 registers of a half identically, each able to take the half's LUT output
 (`PKREG`) or the E/F input, each with an output mux (the second also has
 the `L` local output). Quartus puts 95% of LUT-driven registers in their
-LUT's ALM (exec probe); a LUT that drives two registers keeps both.
+LUT's ALM (exec probe); a LUT that drives two registers keeps both. And
+Quartus's own fit of the core uses both register slots of a half 1,314
+times (2,628 registers, 18% of its 14,590; `build/quality/quartus-core`,
+slots N+1 and N+2 of each LUT slot N): the hardware has the capacity the
+rule withholds. Whether nextpnr's bitstream encodes it correctly is what
+the steps below settle.
 
 **Design, in three steps, each gating the next.**
 
