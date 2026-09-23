@@ -95,6 +95,10 @@ struct Router2Cfg
     // a dictionary; the indices are the same.
     std::function<int(WireId wire)> wire_slot;
     int wire_slot_count = 0;
+
+    // The search queue's arity: 2 is std::priority_queue's binary heap, 4 a four-way heap that reads
+    // half as many levels per pop and may order tied entries differently (design section 19.1).
+    int queue_arity = 2;
 };
 
 void router2(Context *ctx, const Router2Cfg &cfg);
