@@ -2268,6 +2268,22 @@ enumeration and scoring beside the existing search), options in the
 arch. Medium: it changes where most cells land, so the routed result
 can move a lot either way; the harness decides.
 
+**Outcome (2026-09-23): kept opt-in, not promoted.** Screened with
+reaches of 2.5 and 5 weighted tiles: the design's 1 and 2 admit no other
+row at the row weight of 4. Weight 2, reach 5 on five seeds routes every
+seed, with the median at 11.75 MHz against 11.17 and the worst seed at
+11.52 against 10.92. It is a quality REJECT, because the gain is inside
+the spread. On the speed rule's criteria it passes, but only with
+parallel timings. LAB entries per net fall to 1.40 and router iterations
+to 27 to 52.
+
+The design's premise, that pulling cells to their neighbours' LABs
+fills them, did not hold: cells per LAB stay at 13.2. The legaliser's
+choice of tile moves nets together, but how many cells a LAB holds is
+set by the LAB's limits, which the next unit (19.4) relaxes. A serial
+timing of this set against the baseline is the step before a speed
+promotion.
+
 ### 19.4 The second register of an ALM half (arch, then packing; silicon first)
 
 **Why.** 6g packs 5,360 of the core's 9,632 LUT-driven registers beside
@@ -2319,3 +2335,75 @@ the density lever that 19.2 and the sweep could not reach.
 and 2 are there to find it before anything depends on the answer. A
 silicon claim is recorded only from a test that can fail (the lesson of
 the voided loopback claims in `MISTRAL_GAPS.md`).
+
+### 19.3 Criticality-aware routing cost (the arch's cost function for router2)
+
+**Why.** The recipe routes the core under 6f's unit cost: every wire
+costs one unit, whatever its delay and whatever the arc's criticality.
+The unit cost is what makes the core converge. The delay cost with the
+same recipe needed 125 iterations and 842,300 wires, and signed off at
+9.76 MHz, below every unit-cost run (tracker, 2026-09-18). But the
+unit cost's routes are delay-blind.
+
+On the baseline's seed 1 (11.39 MHz) the critical path is 87.8 ns:
+- 74.8 ns routing, over 53 arcs;
+- 12.5 ns logic, 0.7 ns clock-to-output.
+
+Fifteen of those arcs stay inside their tile and cost nothing; the
+median arc costs 0.9 ns. Some arcs are detours no delay-aware search
+would take: 2.92 ns for a one-row hop, 7.85 ns for five columns and
+three rows. The routing that decides Fmax is chosen by wire count.
+
+router2 already knows each arc's criticality. It computes a
+`crit_weight` of `max(floor, 1 - crit²)` per arc from the timing
+analysis it re-runs every iteration. It uses that weight only to scale
+the congestion terms, so under the unit cost a critical arc still counts
+wires.
+
+**Design.** Blend the two costs per arc through the weight router2
+already passes to `Router2Cfg::get_base_cost`:
+
+    base(wire, pip, w) = w * U + (1 - w) * delay_ns(wire, pip)
+
+- `w` is the arc's `crit_weight`: 1 for an arc with no criticality,
+  down to the floor (0.05) for the most critical.
+- `delay_ns` is today's delay cost, `default_base_cost`.
+- `U` is the mean of `delay_ns` over the device's wires, computed once
+  when the router is configured.
+
+With `U` in nanoseconds, the non-critical arcs keep the unit cost's
+behaviour at the scale of the to-go estimate, which is already in
+nanoseconds (`get_togo_cost`). Today the unit cost's wire term and the
+estimate are in different units; how that has weighed the search is
+not measured. Only arcs
+whose criticality is high move toward the delay cost: at a criticality
+of 0.9, `w` is 0.19. The congestion terms are unchanged, and the delay
+term only reorders the candidates a critical arc sees.
+
+The arch sets it behind `--router2-crit-cost` (`ArchArgs`, like the
+unit cost; it implies the unit cost for non-critical arcs and replaces
+`--router2-unit-cost` when both are given). router2 itself does not
+change.
+
+**Measurement.** Two numbers first, from one core seed:
+- the share of arcs with a criticality above 0.5, 0.8, and 0.9 at the
+  first and the last iteration (a counter in the arch's lambda: the
+  weights it is called with);
+- the critical path's routing delay against its tile distance, per arc,
+  as above.
+
+Then five seeds under the quality rule, on the recipe and on the best
+placement set of 19.2 and 19.6. It must route every seed, which is the
+risk the delay cost did not meet. Expected: Fmax up by the detours'
+share of the critical path, and a small rise in wires.
+
+**What it changes.** Routes and signoff, not placement. Determinism is
+kept: the weights come from router2's own timing analysis, which is
+deterministic.
+
+**Cost and risk.** About 30 lines in `mistral/arch.cc` and the option
+plumbing. Risk: critical arcs take the same short wires and congest them
+(what sank the delay cost). The floor of the present-congestion term
+(`present_cong_floor`) keeps them paying for overuse. If convergence
+suffers, a steeper blend (`w` squared) or a criticality threshold is the
+next setting, not a new mechanism.

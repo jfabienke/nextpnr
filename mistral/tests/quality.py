@@ -318,15 +318,22 @@ def cmd_compare(args):
           f"all candidate seeds route: {all_route}; worst seed {min(cf):.2f} vs baseline worst {min(bf):.2f}")
     if args.kind == 'quality':
         ok = all_route and floor and c_med - b_med > spread
-        why = 'median gain exceeds the baseline spread' if ok else 'fails: needs every seed routed, the floor, ' \
-              'and a median gain above the baseline spread'
+        failed = [name for name, passed in (('a seed does not route', all_route),
+                                            ('a seed is below the baseline worst', floor),
+                                            ('median gain not above the baseline spread', c_med - b_med > spread))
+                  if not passed]
+        why = 'median gain exceeds the baseline spread' if ok else 'fails: ' + '; '.join(failed)
     else:
         bt = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in base['runs'] if r['routed']])
         ct = statistics.median([(r.get('placement_s') or 0) + (r.get('routing_s') or 0) for r in cand['runs'] if r['routed']])
         inside = min(bf) <= c_med <= max(bf)
         ok = all_route and floor and inside and ct < bt
         print(f"  median wall (placement + routing) {bt:.0f} -> {ct:.0f} s (orientation only unless run serially)")
-        why = 'quality inside the baseline range and faster' if ok else 'fails the speed rule'
+        failed = [name for name, passed in (('a seed does not route', all_route),
+                                            ('a seed is below the baseline worst', floor),
+                                            ('median outside the baseline range', inside), ('not faster', ct < bt))
+                  if not passed]
+        why = 'quality inside the baseline range and faster' if ok else 'fails: ' + '; '.join(failed)
     print(f"  verdict ({args.kind}): {'ACCEPT' if ok else 'REJECT'}: {why}")
     return 0 if ok else 1
 

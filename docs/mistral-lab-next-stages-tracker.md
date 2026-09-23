@@ -4182,6 +4182,40 @@ Reading:
 - Weight 4 lost seed 2.
 - Weight 2, reach 5 goes to five seeds.
 
+### 2026-09-23: Unit 19.6 on five seeds: every seed routes, the gain inside the spread
+
+Weight 2, reach 5, on top of unit 19.2 (rows 4, entries 4), seeds 1 to 5
+three at a time, seed 1 repeated (`build/quality/run_19_6.sh`, tag
+`a-w2-r5-5s`).
+
+| Seed | Fmax | Iterations | Wires | LABs | Rows per net | Entries per net | Place s | Route s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 11.57 | 27 | 737,553 | 4,174 | 1.812 | 1.404 | 277 | 60 |
+| 2 | 12.26 | 28 | 743,925 | 4,167 | 1.819 | 1.413 | 308 | 58 |
+| 3 | 11.75 | 52 | 734,123 | 4,178 | 1.795 | 1.394 | 223 | 74 |
+| 4 | 11.52 | 42 | 751,786 | 4,159 | 1.813 | 1.399 | 208 | 79 |
+| 5 | 11.98 | 52 | 731,958 | 4,163 | 1.805 | 1.408 | 366 | 58 |
+
+Median 11.75 MHz, range 11.52 to 12.26. Every seed routes, including
+seed 4, which the baseline does not. Seed 1 repeated is identical.
+
+Against the baseline:
+- **Quality rule: REJECT.** The median gains 0.58 MHz, below the spread
+  of 0.95; the floor holds (worst seed 11.52 against 10.92).
+- **Speed rule: ACCEPT on its criteria.** The median is inside the
+  baseline's range and the median wall time falls from 505 to 337 s.
+  The baseline ran four at a time and this set three at a time, so the
+  times are an orientation, not the serial measurement a speed
+  acceptance needs.
+
+Against unit 19.2 alone (median 11.43): +0.31, inside that set's spread
+of 0.86. Fabric wires fall about 4.5% against the baseline (medians of the routed seeds 772,377 and 737,553), LAB entries
+per net from 1.61 to 1.40, local lines from 3,446 to 4,360. Cells per
+LAB stay at 13.2.
+
+The harness now names only the failed criteria in a verdict; it
+listed every criterion before.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
