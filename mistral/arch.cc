@@ -980,7 +980,7 @@ bool Arch::run_placement()
                 cfg.beta = float(atof(beta_env));
                 log_info("MISTRAL_HEAP_BETA override: cut-spreader beta = %.3f\n", cfg.beta);
             }
-            cfg.criticalityExponent = 7;
+            cfg.criticalityExponent = args.heap_crit_exp;
             // Stage 6 (tile scan, design section 14): in the Rust legality modes the strict legaliser
             // asks for the first legal bel of a tile in one call after a first refusal; the comparing
             // modes skip nothing and check every prediction against the live answer.

@@ -4401,6 +4401,25 @@ so 100 is the setting.
 Every option in the set is opt-in. Making the set the core recipe, or a
 default, is a promotion and needs its own decision row.
 
+### 2026-09-23: HeAP's criticality exponent, now an option
+
+`--heap-crit-exp E` (default 7, the value the arch fixed) replaces the
+override, so `--placer-heap-critexp` is still ignored on this arch. On
+19.2 and 19.6, seeds 1 and 2 (`build/quality/sweep_cexp.sh`, binary
+`nextpnr-mistral.cexp`):
+
+| Weight, exponent | Routed | Fmax | Iterations | Wires |
+| --- | ---: | --- | --- | --- |
+| 100, 7 (control) | 2 | 12.80, 12.39 | 59, 64 | 738,738, 734,590: the weight-100 runs exactly |
+| 100, 4 | 2 | 12.85, 12.67 | 69, 51 | 741,240, 739,002 |
+| 100, 2 | 0 | cap on seed 2; seed 1 stopped at iteration 71, 836,142 wires | | |
+| 10, 2 | 2 | 12.45, 12.10 | 38, 65 | 732,217, 732,748 |
+
+- **Weight 100, exponent 2** pulls too many arcs and does not route.
+- **Weight 10, exponent 2** comes near weight 100 at exponent 7.
+- **Exponent 4 at weight 100** is 0.16 MHz better on the median of two
+  seeds, inside the noise. It goes to five seeds with the full set.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

@@ -85,6 +85,7 @@ struct ArchArgs
     int sa_entry_weight = 0; // Design 19.2: annealer cost per tile a net's sinks enter beyond the driver's; 0 = off
     float heap_lab_affinity = 0.0f;          // Design 19.6: legaliser weight per net entering a new LAB; 0 = off
     float heap_lab_reach = 2.5f;             // Design 19.6: how far from the solver's position neighbours' tiles count
+    float heap_crit_exp = 7.0f;              // HeAP's criticality exponent (was fixed at 7 by the arch)
     SwapSeamMode sa_seam = SwapSeamMode::On; // Stage 5 (1c): annealer swap seam; on by default since 2026-09-19
     int sa_batch = 0;                        // Stage 5 (1c-B): candidates per refinement batch (0 = serial)
     bool route_prepare_only = false;         // Stage 5 (2b): stop route() after preparation, before the router

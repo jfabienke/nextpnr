@@ -127,6 +127,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("heap-lab-affinity", po::value<float>(),
                            "HeAP's legaliser first tries the tiles of a cell's placed neighbours, scored by distance "
                            "plus this weight per net that would enter a new LAB (off by default; experimental)");
+    specific.add_options()("heap-crit-exp", po::value<float>(),
+                           "HeAP's criticality exponent: an arc's solver weight is 1 + timingWeight * crit^e "
+                           "(default 7)");
     specific.add_options()("heap-lab-reach", po::value<float>(),
                            "how far from the solver's position (in weighted tiles) a neighbour's tile is tried "
                            "(default 2.5)");
@@ -277,6 +280,8 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.lab_tile_scan = vm.count("no-lab-tile-scan") == 0;
     if (vm.count("heap-lab-affinity"))
         chipArgs.heap_lab_affinity = std::max(0.0f, vm["heap-lab-affinity"].as<float>());
+    if (vm.count("heap-crit-exp"))
+        chipArgs.heap_crit_exp = std::max(0.0f, vm["heap-crit-exp"].as<float>());
     if (vm.count("heap-lab-reach"))
         chipArgs.heap_lab_reach = std::max(0.0f, vm["heap-lab-reach"].as<float>());
     if (vm.count("sa-row-weight"))

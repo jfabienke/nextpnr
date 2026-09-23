@@ -71,6 +71,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"sa_entry_weight", a.sa_entry_weight},
             {"heap_lab_affinity", double(a.heap_lab_affinity)},
             {"heap_lab_reach", double(a.heap_lab_reach)},
+            {"heap_crit_exp", double(a.heap_crit_exp)},
             {"router2_unit_cost", a.router2_unit_cost},
             {"router2_crit_cost", a.router2_crit_cost},
             {"router2_crit_threshold", double(a.router2_crit_threshold)},
