@@ -4087,6 +4087,101 @@ brings into it; Quartus fills its LABs to 15.9 cells with cells that
 share inputs. That is design 19.6's lever, not the spreader's. The knobs
 stay at their defaults.
 
+### 2026-09-23: Unit 19.4 step 1: Quartus writes the second register of a half as nextpnr does
+
+The differential of design 19.4, step 1. `ff2test` is twelve cells in
+LAB (85, 27):
+
+- In ALM 0 each half's 4-input LUT drives both registers of its half.
+- In ALM 1 each half's 2-input LUT drives the first register, and the
+  second register takes a pin through E/F.
+
+nextpnr placed it by BEL attributes, with the refusal lifted by a
+test-only override (`MISTRAL_TEST_ALLOW_SECOND_FF`, not committed). It
+also needed a second test-only tolerance: HeAP's constraint placer
+checks the ALM after every bind, so a register bound before its half's
+LUT looks fabric-fed. Quartus 17.0.2 fitted a WYSIWYG twin with location
+assignments (NAS01 `fabi386_jobs/ff2test_20260923`). It honoured every
+assignment and reported no warning on them. Both bitstreams were decoded
+with libmistral (`mistral-cv decomp`), and the LAB's settings were
+compared (`build/stage6-fullcore/ff2test/{q,np}.lab`).
+
+| Setting, ALMs 0 and 1 | Quartus | nextpnr |
+| --- | --- | --- |
+| `BMODE`/`TMODE`, `CLK_SEL`, `ACLR0_SEL`, `EN0_EN` | as nextpnr | as Quartus |
+| `PKREG0.1` (both halves) | 1 | 1 |
+| `SCLR_DIS.1` (both halves) | 1 | 1 |
+| `SCLR_DIS.0` (both halves; no register uses the sync clear) | not set | 1 |
+| `EF_SEL.1` (second register of ALM 1 from the fabric) | not set (E) | F |
+| `LUT_MASK.0`, `.1` | differ | differ |
+| Register outputs used | `FF[TB]0`, `FF[TB]1L` | `FF[TB]0`, `FF[TB]1`, `FFB1L` |
+
+Every register setting agrees. The differences are choices, not model
+gaps:
+
+- the E or F line for the fabric-fed register;
+- the LUT masks, which follow each tool's input permutation;
+- the sync-clear disable on an ALM with no sync clear;
+- which of the second register's two outputs is used. `FF*1` goes to
+  the fabric and `FF*1L` to the local line. Quartus used the local one
+  because it packed the output XOR into the same LAB (ALMs 2 and 3).
+
+No bit is missing from the model for either pattern. Step 2, the
+silicon test, is built and waits for the board. The board did not
+answer at `192.168.25.19`, and its MAC is on neither subnet.
+
+- **Test design.** `build/stage6-fullcore/ff2silicon/gen.py`, seed 194,
+  in LABs x 16 to 17, y 20 to 27, six ALMs per LAB. Three ALMs of the
+  first pattern and three of the second, 192 second registers in all.
+  Every LUT and E/F input is a state bit or an LFSR bit. A 32-bit MISR
+  folds the 384-bit state for 20,000 cycles.
+- **Golden.** `e73a4c8d`. The Python model and an iverilog run of the
+  generated Verilog on Yosys's primitive models agree (they agreed on
+  the first draft's `cd9c43bf` as well). Sticking any one of three
+  sampled second registers at 0 moves the signature.
+- **nextpnr.** Every one of the 576 constrained cells is on its bel.
+  34 more second-register bels are taken by free cells under the rule
+  with only the refusal lifted. The test tolerance is limited to
+  BEL-constrained cells whose LUT is unbound. Fmax is 164 MHz against the
+  board's 50 MHz clock.
+- **Control.** `ff2sil_ctl.rbf` is the same netlist with the golden
+  off by one bit and build id F5. It must read `match=0` with the same
+  `sig_lo`.
+- **Run.** `build/stage6-fullcore/ff2silicon/run_board.sh`, through
+  openflow-test's `run_hybrid.sh`.
+
+### 2026-09-23: Unit 19.6 screened: LAB affinity shortens routing, cells per LAB unchanged
+
+LAB affinity (commit c240bdff) on top of unit 19.2 (rows 4, entries 4),
+seeds 1 and 2 (`build/quality/sweep_affinity.sh`, binary
+`nextpnr-mistral.u19-6`). The reach is in weighted tiles: at a row
+weight of 4 (read as 2 by `hpwl_scale_y`, an `int`), a reach of 2.5
+covers two columns and one row, and a reach of 5 covers five columns and
+two rows. The design's 1 and 2 would have admitted no other row, so the
+screening used 2.5 and 5.
+
+| Weight, reach | Routed | Fmax | Iterations | Wires | LABs used | Entries per net | Route s |
+| --- | ---: | --- | --- | --- | --- | --- | --- |
+| 19.2 set, no affinity | 2 | 11.99, 11.13 | 29, 79 | 747,590, 760,411 | 4,190, 4,184 | 1.48 | 52, 96 |
+| 1, 2.5 | 2 | 11.69, 11.70 | 53, 66 | 746,779, 753,512 | 4,183, 4,180 | 1.45 | 86, 129 |
+| 2, 2.5 | 2 | 11.92, 11.42 | 32, 50 | 747,484, 748,233 | 4,168, 4,176 | 1.45 | 61, 89 |
+| 4, 2.5 | 2 | 11.99, 11.66 | 63, 44 | 751,864, 753,892 | 4,183, 4,164 | 1.45 | 151, 87 |
+| 1, 5 | 2 | 11.57, 11.58 | 45, 37 | 743,853, 745,219 | 4,167, 4,179 | 1.43 | 86, 68 |
+| 2, 5 | 2 | 11.57, 12.26 | 27, 28 | 737,553, 743,925 | 4,174, 4,167 | 1.41 | 61, 62 |
+| 4, 5 | 1 | 11.57, cap of 100 | 34, 100 | 742,204, 748,059 | 4,149 | 1.41 | 101 |
+
+Reading:
+
+- Affinity pulls nets together. LAB entries per net fall from 1.48 to
+  1.41, wires by 1 to 2%, and at weight 2, reach 5 the router needs 27
+  and 28 iterations, against 29 and 79 without affinity and 45 and 51
+  on the baseline.
+- It does not fill LABs. Cells per LAB stay at 13.2 and LABs used fall
+  by 20 at most. A cell pulled into a neighbour's LAB leaves room behind
+  it that another cell takes.
+- Weight 4 lost seed 2.
+- Weight 2, reach 5 goes to five seeds.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
