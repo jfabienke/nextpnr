@@ -480,6 +480,8 @@ class HeAPPlacer
             placer1_cfg.threads = cfg.swap_threads;
             placer1_cfg.row_weight = cfg.sa_row_weight;
             placer1_cfg.entry_weight = cfg.sa_entry_weight;
+            placer1_cfg.timing_lambda = cfg.sa_timing_lambda;
+            placer1_cfg.timing_crit_exp = cfg.sa_timing_crit_exp;
             if (!placer1_refine(ctx, placer1_cfg)) {
                 return false;
             }

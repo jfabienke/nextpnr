@@ -2412,3 +2412,72 @@ next setting, not a new mechanism.
 routed within the cap of 100. Wires rose 13 to 16%, and 46 to 1,244
 wires were still overused at the cap. The blend moves too many arcs off
 the unit cost. The threshold form is the next setting to screen.
+
+### 19.7 The annealer's timing constants (upstream's file and the arch)
+
+**Why.** The Fmax set's largest single gain came from a timing constant
+nobody had tuned for the core: HeAP's weight, raised from 10 to 100. The
+annealer has the same kind of constants, and they are hard-coded in
+`placer1.cc`:
+- `lambda = 0.5` splits a move's cost between timing and wirelength;
+- `crit_exp = 8` sharpens criticality, so an arc's timing cost is
+  `delay * crit^8`.
+
+**Design.** Make them `Placer1Cfg` fields `timing_lambda` and
+`timing_crit_exp`, with today's defaults, so nothing changes unless an
+arch sets them. HeAP copies them into its `placer1_cfg` as it copies the
+row and entry weights. The arch sets them from `--sa-timing-lambda` and
+`--sa-crit-exp` (`ArchArgs`).
+
+**Measurement.** On the Fmax set, seeds 1 and 2: lambda 0.7 and 0.9, and
+exponent 4. The best goes to five seeds under the quality rule against
+`f-w100-crit-5s`.
+
+**Cost and risk.** About 20 lines. The defaults reproduce today's runs
+exactly, which is the check.
+
+### 19.8 The placement delay model, calibrated by span (the arch)
+
+**Why.** Before routing, every arc's delay is `Arch::predictDelay`,
+which is `75 * dx + 200 * dy` ps. That value decides which arcs are
+critical, for HeAP's timing weights and for the annealer's timing cost.
+The arc dump of the routed baseline (tracker, "Where the critical path's
+time goes") shows how wrong it is:
+
+| Span (columns, rows) | Median routed delay | `predictDelay` |
+| --- | ---: | ---: |
+| (1, 0) | 0.55 ns | 0.08 ns |
+| (0, 1) | 0.90 | 0.20 |
+| (0, 3) | 1.24 | 0.60 |
+| (10, 0) | 1.15 | 0.75 |
+| (0, 10) | 2.11 | 2.00 |
+| (0, 20) | 2.78 | 4.00 |
+| (40, 0) | 3.00 | 3.00 |
+
+Leaving a LAB costs half a nanosecond or more, and the model says almost
+nothing. Long vertical arcs cost far less than the model says. So a
+critical arc gains little in the placers' eyes from staying inside a LAB,
+which is exactly where Quartus wins (its local lines). And criticality
+itself is computed from the wrong delays until the router runs.
+
+**Design.** `predictDelay` reads a table of median routed delay by span
+(dx up to 91, dy up to 81, in picoseconds; the device grid is 89 by 81), made from the arc dumps and
+made non-decreasing in both directions so that moving away never looks
+cheaper. Beyond the sampled range, the last value grows linearly. It is
+checked in as a generated header, `mistral/span_delay.h`, with the
+script that makes it (`mistral/tests/span_delay.py`) and the source
+dumps named in its header. `estimateDelay`, router2's to-go estimate,
+is unchanged: the A* search depends on its current scale, and 19.3's
+first form showed how sensitive the router is to that balance.
+`--placement-delay table|linear` selects it; the default stays `linear`.
+
+**Measurement.** On the Fmax set, seeds 1 and 2, then five seeds. The
+table is fitted on seeds 1, 2, 3 and 5 of the baseline; an Fmax gain on
+seed 4, which none of the dumps saw, is the check that it is not fitted
+to its own sample.
+
+**Cost and risk.** About 40 lines and the table. Risk: the median
+includes congestion detours, so the table is the delay this router
+achieves rather than the fabric's best. That is the right target for
+predicting a routed delay, but it changes with the router. The script
+regenerates the table.

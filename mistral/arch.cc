@@ -936,6 +936,8 @@ bool Arch::run_placement()
             }
             cfg.sa_row_weight = args.sa_row_weight; // Design 19.2: rows and LAB entries per net
             cfg.sa_entry_weight = args.sa_entry_weight;
+            cfg.sa_timing_lambda = args.sa_timing_lambda; // Design 19.7
+            cfg.sa_timing_crit_exp = args.sa_crit_exp;
             cfg.lab_affinity_weight = args.heap_lab_affinity; // Design 19.6: LAB affinity when legalising
             cfg.lab_affinity_reach = args.heap_lab_reach;
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
@@ -1098,6 +1100,8 @@ bool Arch::run_placement()
             Placer1Cfg sa_cfg(getCtx());
             sa_cfg.row_weight = args.sa_row_weight;
             sa_cfg.entry_weight = args.sa_entry_weight;
+            sa_cfg.timing_lambda = args.sa_timing_lambda;
+            sa_cfg.timing_crit_exp = args.sa_crit_exp;
             if (args.sa_seam != SwapSeamMode::Off) {
                 sa_cfg.assess_swap = mistral_assess_swap;
                 sa_cfg.commit_swap = mistral_commit_swap;

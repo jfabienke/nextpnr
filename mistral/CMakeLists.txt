@@ -60,6 +60,7 @@ set(SOURCES
     reuse_plan.cc
     build_state.h
     build_state.cc
+    span_delay.h
     m10k.cc
     pll.cc
     pack.cc

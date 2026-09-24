@@ -171,6 +171,8 @@ struct PlacerHeapCfg
     unsigned swap_threads = 1;
     // Design 19.2: the refinement's row and entry weights (Placer1Cfg::row_weight, entry_weight).
     int sa_row_weight = 0, sa_entry_weight = 0;
+    // Design 19.7: the refinement's timing constants (Placer1Cfg::timing_lambda, timing_crit_exp).
+    float sa_timing_lambda = 0.5f, sa_timing_crit_exp = 8.0f;
     // Design 19.6: the strict legaliser first tries the tiles of a cell's placed neighbours within
     // `lab_affinity_reach` (in the solver's weighted distance) of its solver position, best first by
     // distance plus `lab_affinity_weight` per net with no other pin in the tile; 0 = off.

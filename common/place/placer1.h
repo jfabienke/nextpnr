@@ -69,6 +69,9 @@ struct Placer1Cfg
     // sinks occupy other than the driver's, for nets of up to shape_fanout_max sinks; 0 = off.
     int row_weight = 0, entry_weight = 0;
     int shape_fanout_max = 64;
+    // Design 19.7: a move's cost is timing_lambda * timing + (1 - timing_lambda) * wirelength, and an arc's timing
+    // cost is its predicted delay times criticality^timing_crit_exp.
+    float timing_lambda = 0.5f, timing_crit_exp = 8.0f;
 
     // Assess a two-cell swap's legality against the live design without
     // mutating it. When set, the annealer evaluates the swap's cost delta from

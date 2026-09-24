@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "nextpnr.h"
+#include "span_delay.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -457,8 +458,7 @@ bool Arch::getArcDelayOverride(const NetInfo *net_info, const PortRef &sink, Del
             if (o == outputs.end()) {
                 // Name the collision before dying: which source does dst's mux ACTUALLY select?
                 auto actual = cyclonev->rnode_get_selected_source(dst.node);
-                fprintf(stderr,
-                        "FATAL: signoff arc %s -> %s, but the dst mux is programmed to select %s\n",
+                fprintf(stderr, "FATAL: signoff arc %s -> %s, but the dst mux is programmed to select %s\n",
                         nameOfWire(src), nameOfWire(dst),
                         actual ? mistral::CycloneV::rn2s(actual).c_str() : "<nothing>");
             }
@@ -499,6 +499,11 @@ delay_t Arch::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdStr
     Loc dst_loc = getBelLocation(dst_bel);
     int x_diff = std::abs(dst_loc.x - src_loc.x);
     int y_diff = std::abs(dst_loc.y - src_loc.y);
+    if (args.placement_delay_table) {
+        // Design 19.8: the median routed delay by span; beyond the table, its edge plus the linear slope.
+        int dx = std::min(x_diff, SPAN_DELAY_DX - 1), dy = std::min(y_diff, SPAN_DELAY_DY - 1);
+        return delay_t(span_delay_ps[dx][dy]) + 75 * (x_diff - dx) + 200 * (y_diff - dy);
+    }
     return 75 * x_diff + 200 * y_diff;
 }
 

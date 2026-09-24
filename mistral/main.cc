@@ -118,6 +118,12 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("row-cost", po::value<float>(),
                            "weight of a vertical tile against a horizontal one in placement (solver, spreader, "
                            "legaliser); the fabric enters LABs through row wires (off by default; experimental)");
+    specific.add_options()("sa-timing-lambda", po::value<float>(),
+                           "the annealer's timing share of a move's cost, 0 to 1 (default 0.5)");
+    specific.add_options()("sa-crit-exp", po::value<float>(), "the annealer's criticality exponent (default 8)");
+    specific.add_options()("placement-delay", po::value<std::string>(),
+                           "placement delay model: linear (75 ps per column, 200 per row; default) or table (the "
+                           "median routed delay by span, design 19.8)");
     specific.add_options()("sa-row-weight", po::value<int>(),
                            "annealer cost per distinct row a net touches beyond the first, in horizontal tiles "
                            "(the fabric enters LABs by row wires; off by default; experimental)");
@@ -284,6 +290,16 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.heap_crit_exp = std::max(0.0f, vm["heap-crit-exp"].as<float>());
     if (vm.count("heap-lab-reach"))
         chipArgs.heap_lab_reach = std::max(0.0f, vm["heap-lab-reach"].as<float>());
+    if (vm.count("sa-timing-lambda"))
+        chipArgs.sa_timing_lambda = std::min(1.0f, std::max(0.0f, vm["sa-timing-lambda"].as<float>()));
+    if (vm.count("sa-crit-exp"))
+        chipArgs.sa_crit_exp = std::max(0.0f, vm["sa-crit-exp"].as<float>());
+    if (vm.count("placement-delay")) {
+        const std::string model = vm["placement-delay"].as<std::string>();
+        if (model != "linear" && model != "table")
+            log_error("--placement-delay must be linear or table, not '%s'\n", model.c_str());
+        chipArgs.placement_delay_table = model == "table";
+    }
     if (vm.count("sa-row-weight"))
         chipArgs.sa_row_weight = std::max(0, vm["sa-row-weight"].as<int>());
     if (vm.count("sa-entry-weight"))

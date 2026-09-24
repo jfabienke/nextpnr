@@ -83,6 +83,9 @@ struct ArchArgs
     float row_cost = 0.0f;   // Stage 6 (6h): a vertical tile's placement cost in horizontal tiles; 0 = off
     int sa_row_weight = 0;   // Design 19.2: annealer cost per extra row a net touches; 0 = off
     int sa_entry_weight = 0; // Design 19.2: annealer cost per tile a net's sinks enter beyond the driver's; 0 = off
+    float sa_timing_lambda = 0.5f;           // Design 19.7: the annealer's timing share of a move's cost
+    float sa_crit_exp = 8.0f;                // Design 19.7: the annealer's criticality exponent
+    bool placement_delay_table = false;      // Design 19.8: predictDelay by the measured span table
     float heap_lab_affinity = 0.0f;          // Design 19.6: legaliser weight per net entering a new LAB; 0 = off
     float heap_lab_reach = 2.5f;             // Design 19.6: how far from the solver's position neighbours' tiles count
     float heap_crit_exp = 7.0f;              // HeAP's criticality exponent (was fixed at 7 by the arch)
