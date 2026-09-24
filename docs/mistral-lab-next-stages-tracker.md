@@ -4561,6 +4561,49 @@ two lines at the median, on seeds 1 and 2; the table is in design 19.10.
 A per-class bound from the netlist's pin names reaches 61, above anything
 the route used, so pin names are not physical pins.
 
+### 2026-09-24: Unit 19.10 phase A negative: denser LABs do not route, lower limits cannot place chains
+
+`--lab-input-model nets` (C++ only, `--lab-legality legacy`). The demand is
+kept incrementally per LAB in `bindBel`/`unbindBel`; the overlay form
+answers from the overlay's changes, and cluster candidates take HeAP's
+live path. `MISTRAL_CHECK_LAB_DEMAND=1` recounts every LAB from scratch
+after each change and each overlay answer. A full probe placement passed
+it. Its first form flagged every unbind, because the recount ran while the
+leaving cell still sat on its bel; the check was wrong, not the count.
+
+Probe, recipe router settings (`--router2-unit-cost --router2-reroute 20
+--router2-reroute-contested`), seed 1:
+
+| Model, limit | Result |
+| --- | --- |
+| count, 42 | routes in 9 iterations, 32.32 MHz |
+| nets, 42 | 10 wires overused at the cap of 100, almost all LAB input lines (TD) |
+| nets, 40 | routes in 11 iterations, 33.61 MHz |
+| nets, 38 and 36 | placement not finished in 5 minutes |
+
+Cores, full recipe, seeds 1 and 2 (binary `nextpnr-mistral.u19-10a`):
+
+| Core, model, limit | Result |
+| --- | --- |
+| 2026-09-17, nets, 40 | placement 1,008 and 680 s; router2 at the cap with 497 and 437 overused wires |
+| 2026-09-17, nets, 38 | no placement: the divider's 65-cell carry chain (`divisor_shifted`) has a LAB-sized segment with 40 distinct input nets |
+| 2026-09-24, nets, 40 | no placement: register packing's early failure, as under the count model |
+| 2026-09-24, nets, 40, without register packing | no placement: the same carry chain |
+
+The measurement behind the design (input lines used tracking the demand)
+held for placements the per-ALM count made. LABs packed to the new
+count's limit ask for more input lines than router2 finds. They fail on
+the lines' class structure (section 9.2), which the count cannot see.
+Below 40, a carry chain's own segment no longer fits. Kept opt-in at the
+user's direction; phase B (Rust) is not built.
+
+Register packing's early failure on the 2026-09-24 core, under the count
+model: `MISTRAL_DEBUG_CLUSTER_REJECT` shows the address adder's carry
+chain (`computed_ea`, 34 cells, a 38-input first segment) refused over
+and over for the LAB input limit (45 counted in the LABs tried), and then
+a microcode LUT hits the per-cell attempt limit. The cause is not yet
+known.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

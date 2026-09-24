@@ -2623,3 +2623,16 @@ router2 delivers at the new density is exactly what phase A measures.
 If it does not, the limit on the demand (below 42) is the setting to
 screen, not a new mechanism. Faster checks are not expected. Placement
 changes and the RNG sequence with it.
+
+**Outcome (2026-09-24): phase A negative; kept opt-in, phase B not built.**
+- **At limit 42:** the probe no longer routes.
+- **At limit 40:** the probe routes (+4%), but the 2026-09-17 core's
+  router2 stalls at 440 to 500 overused wires.
+- **At 38 and below:** the divider's carry chain, whose segment needs 40
+  distinct nets, cannot be placed. No limit both routes and places.
+
+The measurement predicted the lines used only for LABs the per-ALM count
+had shaped. Packed to the new limit, a LAB's nets reach more pin classes
+than its lines can serve (section 9.2). The density the core needs has
+to come from what the lines must carry (19.4's local register outputs),
+not from a looser count.
