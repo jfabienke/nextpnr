@@ -319,6 +319,15 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   completion** (0 overused wires at iteration 45; first time, 2026-09-18), 15 minutes wall, signoff
   9.8 to 11.9 MHz against Quartus's 25.2; the recipe is `build/stage6-fullcore/core_probe_flow.sh`
   (outside git). router1's fallback never finishes on the core; the periodic re-route is the finisher.
+- Design 19 (2026-09-23/24, the quality phase): the Fmax set is part of the core recipe since
+  2026-09-24 (tracker decision "Fmax set"): `--sa-row-weight 4 --sa-entry-weight 4` (19.2, the
+  annealer prices rows and LAB entries per net), `--heap-lab-affinity 2 --heap-lab-reach 5` (19.6,
+  the legaliser tries its neighbours' LABs), `--placer-heap-timingweight 100`, and
+  `--router2-crit-cost --router2-crit-threshold 0` (19.3b: a non-critical arc's wire costs one unit,
+  a critical arc's wire blends in its delay). Core median Fmax 11.17 to 12.59 MHz over five seeds,
+  every seed routes; the new baseline tag is `f-w100-crit-5s`. Every option is off by default. The
+  arch used to fix HeAP's criticality exponent at 7 over `--placer-heap-critexp`; `--heap-crit-exp`
+  now sets it (default 7). `MISTRAL_DUMP_ARC_DELAYS=file` writes every routed arc's tiles and delay.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   the router2 experiment block `MISTRAL_R2_*`, the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`, the

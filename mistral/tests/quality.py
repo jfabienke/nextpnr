@@ -41,7 +41,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 CONFIGS = {
-    # The recipe that routes the full Fabi386 core (CLAUDE.md, Stage 6 6h), inputs outside git.
+    # The recipe that routes the full Fabi386 core (CLAUDE.md, Stage 6 6h), inputs outside git. Since
+    # 2026-09-24 it carries the Fmax set of design 19 (19.2, 19.6, HeAP timing weight 100, 19.3b); runs
+    # recorded before then (base-faf70aa0 and the 19.x screenings) used the 6h recipe without it.
     'core': {
         'inputs': ['--json', 'build/stage6-fullcore/f386_core_probe.json', '--qsf',
                    'build/stage6-fullcore/core_probe.qsf'],
@@ -49,7 +51,9 @@ CONFIGS = {
                     '--freq', '33', '--router2-max-iter', '100', '--lab-controls', 'legacy', '--timing-allow-fail',
                     '--ignore-loops', '--alm-pairing', '1', '--spread-congestion', '--register-packing',
                     '--row-cost', '2.5', '--router2-unit-cost', '--router2-reroute', '20',
-                    '--router2-reroute-contested'],
+                    '--router2-reroute-contested', '--sa-row-weight', '4', '--sa-entry-weight', '4',
+                    '--heap-lab-affinity', '2', '--heap-lab-reach', '5', '--placer-heap-timingweight', '100',
+                    '--router2-crit-cost', '--router2-crit-threshold', '0'],
     },
     # The exec probe on the default path, as the gate runs it: a smoke test, not crowded.
     'probe': {
