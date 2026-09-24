@@ -2481,3 +2481,64 @@ includes congestion detours, so the table is the delay this router
 achieves rather than the fabric's best. That is the right target for
 predicting a routed delay, but it changes with the router. The script
 regenerates the table.
+
+### 19.9 Timing repair after convergence (router2, upstream's file)
+
+**Why.** Before 19.3b, detours were 44% of the core's critical paths:
+about 24 ns per path above the median delay for each arc's span
+(tracker, "Where the critical path's time goes"). 19.3b lets critical
+arcs see their delay while the design negotiates, and it gained 0.48 MHz.
+But during negotiation a critical arc still competes for every wire, and
+the congestion terms push it off the fast ones. Once the design has
+converged, no arc has to share a wire any more. A critical arc re-routed
+then, over the wires nobody uses, can take its fastest free path without
+disturbing anything.
+
+**Design.** A phase at the end of router2, after the loop exits with no
+overuse and before router1's check. `Router2Cfg::repair_rounds` sets how
+many rounds run (0 = off), and `repair_crit` sets the criticality
+threshold. Each round:
+
+1. Run the timing analysis. Collect the arcs with criticality of at
+   least `repair_crit` (default 0.9), sorted by criticality, then net
+   and arc index, so the order is deterministic.
+2. For each arc, in that order:
+   - record its route, the list of (wire, pip) from sink to source that
+     `ripup_arc` walks, and its routed delay;
+   - rip it up, and route it again with the delay cost alone (crit
+     weight at the floor). A wire used by another net is unusable, and
+     the wires of its own net are free to share.
+   - Keep the new route if it was found and its delay is lower. Otherwise
+     rip the new route up and bind the recorded pips back with
+     `bind_pip_internal`, which restores the arc exactly.
+3. Bind the result to the arch (`bind_and_check_all`).
+
+Only unused wires are ever taken, so no overuse can appear, and router1's
+check still certifies the result. A kept route is strictly faster for
+its arc, but the path it is on may still not improve: the next round
+re-times the design and moves on to the new worst arcs.
+
+**Measurement.** First, measure the detour that 19.3b leaves: the arc
+dump (`MISTRAL_DUMP_ARC_DELAYS`) of the Fmax set's routed seeds, split as
+before. If that detour is small, the unit is not built. If it is built:
+the Fmax set with 1, 2 and 4 rounds, from route-prepared checkpoints of
+the Fmax set, then five seeds under the quality rule.
+
+**Cost and risk.** About 150 lines in router2. The risk is in the
+restore: a new route can share wires with the net's other arcs, so the
+rip-up must leave those arcs intact. A debug assertion compares the
+net's wire counts before a rejected repair and after its restore.
+
+**Outcome (2026-09-24): kept opt-in; every seed gains.** No debug
+assertion was built: the restore rebinds the recorded pips, and router1's
+check certified every run.
+
+- **Threshold.** At 0.9 only 3 core arcs qualify, because router2's
+  criticality puts the core's critical paths between 0.5 and 0.9. At
+  0.5, two rounds raise every seed of the Fmax set, on the same
+  placements, by 0.20 to 1.35 MHz (median 12.59 to 13.28), for 4 to 7 s
+  of routing.
+- **A bug found on the probe.** The first form seeded a repair from a
+  routing context that still held the previous net's wires; route_arc
+  then traced a path back to another net's wire and asserted. A repair
+  now seeds from the source alone.

@@ -4507,6 +4507,44 @@ the router is identical up to convergence.
 
 The option stays opt-in.
 
+### 2026-09-24: The current Fabi386 core does not place: LAB input lines, not ALMs
+
+The fabi386 session reported (2026-09-24) that today's core fails HeAP
+under both recipes. Its netlist, copied to
+`build/stage6-fullcore/core-20260924/`, has 44,325 `MISTRAL_COMB` (52%)
+and 15,244 registers, against the 2026-09-17 netlist's 39,448 and 15,647:
+12.4% more logic. All runs use `--no-route` and seed 1 unless named.
+
+| Run | Result |
+| --- | --- |
+| Old recipe (pairing, register packing) | Fails in HeAP's first strict pass over the LUTs: "Unable to find legal placement" on an ALUT5 after 7.6 million attempts (73 s) |
+| Old recipe, seed 2 | Same, on another cell |
+| Without `--alm-pairing` | Same |
+| Without `--register-packing` | The LUTs place; the stall exit (6a) reports 1,169 registers with no legal location |
+| Limit 46 or 50 (`MISTRAL_LAB_INPUT_LIMIT`), with register packing | Same early failure |
+| Limit 46, without register packing | Places (624 s) |
+| Full Fmax recipe, limit 46, without register packing, seed 1 | Places (252 s). router2 falls to 13,855 overused wires at iteration 10, then rises to 20,316 at 30 (stopped at 45 minutes) |
+| Same, seed 2 | 997 cells unplaced |
+
+The stall report without register packing:
+- 1,661 of 4,191 LABs are at the input-line limit of 42, and 1,377 more
+  are within 4 of it (37.5 inputs per LAB on average);
+- 19,159 ALMs hold two LUTs and 6,007 hold one (60% of 41,910 in use);
+- the stuck cells are all registers, with 3.3 unique input nets each.
+
+The old core already used 4,186 of 4,191 LABs. The new one has no LAB
+left, and the limit that binds is the input lines, not ALMs. The count
+of 42 is conservative (`lab.cc`):
+- it sums each ALM's unique inputs, so a net that enters several ALMs
+  of one LAB counts once per ALM, though it uses one input line;
+- it counts nets driven inside the LAB, which arrive on local lines.
+
+Raising the limit to 46 places seed 1, but the router cannot realise the
+denser LABs, as `lab.cc` warns. Register packing fails separately, in
+the first pass. Quartus fitted the old core in 3,219 LABs. The Fmax work
+continues on the 2026-09-17 netlist; the current core needs a density
+unit (an input-line count that matches the hardware, and 19.4).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
