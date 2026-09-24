@@ -7,7 +7,7 @@ quality and time of every run, and compares two such sets against the acceptance
 
   quality.py run --bin BIN --tag TAG [--config core|probe] [--seeds 1-5] [--parallel 4]
                  [--determinism] [--drop=OPTION ...] [--timeout MIN] [-- extra nextpnr options]
-  quality.py compare BASE_TAG CANDIDATE_TAG [--config core|probe] [--kind quality|speed]
+  quality.py compare BASE_TAG CANDIDATE_TAG [--config core|probe] [--kind quality|speed|routing]
   quality.py prepare --bin BIN --dir DIR [--config ...] [--seeds 1-5] [--parallel 4] [--drop ...]
   quality.py run ... --resume-dir DIR      (route from DIR's checkpoints; routing-only changes)
 
@@ -42,8 +42,9 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 CONFIGS = {
     # The recipe that routes the full Fabi386 core (CLAUDE.md, Stage 6 6h), inputs outside git. Since
-    # 2026-09-24 it carries the Fmax set of design 19 (19.2, 19.6, HeAP timing weight 100, 19.3b); runs
-    # recorded before then (base-faf70aa0 and the 19.x screenings) used the 6h recipe without it.
+    # 2026-09-24 it carries the Fmax set of design 19 (19.2, 19.6, HeAP timing weight 100, 19.3b) and the
+    # timing repair (19.9); runs recorded before then (base-faf70aa0 and the 19.x screenings) used the 6h
+    # recipe without them.
     'core': {
         'inputs': ['--json', 'build/stage6-fullcore/f386_core_probe.json', '--qsf',
                    'build/stage6-fullcore/core_probe.qsf'],
@@ -53,7 +54,8 @@ CONFIGS = {
                     '--row-cost', '2.5', '--router2-unit-cost', '--router2-reroute', '20',
                     '--router2-reroute-contested', '--sa-row-weight', '4', '--sa-entry-weight', '4',
                     '--heap-lab-affinity', '2', '--heap-lab-reach', '5', '--placer-heap-timingweight', '100',
-                    '--router2-crit-cost', '--router2-crit-threshold', '0'],
+                    '--router2-crit-cost', '--router2-crit-threshold', '0', '--router2-repair-rounds', '2',
+                    '--router2-repair-crit', '0.5'],
     },
     # The exec probe on the default path, as the gate runs it: a smoke test, not crowded.
     'probe': {
@@ -320,6 +322,36 @@ def cmd_compare(args):
     floor = min(cf) >= min(bf)
     print(f"\n  median Fmax {b_med:.2f} -> {c_med:.2f} MHz ({c_med - b_med:+.2f}); baseline spread {spread:.2f}; "
           f"all candidate seeds route: {all_route}; worst seed {min(cf):.2f} vs baseline worst {min(bf):.2f}")
+    if args.kind == 'routing':
+        # A routing-only change on the same placements (the candidate resumed from the base's route-prepared
+        # checkpoints) is judged seed by seed (decision 2026-09-24): every base seed that routes must route and
+        # gain, and no seed may lose routability. The seed spread measures placement variance, which such a
+        # change does not have.
+        base_by = {r['seed']: r for r in base['runs']}
+        pairs, failed = [], []
+        for r in cand['runs']:
+            b = base_by.get(r['seed'])
+            if b is None:
+                failed.append(f"seed {r['seed']} has no base run")
+                continue
+            if b['routed'] and not r['routed']:
+                failed.append(f"seed {r['seed']} no longer routes")
+                continue
+            if not r['routed']:
+                continue
+            if b['routed'] and (r.get('alms'), r.get('labs')) != (b.get('alms'), b.get('labs')):
+                failed.append(f"seed {r['seed']} is not on the base's placement (ALMs or LABs differ)")
+                continue
+            if b['routed']:
+                gain = primary_fmax(r) - primary_fmax(b)
+                pairs.append((r['seed'], gain))
+                if gain <= 0:
+                    failed.append(f"seed {r['seed']} does not gain ({gain:+.2f})")
+        print('  per seed: ' + ', '.join(f'{s_}: {g:+.2f}' for s_, g in pairs))
+        ok = not failed and bool(pairs)
+        why = 'every seed gains on the same placement' if ok else 'fails: ' + '; '.join(failed or ['no pairs'])
+        print(f"  verdict ({args.kind}): {'ACCEPT' if ok else 'REJECT'}: {why}")
+        return 0 if ok else 1
     if args.kind == 'quality':
         ok = all_route and floor and c_med - b_med > spread
         failed = [name for name, passed in (('a seed does not route', all_route),
@@ -371,7 +403,7 @@ def main():
     cmp.add_argument('base')
     cmp.add_argument('candidate')
     cmp.add_argument('--config', choices=sorted(CONFIGS), default='core')
-    cmp.add_argument('--kind', choices=['quality', 'speed'], default='quality')
+    cmp.add_argument('--kind', choices=['quality', 'speed', 'routing'], default='quality')
     args = parser.parse_args(argv)
     if args.command == 'prepare':
         return cmd_prepare(args, extra)

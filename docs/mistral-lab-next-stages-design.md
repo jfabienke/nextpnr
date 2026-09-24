@@ -2087,6 +2087,13 @@ kept or dropped in the tracker by the rule above.
 - 19.5, speed: parallel annealing that includes chain moves, which
   18.1 detached from the live design.
 
+**Routing-only changes (2026-09-24).** A change that leaves every
+placement alone, measured from the base's route-prepared checkpoints, is
+judged seed by seed instead of against the spread: every seed the base
+routes must still route and gain Fmax, on a placement that must match.
+The spread measures how placements vary between seeds, and such a change
+does not vary them (`quality.py compare --kind routing`).
+
 ### 19.1 router2's four-way heap (C++, upstream's file)
 
 **Why.** Router2's priority queue was the largest TLB-miss site of the

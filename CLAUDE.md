@@ -57,7 +57,7 @@ cargo fmt    --manifest-path rust/Cargo.toml -p npnr_mistral_lab -p npnr_mistral
 git diff --check
 mistral/tests/gate.sh   # all of the above, both gtest suites, the probe identity, clang-format on changed files; 58 s
 mistral/tests/quality.py run --bin B --tag T [--config core|probe] [--seeds 1-5]   # quality over seeds
-mistral/tests/quality.py compare BASE CAND [--kind quality|speed]                  # the acceptance rule
+mistral/tests/quality.py compare BASE CAND [--kind quality|speed|routing]          # the acceptance rules
 
 # Backend self-check, arch regressions (tests/ is a submodule)
 build/nextpnr-generic --uarch example --test
@@ -325,7 +325,11 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   the legaliser tries its neighbours' LABs), `--placer-heap-timingweight 100`, and
   `--router2-crit-cost --router2-crit-threshold 0` (19.3b: a non-critical arc's wire costs one unit,
   a critical arc's wire blends in its delay). Core median Fmax 11.17 to 12.59 MHz over five seeds,
-  every seed routes; the new baseline tag is `f-w100-crit-5s`. Every option is off by default. The
+  every seed routes; the new baseline tag is `f-w100-crit-5s`. The timing repair (19.9,
+  `--router2-repair-rounds 2 --router2-repair-crit 0.5`: after convergence router2 re-routes the
+  critical arcs by delay over wires no other net holds) joined the recipe the same day: 13.28 MHz,
+  every seed faster on its own placement (tag `rep2-c05-5s`, the recipe's current result). Routing-only changes are judged seed by seed from the
+  base's route-prepared checkpoints (`compare --kind routing`). Every option is off by default. The
   arch used to fix HeAP's criticality exponent at 7 over `--placer-heap-critexp`; `--heap-crit-exp`
   now sets it (default 7). `MISTRAL_DUMP_ARC_DELAYS=file` writes every routed arc's tiles and delay.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
