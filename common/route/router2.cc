@@ -503,6 +503,8 @@ struct Router2
         auto &wd = flat_wires[wire_idx];
         const WireId wire = wd.w;
         auto &nd = nets.at(net->udata);
+        if (repair_mode)
+            return default_base_cost(ctx, wire, pip, crit_weight); // design 19.9: delay alone, over free wires
         float base_cost = cfg.get_base_cost(ctx, wire, pip, crit_weight);
         int overuse = wd.curr_cong;
         // Legality (present + accumulated-history congestion) must pressure ALL nets, not just
@@ -830,6 +832,113 @@ struct Router2
                (tmg.get_setup_slack(CellPortKey(net->users.at(usr_idx))) < (2 * ctx->getDelayEpsilon()));
     }
 
+    // Design 19.9: set while timing_repair() re-routes an arc by delay over free wires.
+    bool repair_mode = false;
+    float arc_base_cost(WireId wire, PipId pip, float crit_weight)
+    {
+        return repair_mode ? default_base_cost(ctx, wire, pip, crit_weight)
+                           : cfg.get_base_cost(ctx, wire, pip, crit_weight);
+    }
+
+    // The pips from an arc's sink back to the net's source, as ripup_arc walks them.
+    std::vector<std::pair<int, PipId>> arc_route(NetInfo *net, store_index<PortRef> user, size_t phys_pin)
+    {
+        std::vector<std::pair<int, PipId>> route;
+        auto &nd = nets.at(net->udata);
+        auto &ad = nd.arcs.at(user.idx()).at(phys_pin);
+        WireId cursor = ad.sink_wire;
+        while (cursor != nd.src_wire &&
+               (net->constant_value == IdString() || ctx->getWireConstantValue(cursor) == net->constant_value)) {
+            PipId pip = nd.wires.at(cursor).first;
+            route.emplace_back(wire_index(cursor), pip);
+            cursor = ctx->getPipSrcWire(pip);
+        }
+        return route;
+    }
+
+    float route_pip_delay(const std::vector<std::pair<int, PipId>> &route)
+    {
+        float delay = 0;
+        for (auto &step : route)
+            delay += default_base_cost(ctx, flat_wires.at(step.first).w, step.second, 1.0f);
+        return delay;
+    }
+
+    // Design 19.9: after convergence, re-route the critical arcs by delay alone over the wires no other net
+    // holds; keep a new route only when its pip delay is lower, otherwise restore the old one exactly. No wire
+    // another net uses is ever taken, so no overuse can appear; router1's check still certifies the result.
+    void timing_repair()
+    {
+        for (int round = 1; round <= cfg.repair_rounds; round++) {
+            tmg.run(false);
+            struct Candidate
+            {
+                float crit;
+                int udata;
+                store_index<PortRef> user;
+                size_t phys_pin;
+            };
+            std::vector<Candidate> candidates;
+            for (auto net : nets_by_udata) {
+                if (net->driver.cell == nullptr || is_dedi_const_net(net) || net->constant_value != IdString())
+                    continue;
+                auto &nd = nets.at(net->udata);
+                for (auto usr : net->users.enumerate()) {
+                    float crit = get_arc_crit(net, usr.index);
+                    if (crit < cfg.repair_crit)
+                        continue;
+                    for (size_t pin = 0; pin < nd.arcs.at(usr.index.idx()).size(); pin++)
+                        if (nd.arcs.at(usr.index.idx()).at(pin).routed &&
+                            !nd.arcs.at(usr.index.idx()).at(pin).pre_routed)
+                            candidates.push_back(Candidate{crit, net->udata, usr.index, pin});
+                }
+            }
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [](const Candidate &a, const Candidate &b) { return a.crit > b.crit; });
+            int improved = 0, restored = 0;
+            float saved = 0;
+            // A fixed seed per round keeps the repair deterministic without drawing from the context's RNG.
+            ThreadContext st;
+            st.rng.rngseed(0x19090000ULL + uint64_t(round));
+            st.bb = BoundingBox(0, 0, std::numeric_limits<int>::max(), std::numeric_limits<int>::max());
+            repair_mode = true;
+            for (auto &c : candidates) {
+                NetInfo *net = nets_by_udata.at(c.udata);
+                auto &nd = nets.at(c.udata);
+                auto &ad = nd.arcs.at(c.user.idx()).at(c.phys_pin);
+                auto old_route = arc_route(net, c.user, c.phys_pin);
+                float old_delay = route_pip_delay(old_route);
+                ripup_arc(net, c.user, c.phys_pin);
+                // route_arc records each routed net's wires for seeding; a repair starts from the source alone.
+                st.processed_sinks.clear();
+                st.wire_by_loc.clear();
+                st.in_wire_by_loc.clear();
+                auto res = route_arc(st, net, c.user, c.phys_pin, false, true);
+                if (res == ARC_RETRY_WITHOUT_BB)
+                    res = route_arc(st, net, c.user, c.phys_pin, false, false);
+                float new_delay = ad.routed ? route_pip_delay(arc_route(net, c.user, c.phys_pin)) : 0;
+                if (res == ARC_SUCCESS && ad.routed && new_delay < old_delay) {
+                    ++improved;
+                    saved += old_delay - new_delay;
+                    continue;
+                }
+                // Restore the old route pip for pip: the net's other arcs still hold their shared wires.
+                ripup_arc(net, c.user, c.phys_pin);
+                for (auto &step : old_route)
+                    bind_pip_internal(nd, c.user, step.first, step.second);
+                ad.routed = true;
+                ++restored;
+            }
+            repair_mode = false;
+            bool bound = bind_and_check_all();
+            log_info("    timing repair round %d: %d critical arcs, %d faster (%.1f ns of pip delay saved), %d kept "
+                     "their route%s\n",
+                     round, int(candidates.size()), improved, saved, restored, bound ? "" : "; ARCH BIND FAILED");
+            if (!bound)
+                break;
+        }
+    }
+
     ArcRouteResult route_arc(ThreadContext &t, NetInfo *net, store_index<PortRef> i, size_t phys_pin, bool is_mt,
                              bool is_bb = true)
     {
@@ -862,7 +971,7 @@ struct Router2
         //     0. starting within a small range of existing routing
         //     1. expanding from all routing
         int mode = 0;
-        if (net->users.entries() < 4 || nd.wires.empty() || (crit > 0.95))
+        if (net->users.entries() < 4 || nd.wires.empty() || (crit > 0.95) || repair_mode)
             mode = 1;
 
         // This records the point where forwards and backwards routing met
@@ -953,7 +1062,7 @@ struct Router2
                         WireId next = ctx->getPipDstWire(dh);
                         int next_idx = wire_index(next);
                         WireScore next_score;
-                        next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, dh, crit_weight);
+                        next_score.delay = curr.score.delay + arc_base_cost(next, dh, crit_weight);
                         next_score.cost =
                                 curr.score.cost + score_wire_for_arc(net, i, phys_pin, next_idx, dh, crit_weight);
                         next_score.togo_cost =
@@ -971,6 +1080,9 @@ struct Router2
                         // Don't allow the same wire to be bound to the same net with a different driving pip
                         auto fnd_wire = nd.wires.find(next);
                         if (fnd_wire != nd.wires.end() && fnd_wire->second.first != dh)
+                            continue;
+                        // Design 19.9: a repair takes only wires no other net holds
+                        if (repair_mode && fnd_wire == nd.wires.end() && nwd.curr_cong > 0)
                             continue;
                         // Don't allow the same resource to be bound to the same net with a different value
                         auto resource_key = ctx->getResourceKeyForPip(dh);
@@ -1029,7 +1141,7 @@ struct Router2
                         WireId next = ctx->getPipSrcWire(uh);
                         int next_idx = wire_index(next);
                         WireScore next_score;
-                        next_score.delay = curr.score.delay + cfg.get_base_cost(ctx, next, uh, crit_weight);
+                        next_score.delay = curr.score.delay + arc_base_cost(next, uh, crit_weight);
                         next_score.cost =
                                 curr.score.cost + score_wire_for_arc(net, i, phys_pin, next_idx, uh, crit_weight);
                         next_score.togo_cost = const_mode
@@ -1045,6 +1157,9 @@ struct Router2
                             continue;
                         // Reserved for another net
                         if (nwd.reserved_net != -1 && nwd.reserved_net != net->udata)
+                            continue;
+                        // Design 19.9: a repair takes only wires no other net holds
+                        if (repair_mode && nwd.curr_cong > 0 && !nd.wires.count(nwd.w))
                             continue;
                         // Don't allow the same resource to be bound to the same net with a different value
                         auto resource_key = ctx->getResourceKeyForPip(uh);
@@ -1916,6 +2031,8 @@ struct Router2
             if (curr_cong_weight < 1e9)
                 curr_cong_weight += cfg.curr_cong_mult;
         } while (!failed_nets.empty());
+        if (cfg.repair_rounds > 0 && timing_driven && !ctx->router_gave_up)
+            timing_repair();
         if (cfg.perf_profile) {
             std::vector<std::pair<int, IdString>> nets_by_runtime;
             for (auto &n : nets_by_udata) {

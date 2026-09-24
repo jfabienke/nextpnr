@@ -1298,6 +1298,8 @@ bool Arch::run_router_phase()
             // be used because they intern their settings key before the checkpoint replays its table.
             cfg.reroute_period = args.router2_reroute;
             cfg.reroute_contested_only = args.router2_reroute_contested;
+            cfg.repair_rounds = args.router2_repair_rounds; // Design 19.9
+            cfg.repair_crit = args.router2_repair_crit;
             if (args.router2_crit_cost) {
                 // Design 19.3: the unit cost for arcs that are not critical, the delay cost for those that are,
                 // blended by router2's own weight w = max(floor, 1 - crit^2). A wire costs w + (1 - w) * delay / U,

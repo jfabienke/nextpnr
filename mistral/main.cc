@@ -150,6 +150,11 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-crit-cost",
                            "router2 costs a wire by blending one unit and its delay by the arc's criticality "
                            "(replaces --router2-unit-cost; off by default; experimental)");
+    specific.add_options()("router2-repair-rounds", po::value<int>(),
+                           "after router2 converges, re-route the critical arcs by delay over unused wires, this "
+                           "many rounds (off by default; experimental)");
+    specific.add_options()("router2-repair-crit", po::value<float>(),
+                           "with --router2-repair-rounds, the criticality an arc needs to be repaired (default 0.9)");
     specific.add_options()("router2-crit-threshold", po::value<float>(),
                            "with --router2-crit-cost, arcs below this criticality (0 to 1) keep the unit cost "
                            "(default 0)");
@@ -278,6 +283,10 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
     chipArgs.router2_crit_cost = vm.count("router2-crit-cost") != 0;
+    if (vm.count("router2-repair-rounds"))
+        chipArgs.router2_repair_rounds = std::max(0, vm["router2-repair-rounds"].as<int>());
+    if (vm.count("router2-repair-crit"))
+        chipArgs.router2_repair_crit = vm["router2-repair-crit"].as<float>();
     if (vm.count("router2-crit-threshold"))
         chipArgs.router2_crit_threshold = vm["router2-crit-threshold"].as<float>();
     chipArgs.register_packing = vm.count("register-packing") != 0;

@@ -83,6 +83,11 @@ struct Router2Cfg
     // the nets that use a wire with accumulated history are queued.
     int reroute_period = 0;
     bool reroute_contested_only = false;
+    // Design 19.9: after the design has converged, repair_rounds rounds re-route every arc of criticality at
+    // least repair_crit by delay alone over wires no other net uses, keeping a new route only when its pip delay
+    // is lower (0 = off).
+    int repair_rounds = 0;
+    float repair_crit = 0.9f;
 
     // Print additional performance profiling information
     bool perf_profile = false;
