@@ -4426,6 +4426,87 @@ median of the four routed seeds, 12.59, equals the set at exponent 7,
 and iterations climb to 96 and 99 on seeds 3 and 4. REJECT against the
 set; the set keeps exponent 7.
 
+### 2026-09-24: Units 19.7 and 19.8 screened: annealer constants negative, delay table neutral
+
+On the core recipe with the Fmax set (promoted, 5563eb6d), seeds 1 and
+2, binary `nextpnr-mistral.u19-78` (`build/quality/sweep_19_78.sh`). The
+reference is the set's own seeds 1 and 2: 13.40 and 12.41.
+
+| Setting | Routed | Fmax | Iterations | Wires |
+| --- | ---: | --- | --- | --- |
+| Fmax set (reference) | 2 | 13.40, 12.41 | 45, 26 | 736,786, 733,044 |
+| `--placement-delay table` (19.8) | 2 | 12.86, 12.98 | 34, 36 | 734,043, 728,594 |
+| `--sa-timing-lambda 0.7` (19.7) | 2 | 12.59, 12.41 | 89, 34 | 746,964, 743,035 |
+| `--sa-timing-lambda 0.9` | 0 | cap of 100 on both | | 801,284, 796,445 |
+| `--sa-crit-exp 4` | 2 | 12.38, 12.07 | 52, 51 | 736,141, 733,218 |
+
+- **19.7 is negative.** A larger timing share in the annealer costs
+  wires, and at 0.9 routability. A softer exponent loses Fmax. The
+  defaults (0.5, 8) stay.
+- **19.8 is neutral on two seeds:** median 12.92 against 12.91, seed 1
+  down 0.54 and seed 2 up 0.57. On the uncrowded probe it cost 18%
+  (35.87 to 29.49 MHz, one seed). Both options stay opt-in. The table is
+  next judged on the current core.
+
+### 2026-09-24: The detour the Fmax set leaves (the measurement of design 19.9)
+
+The Fmax set's routed seeds 1, 2, 3 and 5 were resumed from new
+route-prepared checkpoints (`build/quality/ckpt/core-fset`, binary
+`nextpnr-mistral.u19-78`). They reproduce 13.40, 12.41, 12.93 and 12.48
+exactly. Every arc was dumped (`fset_arcs_s*.csv`) and the critical
+paths split as before.
+
+| Seed | Path | Distance | Detour | Logic | Above the span's median |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 74.7 ns | 37.1 | 23.2 | 13.8 | 13.6 |
+| 2 | 80.6 | 37.1 | 30.8 | 12.1 | 20.1 |
+| 3 | 77.3 | 34.6 | 28.5 | 13.6 | 18.8 |
+| 5 | 80.1 | 40.7 | 23.9 | 15.1 | 15.1 |
+
+Over the four: distance 48%, detour 34%, logic 17%. The detour above
+the median averages 16.9 ns per path, against 24 on the baseline. The
+worst arcs are still plain detours: 11.48 ns for a 3-by-16 arc
+(reference 1.55), and 7.64 ns for 29 by 6 (reference 2.12). That is
+enough to build 19.9.
+
+### 2026-09-24: Unit 19.9: timing repair raises every seed, 12.59 to 13.28 MHz
+
+`--router2-repair-rounds N --router2-repair-crit C`. It resumes from the
+Fmax set's route-prepared checkpoints (`core-fset`, binary
+`nextpnr-mistral.u19-9`), so every seed has the set's own placement, and
+the router is identical up to convergence.
+
+- **Probe.** Two rounds at C = 0.9 on the default path: 1,372 critical
+  arcs, 107 and then 14 faster, 35.87 to 36.69 MHz. Under the unit cost:
+  34.56 to 37.48. router1's check passes.
+- **Core, C = 0.9.** Only 3 arcs qualify and none is faster, so every
+  seed is unchanged. On the core the critical paths' arcs sit between 0.5
+  and 0.9 in router2's criticality. At C = 0.5, seed 1 repairs 32,730
+  arcs (3,904 faster). At C = 0.1 it repairs 133,313, with the same
+  Fmax.
+
+| Seed | Fmax set | 1 round, C = 0.5 | 2 rounds, C = 0.5 |
+| ---: | ---: | ---: | ---: |
+| 1 | 13.40 | 14.19 | 14.20 |
+| 2 | 12.41 | 13.18 | 13.76 |
+| 3 | 12.93 | 13.24 | 13.28 |
+| 4 | 12.59 | 13.08 | 13.21 |
+| 5 | 12.48 | 12.61 | 12.68 |
+| Median | 12.59 | 13.18 | 13.28 |
+
+- **Every seed gains** at two rounds, from 0.20 to 1.35 MHz on the same
+  placement, and routes legally. Router time grows by 4 to 7 s.
+- **Against the Fmax set: REJECT.** The median gains 0.69, below that
+  set's seed spread of 0.99.
+- **Against the original baseline: ACCEPT** (+2.11 MHz).
+- **The rule's reference is placement variance.** The spread the rule
+  compares against is how much placements differ from seed to seed. A
+  change that leaves every placement alone and gains on all five of them
+  is judged against a variance it does not have. That is a question for
+  the rule's owner.
+
+The option stays opt-in.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
