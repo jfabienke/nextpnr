@@ -855,10 +855,11 @@ void Arch::report_legalisation_stall(const std::vector<CellInfo *> &stuck) const
     long inputs_total = 0;
     for (uint32_t lab = 0; lab < labs.size(); lab++) {
         const auto &ld = labs.at(lab);
-        int inputs = 0;
+        int inputs = args.lab_input_nets && !ld.is_mlab ? ld.net_demand : 0; // design 19.10
         for (int i = 0; i < 10; i++) {
             const auto &alm = ld.alms.at(i);
-            inputs += alm.unique_input_count;
+            if (!args.lab_input_nets || ld.is_mlab)
+                inputs += alm.unique_input_count;
             const CellInfo *l0 = getBoundBelCell(alm.lut_bels[0]);
             const CellInfo *l1 = getBoundBelCell(alm.lut_bels[1]);
             alms_total++;
@@ -998,6 +999,10 @@ bool Arch::run_placement()
             }
             cfg.place_cluster_transaction = [](Context *owner, const std::vector<std::pair<CellInfo *, BelId>> &targets,
                                                const HeAPDisplacedBindings &displaced) {
+                // Design 19.10: the detached evaluators count LAB inputs per ALM; under the distinct-net
+                // model a cluster takes the live path, which binds and asks isBelLocationValid.
+                if (owner->args.lab_input_nets)
+                    return HeAPClusterTransactionOutcome::Unsupported;
                 auto prepared =
                         prepare_placement_transaction(*owner, placement_edits_for_candidate(targets, displaced));
                 if (!prepared)

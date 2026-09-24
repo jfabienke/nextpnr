@@ -80,6 +80,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"router2_crit_threshold", double(a.router2_crit_threshold)},
             {"router2_repair_rounds", a.router2_repair_rounds},
             {"router2_repair_crit", double(a.router2_repair_crit)},
+            {"lab_input_nets", a.lab_input_nets},
             {"router2_reroute", a.router2_reroute},
             {"router2_reroute_contested", a.router2_reroute_contested},
             {"lab_tile_scan", a.lab_tile_scan},

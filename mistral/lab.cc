@@ -574,8 +574,204 @@ template <typename Bound> int Arch::alm_input_count_with(const ALMInfo &alm_data
     return total_inputs;
 }
 
+// Design 19.10: the distinct-net LAB input demand. A net needs an input line into a LAB when a cell of the LAB
+// uses it on a data pin (a LUT input, a register's data or synchronous data) and no LUT of the LAB drives it: a
+// LUT's output reaches the LAB's own ALMs on local lines, a register's first output does not. The per-ALM count
+// above counts a net once per ALM it enters; the hardware carries it on one line.
+namespace {
+bool is_lut_bel_type(IdString type) { return type == id_MISTRAL_COMB || type == id_MISTRAL_MCOMB; }
+
+// Calls f(net) for each data pin of a cell on a bel of the given kind (a pin per call, repeats included).
+template <typename F> void for_data_nets(const CellInfo *cell, bool lut, F f)
+{
+    if (lut) {
+        for (int i = 0; i < cell->combInfo.lut_input_count; i++)
+            if (cell->combInfo.lut_in[i])
+                f(cell->combInfo.lut_in[i]);
+    } else {
+        if (cell->ffInfo.datain)
+            f(cell->ffInfo.datain);
+        if (cell->ffInfo.sdata)
+            f(cell->ffInfo.sdata);
+    }
+}
+
+// A tiny net -> count list for the affected nets of one change.
+struct NetDeltas
+{
+    std::array<std::pair<const NetInfo *, int>, 8 * BelOverlay::MAX * 2> items{};
+    unsigned count = 0;
+    void add(const NetInfo *net, int k)
+    {
+        for (unsigned i = 0; i < count; i++)
+            if (items[i].first == net) {
+                items[i].second += k;
+                return;
+            }
+        NPNR_ASSERT(count < items.size());
+        items[count++] = {net, k};
+    }
+};
+
+int uses_of(const LABInfo &lab, const NetInfo *net)
+{
+    for (auto &u : lab.net_uses)
+        if (u.first == net)
+            return u.second;
+    return 0;
+}
+} // namespace
+
+// True when a LUT of the LAB drives the net (or nothing drives it: it needs no line). `moving` sits on
+// `moving_bel` for this question (BelId() = not placed), whatever its binding says.
+bool Arch::lab_net_internal(const NetInfo *net, uint32_t lab, const CellInfo *moving, BelId moving_bel) const
+{
+    const CellInfo *driver = net->driver.cell;
+    if (driver == nullptr)
+        return true;
+    const BelId bel = driver == moving ? moving_bel : driver->bel;
+    if (bel == BelId())
+        return false;
+    const auto &data = bel_data(bel);
+    return is_lut_bel_type(data.type) && data.lab_data.lab == lab;
+}
+
+void Arch::lab_demand_apply(const CellInfo *cell, BelId bel, bool binding)
+{
+    const auto &data = bel_data(bel);
+    if (!data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF))
+        return;
+    const uint32_t lab_index = data.lab_data.lab;
+    auto &lab = labs[lab_index];
+    const bool lut = data.type != id_MISTRAL_FF;
+    NetDeltas deltas;
+    for_data_nets(cell, lut, [&](const NetInfo *net) { deltas.add(net, 1); });
+    if (lut && cell->combInfo.comb_out)
+        deltas.add(cell->combInfo.comb_out, 0); // its sinks here change from outside to inside the LAB
+    for (unsigned i = 0; i < deltas.count; i++) {
+        const NetInfo *net = deltas.items[i].first;
+        const int k = deltas.items[i].second;
+        auto found = std::find_if(lab.net_uses.begin(), lab.net_uses.end(),
+                                  [&](const std::pair<const NetInfo *, int> &u) { return u.first == net; });
+        const int before = found == lab.net_uses.end() ? 0 : found->second;
+        const int after = binding ? before + k : before - k;
+        NPNR_ASSERT(after >= 0);
+        const bool internal_before = lab_net_internal(net, lab_index, cell, binding ? BelId() : bel);
+        const bool internal_after = lab_net_internal(net, lab_index, cell, binding ? bel : BelId());
+        lab.net_demand += int(after > 0 && !internal_after) - int(before > 0 && !internal_before);
+        if (found == lab.net_uses.end()) {
+            if (after > 0)
+                lab.net_uses.emplace_back(net, after);
+        } else if (after == 0) {
+            *found = lab.net_uses.back();
+            lab.net_uses.pop_back();
+        } else {
+            found->second = after;
+        }
+    }
+    static const bool check = getenv("MISTRAL_CHECK_LAB_DEMAND") != nullptr;
+    if (check) {
+        // On an unbind this runs while the cell still sits on its bel; count it as gone.
+        const int fresh = lab_demand_with(
+                lab_index,
+                [&](BelId b) -> const CellInfo * { return (!binding && b == bel) ? nullptr : bel_data(b).bound; },
+                [&](const CellInfo *c) { return (!binding && c == cell) ? BelId() : c->bel; });
+        if (fresh != lab.net_demand)
+            log_error("LAB %u input demand %d after %s %s, recomputed %d\n", lab_index, lab.net_demand,
+                      binding ? "binding" : "unbinding", nameOf(cell), fresh);
+    }
+}
+
+// The demand of a LAB from scratch, with its occupants from bound(bel) and every driver's bel from where(cell).
+template <typename Bound, typename Where> int Arch::lab_demand_with(uint32_t lab, Bound bound, Where where) const
+{
+    std::vector<const NetInfo *> nets;
+    for (const auto &alm : labs[lab].alms) {
+        for (BelId b : alm.lut_bels)
+            if (const CellInfo *c = bound(b))
+                for_data_nets(c, true, [&](const NetInfo *n) { nets.push_back(n); });
+        for (BelId b : alm.ff_bels)
+            if (const CellInfo *c = bound(b))
+                for_data_nets(c, false, [&](const NetInfo *n) { nets.push_back(n); });
+    }
+    std::sort(nets.begin(), nets.end());
+    nets.erase(std::unique(nets.begin(), nets.end()), nets.end());
+    int demand = 0;
+    for (const NetInfo *n : nets) {
+        const CellInfo *driver = n->driver.cell;
+        if (driver == nullptr)
+            continue;
+        const BelId b = where(driver);
+        if (b != BelId() && is_lut_bel_type(bel_data(b).type) && bel_data(b).lab_data.lab == lab)
+            continue;
+        ++demand;
+    }
+    return demand;
+}
+
+// The demand under an overlay, from the live demand and the overlay's changes only.
+int Arch::lab_demand_overlay(uint32_t lab_index, const BelOverlay &overlay) const
+{
+    const auto &lab = labs[lab_index];
+    // Where a cell sits under the overlay.
+    auto where = [&](const CellInfo *c) -> BelId {
+        for (unsigned i = 0; i < overlay.count; i++)
+            if (overlay.cells[i] == c)
+                return overlay.bels[i];
+        if (c->bel != BelId() && overlay.lookup(c->bel, c) != c)
+            return BelId(); // displaced and not re-placed by the overlay
+        return c->bel;
+    };
+    NetDeltas deltas;
+    auto outputs = [&](const CellInfo *c, bool lut) {
+        if (c && lut && c->combInfo.comb_out)
+            deltas.add(c->combInfo.comb_out, 0);
+    };
+    for (unsigned i = 0; i < overlay.count; i++) {
+        const BelId b = overlay.bels[i];
+        const auto &data = bel_data(b);
+        if (!data.type.in(id_MISTRAL_COMB, id_MISTRAL_MCOMB, id_MISTRAL_FF))
+            continue;
+        const bool lut = data.type != id_MISTRAL_FF;
+        const CellInfo *old_cell = data.bound;
+        const CellInfo *new_cell = overlay.cells[i];
+        // A LUT moving anywhere can turn its net's sinks here inside or outside the LAB.
+        outputs(old_cell, lut);
+        outputs(new_cell, lut);
+        if (data.lab_data.lab != lab_index || old_cell == new_cell)
+            continue;
+        if (old_cell)
+            for_data_nets(old_cell, lut, [&](const NetInfo *n) { deltas.add(n, -1); });
+        if (new_cell)
+            for_data_nets(new_cell, lut, [&](const NetInfo *n) { deltas.add(n, 1); });
+    }
+    int demand = lab.net_demand;
+    for (unsigned i = 0; i < deltas.count; i++) {
+        const NetInfo *net = deltas.items[i].first;
+        const int live = uses_of(lab, net);
+        const int after = live + deltas.items[i].second;
+        const bool internal_live = lab_net_internal(net, lab_index, nullptr, BelId());
+        bool internal_after = true;
+        if (const CellInfo *driver = net->driver.cell) {
+            const BelId b = where(driver);
+            internal_after = b != BelId() && is_lut_bel_type(bel_data(b).type) && bel_data(b).lab_data.lab == lab_index;
+        }
+        demand += int(after > 0 && !internal_after) - int(live > 0 && !internal_live);
+    }
+    static const bool check = getenv("MISTRAL_CHECK_LAB_DEMAND") != nullptr;
+    if (check) {
+        const int fresh =
+                lab_demand_with(lab_index, [&](BelId b) { return overlay.lookup(b, bel_data(b).bound); }, where);
+        if (fresh != demand)
+            log_error("LAB %u overlay input demand %d, recomputed %d\n", lab_index, demand, fresh);
+    }
+    return demand;
+}
+
 bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const
 {
+    if (args.lab_input_nets && !labs[lab].is_mlab)
+        return lab_demand_overlay(lab, overlay) <= resolved_lab_input_limit();
     // Stored counts for untouched ALMs, recomputed counts for ALMs the overlay changes.
     int count = 0;
     const auto &lab_data = labs[lab];
@@ -590,6 +786,8 @@ bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay
 
 bool Arch::check_lab_input_count(uint32_t lab) const
 {
+    if (args.lab_input_nets && !labs[lab].is_mlab)
+        return labs[lab].net_demand <= resolved_lab_input_limit(); // design 19.10
     // There are only 46 TD signals available to route signals from general routing to the ALM input. Currently, we
     // check the total sum of ALM inputs is less than 42; 46 minus 4 FF control inputs. This is a conservative check for
     // several reasons, because LD signals are also available for feedback routing from ALM output to input, and because

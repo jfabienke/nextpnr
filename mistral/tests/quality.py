@@ -57,6 +57,9 @@ CONFIGS = {
                     '--router2-crit-cost', '--router2-crit-threshold', '0', '--router2-repair-rounds', '2',
                     '--router2-repair-crit', '0.5'],
     },
+    # The same recipe on the 2026-09-24 core (12.4% more logic; fabi386's build/openflow/core_probe.json),
+    # which the per-ALM input count cannot place (tracker, 2026-09-24).
+    'core0924': None,
     # The exec probe on the default path, as the gate runs it: a smoke test, not crowded.
     'probe': {
         'inputs': ['--json', 'build/fabi386-inputs/f386_exec_probe_nodsp.json', '--qsf',
@@ -65,6 +68,9 @@ CONFIGS = {
                     '--freq', '12', '--router2-max-iter', '100', '--lab-controls', 'legacy'],
     },
 }
+CONFIGS['core0924'] = {'inputs': ['--json', 'build/stage6-fullcore/core-20260924/core_probe.json', '--qsf',
+                                   'build/stage6-fullcore/core_probe.qsf'],
+                        'options': CONFIGS['core']['options']}
 LAB_BELS = ('MISTRAL_COMB', 'MISTRAL_MCOMB', 'MISTRAL_FF')
 # Wire categories as Quartus's fit report counts them (tracker, "The core against Quartus"): row
 # wires R3/R6/R14, column wires C2/C4/C12, LAB input lines (block), local lines (a LAB into itself).

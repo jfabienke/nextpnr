@@ -150,6 +150,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-crit-cost",
                            "router2 costs a wire by blending one unit and its delay by the arc's criticality "
                            "(replaces --router2-unit-cost; off by default; experimental)");
+    specific.add_options()("lab-input-model", po::value<std::string>(),
+                           "LAB input limit counts count (each ALM's unique inputs, summed; default) or nets (the "
+                           "distinct nets a LAB needs lines for; experimental, --lab-legality legacy only)");
     specific.add_options()("router2-repair-rounds", po::value<int>(),
                            "after router2 converges, re-route the critical arcs by delay over unused wires, this "
                            "many rounds (off by default; experimental)");
@@ -235,6 +238,15 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     else
         log_error("Unknown --lab-legality mode '%s'; use legacy, shadow, verify, or rust.\n", legality_mode.c_str());
     require_lab_legality_mode(chipArgs.lab_legality);
+    if (vm.count("lab-input-model")) {
+        const auto model = vm["lab-input-model"].as<std::string>();
+        if (model != "count" && model != "nets")
+            log_error("--lab-input-model must be count or nets, not '%s'\n", model.c_str());
+        chipArgs.lab_input_nets = model == "nets";
+        // Design 19.10, phase A: the C++ rules only; the Rust evaluator still counts per ALM.
+        if (chipArgs.lab_input_nets && chipArgs.lab_legality != LabLegalityMode::Legacy)
+            log_error("--lab-input-model nets needs --lab-legality legacy until the Rust rules have it.\n");
+    }
     const auto reuse_mode = vm["lab-reuse"].as<std::string>();
     if (reuse_mode == "off")
         chipArgs.lab_reuse = LabReuseMode::Off;

@@ -75,6 +75,7 @@ struct ArchArgs
     bool router2_crit_cost = false;         // Design 19.3: unit cost for non-critical arcs, delay cost for critical
     float router2_crit_threshold = 0;       // Design 19.3b: arcs below this criticality keep the unit cost
     int router2_repair_rounds = 0;          // Design 19.9: timing repair rounds after convergence; 0 = off
+    bool lab_input_nets = false;            // Design 19.10: the LAB input limit counts distinct nets
     float router2_repair_crit = 0.9f;       // Design 19.9: the criticality an arc needs to be repaired
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
@@ -128,6 +129,10 @@ struct LABInfo
     WireId sclr_wire, sload_wire;
     // TODO: LAB configuration (control set etc)
     std::array<bool, 2> aclr_used;
+    // Design 19.10: the data-pin uses of each net by the LAB's cells, and the distinct-net demand: the nets
+    // with a use here that no LUT of this LAB drives. Kept by bindBel/unbindBel under --lab-input-model nets.
+    std::vector<std::pair<const NetInfo *, int>> net_uses;
+    int net_demand = 0;
 };
 
 // A tiny occupancy overlay: up to MAX BELs whose occupant differs from the
@@ -521,6 +526,8 @@ struct Arch : BaseArch<ArchRanges>
                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)),
                     int(strength));
         update_bel(bel);
+        if (args.lab_input_nets)
+            lab_demand_apply(cell, bel, true);
         note_lab_binding(data);
         placement_revision.note_mutation(PlacementMutation::BelBinding);
     }
@@ -532,6 +539,8 @@ struct Arch : BaseArch<ArchRanges>
         if (data.bound->type == id_altera_pll && vup_trace_pll)
             fprintf(stderr, "  [trace] unbind '%s' from FPLL(%d,%d)\n", data.bound->name.c_str(this),
                     CycloneV::pos2x(CycloneV::pos_t(bel.pos)), CycloneV::pos2y(CycloneV::pos_t(bel.pos)));
+        if (args.lab_input_nets)
+            lab_demand_apply(data.bound, bel, false); // while the cell still sits on the bel
         data.bound->bel = BelId();
         data.bound->belStrength = STRENGTH_NONE;
         data.bound = nullptr;
@@ -942,7 +951,13 @@ struct Arch : BaseArch<ArchRanges>
     void lab_reuse_begin();
     void lab_reuse_end();
     bool check_lab_input_count(uint32_t lab) const; // lab.cc
-    bool check_mlab_groups(uint32_t lab) const;     // lab.cc
+    // Design 19.10 (lab.cc): the distinct-net LAB input demand.
+    void lab_demand_apply(const CellInfo *cell, BelId bel, bool binding);
+    bool lab_net_internal(const NetInfo *net, uint32_t lab, const CellInfo *moving, BelId moving_bel) const;
+    int lab_demand_overlay(uint32_t lab, const BelOverlay &overlay) const;
+    template <typename Bound, typename Where> int lab_demand_with(uint32_t lab, Bound bound, Where where) const;
+    int lab_demand(uint32_t lab) const { return labs[lab].net_demand; }
+    bool check_mlab_groups(uint32_t lab) const; // lab.cc
 
     void assign_comb_info(CellInfo *cell) const; // lab.cc
     void assign_ff_info(CellInfo *cell) const;   // lab.cc
