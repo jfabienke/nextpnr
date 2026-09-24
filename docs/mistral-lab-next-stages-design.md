@@ -2549,3 +2549,77 @@ check certified every run.
   routing context that still held the previous net's wires; route_arc
   then traced a path back to another net's wire and asserted. A repair
   now seeds from the source alone.
+
+### 19.10 The LAB input count by distinct nets (the LAB rules, C++ then Rust)
+
+**Why.** Today's Fabi386 core does not place (tracker, 2026-09-24): every
+LAB is in use, and the binding limit is the LAB input count of 42, not
+ALMs (60% in use). The count sums each ALM's unique inputs. A net that
+enters several ALMs of one LAB counts once per ALM, though the hardware
+carries it on one input line (TD), and nets driven inside the LAB count
+too. Measured on the routed Fmax set of the 2026-09-17 core, seeds 1
+and 2 (`build/quality/lab_lines.py`):
+
+| Per LAB (mean) | Seed 1 |
+| --- | ---: |
+| The count (sum of each ALM's unique data inputs) | 36.3 |
+| Distinct data nets from outside the LAB | 23.4 |
+| Data nets driven inside the LAB, all by registers | 7.3 |
+| Input lines the route uses (TD) | 29.0 |
+| Local lines the route uses (LD) | 1.1 |
+
+The distinct-net demand is every distinct net on a data pin (LUT inputs,
+register data and synchronous data) that is not driven by a LUT of the
+same LAB. It predicts the input lines the route uses:
+
+| Demand | LABs (seed 1) | Input lines used: median, 95th percentile, max |
+| ---: | ---: | --- |
+| 24 to 27 | 559 | 27, 32, 35 |
+| 32 to 35 | 729 | 33, 37, 40 |
+| 36 to 39 | 631 | 35, 40, 43 |
+| 40 to 43 | 729 | 38, 42, 44 |
+
+Seed 2 is the same within one line. The demand averages 30.7 where the
+count averages 36.3, so a limit on the demand admits about 15% more logic
+per LAB. The router already delivers the lines that demand implies: it
+never used more than 44 of the 46. A LUT-driven net inside the LAB
+reaches its sinks by local lines. A register-driven one does not: the
+first register of a half has no local output, and the second one's (`L`)
+is closed by the rule 19.4 would lift. This is why registers are the
+cells left over on the current core.
+
+A per-class count (A/C 25 lines, B/D 21, E 22, F 24; section 9.2) was
+tried on the same data. Its bound reaches 61 lines where the route never
+used more than 44, because the netlist's LUT pin names are not the
+physical pins. It is not the model.
+
+**Design.**
+- **The model.** `--lab-input-model count|nets` selects between today's
+  per-ALM sum (`count`, the default) and the distinct-net demand
+  (`nets`). The limit stays `resolved_lab_input_limit()` (42, or
+  `MISTRAL_LAB_INPUT_LIMIT`). The ALM rule (eight inputs per ALM, the
+  E/F rules) is unchanged: it is the per-ALM check.
+- **Upkeep.** The demand is kept incrementally per LAB: a map from net
+  to its data-pin uses in the LAB, and the set of nets whose driver is a
+  LUT of the LAB. It is updated where the ALM input counts are updated
+  today (`update_alm_input_count`, the LAB version hooks). The check
+  reads a counter. The overlay form (`check_lab_input_count_overlay`)
+  adjusts that counter by the overlay's bels only.
+- **Phase A, C++ only.** Under `--lab-legality legacy`, with the Rust
+  authority refusing `nets` until phase B. Measure on the 2026-09-17
+  core (cells per LAB, LABs used, routing, Fmax: the quality rule over
+  five seeds), then on today's core (does it place and route).
+- **Phase B, Rust, only if phase A pays.** The same model in
+  `rules.rs` and the resident session, whose facts already carry the
+  nets. That means the verify harness, a property test whose generator
+  finds LABs where the two models disagree, a mutation check, and the
+  core's checksums in verify mode, the three guards CLAUDE.md sets for
+  a rule change. It reopens the concluded crate for a rules revision,
+  which needs its own decision row.
+
+**Risk.** Denser LABs raise the fabric demand around them, and the
+measurement above comes from placements the old count made. Whether
+router2 delivers at the new density is exactly what phase A measures.
+If it does not, the limit on the demand (below 42) is the setting to
+screen, not a new mechanism. Faster checks are not expected. Placement
+changes and the RNG sequence with it.

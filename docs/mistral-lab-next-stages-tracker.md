@@ -4545,6 +4545,22 @@ the first pass. Quartus fitted the old core in 3,219 LABs. The Fmax work
 continues on the 2026-09-17 netlist; the current core needs a density
 unit (an input-line count that matches the hardware, and 19.4).
 
+### 2026-09-24: How many input lines a LAB really uses (the measurement of design 19.10)
+
+On the routed Fmax set of the 2026-09-17 core, seed 1, from each net's
+`ROUTING` attribute (`build/quality/lab_lines.py`):
+- nextpnr's count averages 36.3 per LAB;
+- distinct data nets from outside the LAB average 23.4, and register-driven
+  nets inside it 7.3;
+- the route uses 29.0 input lines and 1.1 local lines per LAB.
+
+In the 1,539 LABs at the count's limit of 42, the route uses 35.2 lines
+on average and at most 44 of 46. The distinct-net demand (every net on a
+data pin not driven by a LUT of the same LAB) tracks the lines used within
+two lines at the median, on seeds 1 and 2; the table is in design 19.10.
+A per-class bound from the netlist's pin names reaches 61, above anything
+the route used, so pin names are not physical pins.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
