@@ -76,6 +76,7 @@ struct ArchArgs
     float router2_crit_threshold = 0;       // Design 19.3b: arcs below this criticality keep the unit cost
     int router2_repair_rounds = 0;          // Design 19.9: timing repair rounds after convergence; 0 = off
     bool lab_input_nets = false;            // Design 19.10: the LAB input limit counts distinct nets
+    bool lab_global_clocks = false;         // Design 19.11: globally routed clocks take no LAB DATAIN line
     float router2_repair_crit = 0.9f;       // Design 19.9: the criticality an arc needs to be repaired
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON

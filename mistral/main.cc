@@ -150,6 +150,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-crit-cost",
                            "router2 costs a wire by blending one unit and its delay by the arc's criticality "
                            "(replaces --router2-unit-cost; off by default; experimental)");
+    specific.add_options()("lab-global-clocks",
+                           "clocks the global network carries take no LAB DATAIN line in the control model, freeing "
+                           "it for a third enable (off by default; experimental)");
     specific.add_options()("lab-input-model", po::value<std::string>(),
                            "LAB input limit counts count (each ALM's unique inputs, summed; default) or nets (the "
                            "distinct nets a LAB needs lines for; experimental, --lab-legality legacy only)");
@@ -295,6 +298,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     chipArgs.router2_reroute_contested = vm.count("router2-reroute-contested") != 0;
     chipArgs.router2_unit_cost = vm.count("router2-unit-cost") != 0;
     chipArgs.router2_crit_cost = vm.count("router2-crit-cost") != 0;
+    chipArgs.lab_global_clocks = vm.count("lab-global-clocks") != 0;
     if (vm.count("router2-repair-rounds"))
         chipArgs.router2_repair_rounds = std::max(0, vm["router2-repair-rounds"].as<int>());
     if (vm.count("router2-repair-crit"))

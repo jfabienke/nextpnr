@@ -4604,6 +4604,51 @@ and over for the LAB input limit (45 counted in the LABs tried), and then
 a microcode LUT hits the per-cell attempt limit. The cause is not yet
 known.
 
+### 2026-09-25: The cause: global clocks were never flagged, and every LAB lost a DATAIN line
+
+Register packing's early failure on the 2026-09-24 core, traced:
+
+- **Not a search limit.** Raising the per-cell attempt limit fourfold and
+  eightfold (`--placer-heap-cell-placement-timeout 2` and `1`; the option
+  is a divisor) fails on the same cell at the same point.
+- **A control conflict in every LAB.** `MISTRAL_DEBUG_CLUSTER_REJECT`
+  now takes a count, and `MISTRAL_DEBUG_CLUSTER_REJECT_LAB` lists a
+  rejected LAB's registers and the cluster's targets. The failing
+  cluster (a 5-input LUT, a 2-input LUT, and a register with a fabric
+  enable and the `eflags_we` clear, shared by 4,462 registers) was
+  refused in 4,061 distinct LABs, every time for LAB control reason 21,
+  a DATAIN conflict.
+- **The cause is a model omission.** A LAB has four DATAIN lines for
+  fabric-driven control signals. The control model gives one to the
+  clock unless the clock net is global. The mistral arch never sets
+  `NetInfo::is_global`, and neither does upstream nextpnr, so the core
+  clock, which the global router carries to the LAB's clock input,
+  holds `DATAIN[0]` in every LAB. With the clear on a second line, a LAB
+  admits one other enable, and the core has 270.
+
+**Quartus agrees that `DATAIN[0]` can carry an enable.** The test design
+has three registers in LAB (85, 27), each with its own enable from a pin,
+and a clock on pin V11 (`build/stage6-fullcore/en3test/`; NAS01
+`fabi386_jobs/en3test_20260925`).
+- **nextpnr without the flag** refuses the placement.
+- **With the flag,** it routes the enables into `DATAIN.0`, `.2` and
+  `.3`, and the clock into `CLKIN.0` from `XCLKB2A.085.027.0005`.
+- **Quartus 17.0.2** uses the same four inputs. The clock and enable
+  settings agree bit for bit (`BCLK_SEL.0 CLK1`, `TCLK_SEL.0 CLK0`,
+  `TCLK_SEL.1 CLK2`, `EN0/1/2_NINV 0`). The differences are the
+  registers' data-path encoding (`PKREG` against `MODE`) and where each
+  tool put the output XOR.
+
+**`--lab-global-clocks`** flags every net driven by a clock buffer, a
+clock enable block, or a PLL counter as global. The flag is set in
+`assignArchInfo`, so it holds after packing and on every checkpoint
+restore.
+- **Probe:** verify mode has 2,080,187 evaluations and 0 mismatches. A
+  run resumed from its route-prepared checkpoint equals the
+  uninterrupted run (`0xb890eb09`, 32.73 MHz).
+- **2026-09-24 core:** the old recipe now places seeds 1 and 2 (163 s,
+  314 s), where it failed in the first pass before.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

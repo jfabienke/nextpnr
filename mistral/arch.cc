@@ -687,6 +687,16 @@ void Arch::assign_default_pinmap(CellInfo *cell)
 
 void Arch::assignArchInfo()
 {
+    // Design 19.11: a net the global router carries (driven by a clock buffer, a clock enable block, or a PLL
+    // counter) reaches a LAB's registers through the LAB's clock input, not a DATAIN line (Quartus's fit of the same
+    // three-enable LAB agrees, tracker 2026-09-25). Flagged global, the control model stops reserving DATAIN[0] for
+    // it, and a third enable may take that line. Runs after packing and on every checkpoint restore.
+    if (args.lab_global_clocks)
+        for (auto &net : nets) {
+            const CellInfo *driver = net.second->driver.cell;
+            if (driver && driver->type.in(id_MISTRAL_CLKENA, id_MISTRAL_CLKBUF, id_MISTRAL_PLLCLK))
+                net.second->is_global = true;
+        }
     for (auto &cell : cells) {
         CellInfo *ci = cell.second.get();
         // Route-through buffers (MISTRAL_BUF, created by lab_pre_route) sit
@@ -1041,7 +1051,9 @@ bool Arch::run_placement()
                                   *resident ? "admits" : "refuses", assessment.legal ? "admits" : "refuses");
                 }
                 if (!assessment.legal) {
-                    static int debug_left = getenv("MISTRAL_DEBUG_CLUSTER_REJECT") ? 20 : 0;
+                    static int debug_left = getenv("MISTRAL_DEBUG_CLUSTER_REJECT")
+                                                    ? std::max(20, atoi(getenv("MISTRAL_DEBUG_CLUSTER_REJECT")))
+                                                    : 0;
                     if (debug_left > 0) {
                         --debug_left;
                         for (const auto &res : assessment.results)
@@ -1060,6 +1072,24 @@ bool Arch::run_placement()
                                          owner->nameOf(t.first->ffInfo.ctrlset.aclr.net),
                                          owner->nameOf(t.first->ffInfo.ctrlset.sclr.net),
                                          owner->nameOf(t.first->ffInfo.ctrlset.sload.net));
+                        // The LAB's registers as they stand, with their control nets.
+                        static const bool debug_occupants = getenv("MISTRAL_DEBUG_CLUSTER_REJECT_LAB") != nullptr;
+                        if (debug_occupants) {
+                            const auto &lab = owner->labs.at(owner->bel_data(targets.front().second).lab_data.lab);
+                            for (const auto &alm : lab.alms)
+                                for (BelId b : alm.ff_bels)
+                                    if (const CellInfo *ff = owner->getBoundBelCell(b))
+                                        log_info("[cluster-reject]     occupant %s: clk %s ena %s aclr %s sclr %s "
+                                                 "sload %s\n",
+                                                 owner->nameOfBel(b), owner->nameOf(ff->ffInfo.ctrlset.clk.net),
+                                                 owner->nameOf(ff->ffInfo.ctrlset.ena.net),
+                                                 owner->nameOf(ff->ffInfo.ctrlset.aclr.net),
+                                                 owner->nameOf(ff->ffInfo.ctrlset.sclr.net),
+                                                 owner->nameOf(ff->ffInfo.ctrlset.sload.net));
+                            for (const auto &t : targets)
+                                log_info("[cluster-reject]     target %s (%s) at %s\n", owner->nameOf(t.first),
+                                         t.first->type.c_str(owner), owner->nameOfBel(t.second));
+                        }
                     }
                     return HeAPClusterTransactionOutcome::Rejected;
                 }
