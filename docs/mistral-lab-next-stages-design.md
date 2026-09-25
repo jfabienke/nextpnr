@@ -2636,3 +2636,65 @@ had shaped. Packed to the new limit, a LAB's nets reach more pin classes
 than its lines can serve (section 9.2). The density the core needs has
 to come from what the lines must carry (19.4's local register outputs),
 not from a looser count.
+
+## 20. Closing the algorithmic gap to Quartus
+
+After design 19 the 2026-09-17 core reaches a median of 13.28 MHz over five
+seeds, against Quartus 17.0.2's 25.18 MHz on the identical netlist. The
+2026-09-24 core (12.4% more logic) places with `--lab-global-clocks` but
+does not route. The device map is not the gap: libmistral's routing graph
+matches Quartus's resource counts, and every bitstream difference decoded
+side by side (19.4, the three-enable LAB) was a choice, not a missing
+wire. The gap is in the algorithms:
+
+| Old core | nextpnr (recipe) | Quartus |
+| --- | --- | --- |
+| LABs used | about 4,150 | 3,219 |
+| Cells per LAB | 13.2 | 15.9 |
+| LAB entries per net | 1.41 | 0.84 |
+| Fabric wires | about 2x | 1x |
+| Local-line use | about 0.26x | 1x |
+| LUT-register pairs in one ALM | 56% | 95% |
+
+On the exec probe the 1.8x Fmax gap splits into synthesis 1.12x, the
+timing model 1.22x, and placement and routing 1.32x. The aim is that
+today's core routes on the 5CSEBA6 and the core's median Fmax rises well
+beyond 13.3 MHz. Quartus parity is not the aim.
+
+The units, each with its own subsection before code:
+
+- **20.0, the oracle.** Route Quartus's LAB membership with nextpnr,
+  which splits the gap into clustering and routing and orders what
+  follows. It needs:
+  - a name-preserving hand-over (`mistral/tests/quartus_handover.py`: each
+    cell is renamed to a short public name with a map back, and only the
+    wires are enumerated);
+  - a Quartus fit of the netlist as given (physical synthesis off, no
+    merging or removal of cells);
+  - an opt-in `--lab-hint file` that gives HeAP a LAB per cell, reusing
+    19.6's candidate-tile search.
+
+  It also measures why local lines go unused.
+- **20.1, LAB clustering.** Decide which cells share a LAB before
+  placement, grown from critical or connected seeds by an attraction
+  score, and admit each cell through the LAB legality evaluator on a
+  virtual LAB (the V2 capture and evaluate path). Placement follows
+  through the 20.0 hints, and whole-LAB moves if hints do not suffice.
+  Exit: LABs ≤ 3,600, cells per LAB ≥ 15, entries per net ≤ 1.1 on the
+  old core over five seeds, and today's core routes.
+- **20.2, LUT input permutation in the router.** Pseudo-pips from an
+  ALM's physical inputs to a LUT's logical pins, restricted to legal
+  permutations, with the bitstream writer rewriting each mask. It lifts
+  the input-line group wall (section 9.2) that sank 19.10.
+- **20.3, complete register packing.** 19.4 with its silicon test, then
+  register packing for carry-chain outputs.
+- **20.4, timing.** Calibrate the delay model to silicon (30 to 60%
+  pessimistic today, worse with size) and to the oracle fit, and make
+  20.1's attraction timing-driven.
+- **20.5, physical synthesis.** Retiming and duplication, mostly in
+  Yosys. Later, and optional.
+
+20.0 comes first. 20.3 follows whenever the board is online. 20.1 and
+20.2 run in the order 20.0 decides, and 20.4 after 20.1's clusterer
+exists. Every unit keeps section 19's acceptance rule and the legality
+guards, and is measured on the old core and then confirmed on today's.
