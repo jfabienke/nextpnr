@@ -2712,3 +2712,110 @@ not route. Two rules block 86% of the LABs:
 Clustering (20.1) follows both. The local-line measurement points at the
 same two units: half of intra-LAB LUT nets detour for want of a
 permuted pin, and first-register outputs have no local line.
+
+### 20.2 LUT input permutation in the router (the arch; router2 unchanged)
+
+**Why.** `reassign_alm_inputs` (`lab.cc`) fixes each LUT's logical inputs
+to physical ALM pins before routing. The router then has to deliver each
+net to that one pin. That creates two measured walls:
+- **The input-line groups.** Each ALM pin is fed by 21 to 25 of the 46
+  input lines, so a pin fixed in advance forces a line (section 9.2).
+- **The local-line detour.** A local line reaches 42 of the ALM inputs,
+  so half of the intra-LAB LUT nets leave and re-enter (20.0, step 0.4).
+
+Quartus routes LABs with a nextpnr input count of 50 and more because it
+permutes. The code already anticipates this: the TODO at the end of
+`reassign_alm_inputs` proposes pseudo-pips in front of the ALM. The mask
+writer already maps physical pins to logical inputs through each logical
+pin's `bel_pins[0]` (`compute_lut_mask`, "Depermute physical pin").
+
+**The hardware.** In L5 mode an ALM holds two 5-input LUTs. A and B are
+shared by both halves; C, E0 and F0 are the top half's; D, E1 and F1 are
+the bottom half's. A half's LUT reads exactly its five pins, and any
+assignment of its logical inputs to those five is expressible, because
+the mask is rebuilt for the assignment. Excluded:
+- L6 (one 6-input LUT across the ALM);
+- arithmetic cells, whose D0 and D1 are tied to E and F by the carry
+  structure;
+- MLAB LUTRAM;
+- route-through buffers.
+
+These keep today's fixed assignment.
+
+**Design.**
+1. **Pseudo-wires, created with the device** (`--lut-permutation`, in
+   `ArchArgs`, so before the wire numbering of design 17). For every ALM
+   half:
+   - five logical-input wires `LPERM.x.y.alm.half.k`, added as bel pins
+     `P0` to `P4` of the half's COMB bel;
+   - 25 pseudo-pips, one from each of the half's physical pin wires (A,
+     B, C or D, E_h, F_h: the GOUT wires) to each `LPERM` wire, with no
+     delay.
+
+   That is about 420,000 wires and 2.1 million pips on the 5CSEBA6, only
+   when the option is on.
+2. **Pre-route.** `reassign_alm_inputs` keeps its logic for everything it
+   excludes above. For a plain L5 half it maps logical input k to bel pin
+   `Pk` instead of a physical pin. FF route-through and the E/F data
+   paths keep their physical pins, and those wires' occupancy keeps the
+   router from giving them to a LUT input of another net. A net that
+   feeds both halves may use A or B (whose pips reach both halves' `LPERM`
+   wires) or two separate pins.
+3. **Post-route (`Arch::route`, after router2 and router1's check).** For
+   each permuted logical pin:
+   - read the pip that drives its `LPERM` wire; its source is the
+     physical pin;
+   - set `pin_data[pin].bel_pins = {physical}`;
+   - unbind the pseudo-pip and the `LPERM` wire, so the net ends on the
+     physical pin.
+
+   `compute_lut_mask` then rebuilds the mask unchanged, and signoff and
+   the bitstream see only real routing. A post-route check requires that:
+   - each permuted pin is on a pin of its half;
+   - no two logical inputs of a half share a pin;
+   - the net on the physical wire is the logical pin's net.
+
+   Any failure is an error.
+4. **Unchanged:**
+   - the placer: `comb_pinmap` estimates;
+   - the timing model: `getCellDelay` keys on logical ports, as today;
+   - checkpoints: `bel_pins` are serialised; a route-prepared checkpoint
+     carries the `Pk` mapping and resumes under the same option;
+   - router2: it routes to the `LPERM` sink wires.
+
+**Guards.**
+- **Mask test (gtest).** For random LUT functions of 1 to 5 inputs and
+  all assignments to a half's five pins, the rewritten mask evaluated on
+  physical pin values equals the LUT. The hardware index is written
+  independently of `get_phys_pin_val`, from libmistral's LUT model.
+- **Decode check** (`mistral/tests/lut_perm_check.py`). From the routed
+  JSON and the RBF decoded by `mistral-cv`:
+  - recover each LUT's physical pins from the routes and its mask from
+    `LUT_MASK`;
+  - recompute its function;
+  - compare it with the cell's `LUT` parameter.
+
+  This is independent of `compute_lut_mask`. Run on the probe and the
+  core.
+- **Silicon** when the board is back: a golden-checksum design routed
+  with permutation, like 19.4's.
+
+**Measurement.** A routing-only change measured from checkpoints: the
+probe first, then the core's Fmax set, seed by seed (`--kind routing`).
+Expected:
+- fewer TD lines and more LD per intra-LAB net;
+- fewer fabric wires and iterations.
+
+Then the payoff that 20.0 identified, the input count relaxed under
+permutation:
+- 19.10's `--lab-input-model nets` at 42;
+- the per-ALM count's limit raised toward Quartus's median of 50;
+- both on the old core and on today's core.
+
+**Risk.**
+- Memory and graph-import time: measure the wire and pip counts, and the
+  import time, with the option on.
+- `reassign_alm_inputs`'s assumptions about which pins are free (the
+  ALM rule's E/F availability) remain placement-time rules. The router
+  can always fall back to the fixed assignment, so no LAB the rules admit
+  today becomes unroutable in principle.
