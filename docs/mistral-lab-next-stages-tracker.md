@@ -4830,6 +4830,47 @@ ALMs is caught in 15 (the other five hit halves it does not check), and
 swapping the A and C sources in 20 ALMs is caught in 18. Silicon follows
 when the board is back.
 
+### 2026-09-25: The input limit relaxed under permutation: no density on the old core, not enough for today's
+
+The per-ALM LAB input limit (`MISTRAL_LAB_INPUT_LIMIT`) raised under
+`--lut-permutation`, full recipe (binary `nextpnr-mistral.u20-2`).
+
+**Old core, seeds 1 and 2:**
+
+| Limit | Seed 1 | Seed 2 |
+| --- | --- | --- |
+| 42 (`lperm-5s`) | 14.42 | 13.60 |
+| 44 | 14.75 (42 iterations) | 14.08 (57) |
+| 46 | 7 overused at the cap of 100, 7 at 200 | 2 at 100, 2 at 200 |
+| 50 | placement failed | 45 overused at the cap |
+
+**Limit 44 on five seeds (`lp-l44-5s`):**
+- **Fmax:** 14.75, 14.08, 14.33, 14.10, 13.61; median 14.10, against
+  14.09 at 42 and 13.28 for the recipe. Seed 1 repeated is identical.
+- **Density:** LABs used are 4,142 to 4,156 against about 4,150; cells
+  per LAB stay at 13.3; local lines are 6,986.
+- **Quality rule against the recipe: REJECT** (+0.82, spread 1.52).
+
+On the old core the placer does not fill LABs to the limit, so raising
+it changes almost nothing. Density has to come from deciding which cells
+share a LAB (20.1), not from a looser limit. Limit 46 is a hard wall:
+the same wires stay overused with twice the iterations.
+
+**Today's core (`core0924`), with `--lab-global-clocks`, seeds 1 and 2:**
+
+| Limit | Seed | Placement | Overused at iteration 10, 30, 60 | Last |
+| --- | ---: | ---: | --- | --- |
+| 42 | 1 | 226 s | 516, 432, 508 | 406 at the cap |
+| 42 | 2 | 121 s | 4,437, 5,495, 9,267 | 10,829 at 96 (time limit) |
+| 44 | 1 | 100 s | 5,645, 5,954, 5,921 | 6,366 at the cap |
+| 44 | 2 | 87 s | 3,858, 4,293, 6,560 | 7,477 at the cap |
+
+Without permutation, seed 1 ended at 2,449 overused wires and seed 2 at
+18,532. Permutation is a sixfold improvement on seed 1, but the core
+still does not route, and a tighter limit only adds congestion. What
+remains is fabric capacity around full LABs: fewer, denser LABs
+(20.1), and the second register (20.3).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
