@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#include <fstream>
 #include <optional>
 
 #include "alm_pairing.h"
@@ -951,6 +952,33 @@ bool Arch::run_placement()
             cfg.sa_timing_crit_exp = args.sa_crit_exp;
             cfg.lab_affinity_weight = args.heap_lab_affinity; // Design 19.6: LAB affinity when legalising
             cfg.lab_affinity_reach = args.heap_lab_reach;
+            cfg.skip_refine = args.no_sa_refine; // design 20.0
+            if (!args.lab_hint_path.empty()) {
+                // Design 20.0: `cell x y` per line; the cell's (or its cluster root's) LAB is tried first.
+                auto hints = std::make_shared<dict<IdString, Loc>>();
+                std::ifstream in(args.lab_hint_path);
+                if (!in)
+                    log_error("cannot read --lab-hint file %s\n", args.lab_hint_path.c_str());
+                std::string name;
+                int x, y, unknown = 0;
+                while (in >> name >> x >> y) {
+                    IdString id = getCtx()->id(name);
+                    if (!cells.count(id)) {
+                        ++unknown;
+                        continue;
+                    }
+                    (*hints)[id] = Loc(x, y, 0);
+                }
+                log_info("LAB hints: %d cells from %s (%d names not in the design).\n", int(hints->size()),
+                         args.lab_hint_path.c_str(), unknown);
+                cfg.lab_hint = [hints](Context *, const CellInfo *cell, Loc &loc) {
+                    auto found = hints->find(cell->name);
+                    if (found == hints->end())
+                        return false;
+                    loc = found->second;
+                    return true;
+                };
+            }
             cfg.report_infeasible = [this](Context *, const std::vector<CellInfo *> &stuck) {
                 report_legalisation_stall(stuck);
             };

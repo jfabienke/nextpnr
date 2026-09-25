@@ -82,6 +82,8 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"router2_repair_crit", double(a.router2_repair_crit)},
             {"lab_input_nets", a.lab_input_nets},
             {"lab_global_clocks", a.lab_global_clocks},
+            {"lab_hint", a.lab_hint_path},
+            {"no_sa_refine", a.no_sa_refine},
             {"router2_reroute", a.router2_reroute},
             {"router2_reroute_contested", a.router2_reroute_contested},
             {"lab_tile_scan", a.lab_tile_scan},

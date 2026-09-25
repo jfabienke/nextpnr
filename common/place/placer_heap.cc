@@ -442,6 +442,9 @@ class HeAPPlacer
             log_info("  lab affinity: weight=%.2f, reach=%.2f, tiles tried=%" PRIu64 ", placed=%" PRIu64
                      ", placed away from the solver's tile=%" PRIu64 "\n",
                      cfg.lab_affinity_weight, cfg.lab_affinity_reach, affinity_tries, affinity_placed, affinity_moved);
+        if (cfg.lab_hint)
+            log_info("  lab hints: legalisations=%" PRIu64 ", honoured=%" PRIu64 ", refused=%" PRIu64 "\n", hint_cells,
+                     hint_honoured, hint_refused);
         if (cfg.place_cluster_transaction)
             log_info("  frozen cluster transactions: attempted=%" PRIu64 ", committed=%" PRIu64 ", rejected=%" PRIu64
                      ", unsupported=%" PRIu64 "\n",
@@ -460,6 +463,11 @@ class HeAPPlacer
 
         ctx->check();
         lock.unlock();
+
+        if (cfg.skip_refine) {
+            log_info("Annealing refinement skipped (design 20.0 hinted placement).\n");
+            return true;
+        }
 
 #if !defined(NPNR_DISABLE_THREADS)
         if (cfg.parallelRefine) {
@@ -502,6 +510,7 @@ class HeAPPlacer
     uint64_t frozen_cluster_rejected = 0;
     uint64_t frozen_cluster_unsupported = 0;
     uint64_t affinity_tries = 0, affinity_placed = 0, affinity_moved = 0; // design 19.6
+    uint64_t hint_cells = 0, hint_honoured = 0, hint_refused = 0;         // design 20.0
     uint64_t frozen_cluster_batches = 0;
     uint64_t frozen_cluster_discarded = 0;
     uint64_t frozen_cluster_batch_max = 0;
@@ -1246,6 +1255,8 @@ class HeAPPlacer
             // Design 19.6: the tiles of the cell's placed neighbours, best first by distance from the
             // solver's position plus the nets that would enter a new LAB; the first tile the cell or
             // its cluster legally fits wins. The search below is the fallback.
+            if (p->cfg.lab_hint && try_lab_hint(ci))
+                return;
             if (p->cfg.lab_affinity_weight > 0 && try_lab_affinity(ci))
                 return;
 
@@ -1355,6 +1366,31 @@ class HeAPPlacer
             add(net->driver.cell);
             for (const auto &user : net->users)
                 add(user.cell);
+        }
+
+        // Design 20.0: the cell's (or cluster root's) hinted tile, tried first; the first legal bel wins.
+        bool try_lab_hint(CellInfo *ci)
+        {
+            Loc hint;
+            if (!p->cfg.lab_hint(ctx, ci, hint))
+                return false;
+            ++p->hint_cells;
+            if (hint.x < 0 || hint.x >= int(fb->size()) || hint.y < 0 || hint.y >= int(fb->at(hint.x).size()) ||
+                fb->at(hint.x).at(hint.y).empty()) {
+                ++p->hint_refused;
+                return false;
+            }
+            need_to_explore = 0;
+            if (ci->cluster == ClusterId())
+                try_place_cell(ci, hint.x, hint.y);
+            else
+                try_place_cluster(ci, hint.x, hint.y);
+            if (placed) {
+                ++p->hint_honoured;
+                return true;
+            }
+            ++p->hint_refused;
+            return false;
         }
 
         bool try_lab_affinity(CellInfo *ci)

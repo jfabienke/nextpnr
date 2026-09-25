@@ -177,6 +177,11 @@ struct PlacerHeapCfg
     // `lab_affinity_reach` (in the solver's weighted distance) of its solver position, best first by
     // distance plus `lab_affinity_weight` per net with no other pin in the tile; 0 = off.
     float lab_affinity_weight = 0, lab_affinity_reach = 0;
+    // Design 20.0: an externally chosen tile per cell (a LAB, for the Mistral arch). When set and it returns true,
+    // the strict legaliser tries that tile first; a refusal falls back to the normal search and is counted.
+    std::function<bool(Context *, const CellInfo *, Loc &)> lab_hint;
+    // Skip the simulated-annealing refinement after HeAP (design 20.0: keep a hinted placement as legalised).
+    bool skip_refine = false;
 
     bool disableCtrlSet;
 
