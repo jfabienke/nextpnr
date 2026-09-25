@@ -119,6 +119,20 @@ static void create_alm(Arch *arch, int x, int y, int z, uint32_t lab_idx)
             arch->add_bel_pin(bel, id_WCLK, PORT_IN, alm.sel_clk[1]);
             arch->add_bel_pin(bel, id_WE, PORT_IN, alm.sel_ena[1]);
         }
+        // Design 20.2: five logical-input pseudo-wires per half, each fed from every physical pin of the half
+        // (A and B shared, C or D, E_i, F_i); the router picks the pin, lut_permutation_fixup records it.
+        if (arch->args.lut_permutation) {
+            const std::array<CycloneV::port_type_t, 5> phys{CycloneV::A, CycloneV::B, i ? CycloneV::D : CycloneV::C,
+                                                            i ? CycloneV::E1 : CycloneV::E0,
+                                                            i ? CycloneV::F1 : CycloneV::F0};
+            for (int k = 0; k < 5; k++) {
+                WireId w = arch->add_wire(x, y, arch->idf("LPERM%d_%d[%d]", i, k, z));
+                arch->add_bel_pin(bel, arch->lperm_pins[k], PORT_IN, w);
+                for (auto p : phys)
+                    arch->add_pip(arch->get_port(block_type, x, y, z, p), w);
+                alm.perm_wires[i][k] = w;
+            }
+        }
         // Assign indexing
         alm.lut_bels.at(i) = bel;
         auto &b = arch->bel_data(bel);
@@ -1058,6 +1072,24 @@ void Arch::reassign_alm_inputs(uint32_t lab, uint8_t alm)
         for (int i = 0; i < 2; i++) {
             if (!luts[i])
                 continue;
+            // Design 20.2: a plain L5 half leaves the choice of physical pin to the router, except for the nets both
+            // halves share: those stay on A and B, the only pins both halves read, which is what makes two
+            // five-input halves fit (5 + 5 - 2 = 8 ALM inputs).
+            if (args.lut_permutation && !luts[i]->combInfo.is_carry && luts[i]->type != id_MISTRAL_BUF) {
+                for (int j = 0; j < luts[i]->combInfo.lut_input_count; j++) {
+                    IdString log = get_lut_pin(luts[i], j);
+                    auto &bel_pins = luts[i]->pin_data[log].bel_pins;
+                    bel_pins.clear();
+                    NetInfo *net = luts[i]->getPort(log);
+                    if (net == nullptr)
+                        continue;
+                    if (shared_nets.count(net->name))
+                        bel_pins.push_back(shared_nets.at(net->name) ? id_B : id_A);
+                    else
+                        bel_pins.push_back(lperm_pins.at(j));
+                }
+                continue;
+            }
             // Work out which physical ports are available
             std::vector<IdString> avail_phys_ports;
             // D/C always available and dedicated to the half, in L5 mode
@@ -1209,6 +1241,68 @@ uint64_t permute_mlab_init(uint64_t orig)
 }
 
 } // namespace
+
+// Design 20.2: after routing, each permuted logical input's LPERM wire is driven by a pseudo-pip from one of the
+// half's physical pins. Record that pin as the logical pin's bel pin (compute_lut_mask then builds the mask for it),
+// check the assignment, and unbind the pseudo-wire so the net ends on the physical pin.
+void Arch::lut_permutation_fixup()
+{
+    int moved = 0, luts_permuted = 0;
+    for (uint32_t lab = 0; lab < labs.size(); lab++) {
+        auto &lab_data = labs[lab];
+        auto block_type = lab_data.is_mlab ? CycloneV::MLAB : CycloneV::LAB;
+        for (uint8_t z = 0; z < 10; z++) {
+            auto &alm_data = lab_data.alms[z];
+            Loc loc = getBelLocation(alm_data.lut_bels[0]);
+            for (int i = 0; i < 2; i++) {
+                CellInfo *lut = getBoundBelCell(alm_data.lut_bels[i]);
+                if (!lut)
+                    continue;
+                const std::array<std::pair<IdString, CycloneV::port_type_t>, 5> phys{
+                        std::make_pair(id_A, CycloneV::A), std::make_pair(id_B, CycloneV::B),
+                        i ? std::make_pair(id_D, CycloneV::D) : std::make_pair(id_C, CycloneV::C),
+                        i ? std::make_pair(id_E1, CycloneV::E1) : std::make_pair(id_E0, CycloneV::E0),
+                        i ? std::make_pair(id_F1, CycloneV::F1) : std::make_pair(id_F0, CycloneV::F0)};
+                std::vector<IdString> used;
+                bool permuted = false;
+                for (int j = 0; j < lut->combInfo.lut_input_count; j++) {
+                    IdString log_pin = get_lut_pin(lut, j);
+                    auto found = lut->pin_data.find(log_pin);
+                    if (found == lut->pin_data.end() || found->second.bel_pins.size() != 1)
+                        continue;
+                    int k = -1;
+                    for (int q = 0; q < 5; q++)
+                        if (found->second.bel_pins[0] == lperm_pins[q])
+                            k = q;
+                    if (k < 0)
+                        continue;
+                    NetInfo *net = lut->getPort(log_pin);
+                    WireId w = alm_data.perm_wires[i][k];
+                    auto bound = net ? net->wires.find(w) : net->wires.end();
+                    if (!net || bound == net->wires.end() || bound->second.pip == PipId())
+                        log_error("LUT permutation: %s.%s is not routed to its logical input wire\n", nameOf(lut),
+                                  nameOf(log_pin));
+                    WireId src = getPipSrcWire(bound->second.pip);
+                    IdString pin;
+                    for (auto &p : phys)
+                        if (get_port(block_type, loc.x, loc.y, z, p.second) == src)
+                            pin = p.first;
+                    if (pin == IdString() || getBoundWireNet(src) != net ||
+                        std::find(used.begin(), used.end(), pin) != used.end())
+                        log_error("LUT permutation: %s.%s arrives on an invalid or shared physical pin\n", nameOf(lut),
+                                  nameOf(log_pin));
+                    used.push_back(pin);
+                    unbindWire(w);
+                    found->second.bel_pins[0] = pin;
+                    permuted = true;
+                    ++moved;
+                }
+                luts_permuted += permuted;
+            }
+        }
+    }
+    log_info("LUT permutation: %d LUT inputs placed by the router on %d LUTs.\n", moved, luts_permuted);
+}
 
 uint64_t Arch::compute_lut_mask(uint32_t lab, uint8_t alm)
 {

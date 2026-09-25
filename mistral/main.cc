@@ -150,6 +150,8 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-crit-cost",
                            "router2 costs a wire by blending one unit and its delay by the arc's criticality "
                            "(replaces --router2-unit-cost; off by default; experimental)");
+    specific.add_options()("lut-permutation",
+                           "the router chooses each 5-input LUT's physical ALM pins (design 20.2; experimental)");
     specific.add_options()("lab-hint", po::value<std::string>(),
                            "a file of `cell x y` lines: HeAP's legaliser tries each cell's LAB first (design 20.0; "
                            "experimental)");
@@ -306,6 +308,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     if (vm.count("lab-hint"))
         chipArgs.lab_hint_path = vm["lab-hint"].as<std::string>();
     chipArgs.no_sa_refine = vm.count("no-sa-refine") != 0;
+    chipArgs.lut_permutation = vm.count("lut-permutation") != 0;
     if (vm.count("router2-repair-rounds"))
         chipArgs.router2_repair_rounds = std::max(0, vm["router2-repair-rounds"].as<int>());
     if (vm.count("router2-repair-crit"))

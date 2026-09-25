@@ -79,6 +79,7 @@ struct ArchArgs
     bool lab_global_clocks = false;         // Design 19.11: globally routed clocks take no LAB DATAIN line
     std::string lab_hint_path;              // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
     bool no_sa_refine = false;              // Design 20.0: skip HeAP's annealing refinement
+    bool lut_permutation = false;           // Design 20.2: the router chooses each L5 LUT input's physical pin
     float router2_repair_crit = 0.9f;       // Design 19.9: the criticality an arc needs to be repaired
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
@@ -109,6 +110,8 @@ struct ALMInfo
     std::array<WireId, 4> ff_in, ff_out;
     // Pointers to bels
     std::array<BelId, 2> lut_bels;
+    // Design 20.2: each half's five logical-input pseudo-wires (--lut-permutation only).
+    std::array<std::array<WireId, 5>, 2> perm_wires;
     std::array<BelId, 4> ff_bels;
 
     bool l6_mode = false;
@@ -971,6 +974,9 @@ struct Arch : BaseArch<ArchRanges>
     void update_alm_input_count(uint32_t lab, uint8_t alm); // lab.cc
 
     uint64_t compute_lut_mask(uint32_t lab, uint8_t alm); // lab.cc
+    // Design 20.2 (lab.cc): after routing, move each permuted LUT input onto the physical pin the router chose.
+    void lut_permutation_fixup();
+    std::array<IdString, 5> lperm_pins; // bel pins LPERM0..4, set when --lut-permutation builds the device
 
     // Keeping track of unique MLAB write ports to assign them indices
     dict<IdString, IdString> get_mlab_key(const CellInfo *cell, bool include_raddr = false) const; // lab.cc

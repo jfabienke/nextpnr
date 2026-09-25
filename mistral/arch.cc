@@ -117,6 +117,11 @@ Arch::Arch(ArchArgs args)
 
     log_info("Initialising bels...\n");
     bels_by_tile.resize(cyclonev->get_tile_sx() * cyclonev->get_tile_sy());
+    // Design 20.2: the logical-input bel pin names, interned only under the option (a new IdString shifts every
+    // later index, so a default run's netlist numbering must not see them).
+    if (args.lut_permutation)
+        for (int k = 0; k < 5; k++)
+            lperm_pins[k] = idf("LPERM%d", k);
 
     for (auto lab_pos : cyclonev->lab_get_pos())
         create_lab(CycloneV::pos2x(lab_pos), CycloneV::pos2y(lab_pos), /*is_mlab=*/false);
@@ -1489,6 +1494,8 @@ bool Arch::run_router_phase()
         }
         report_route_reuse(reuse);
     }
+    if (args.lut_permutation && result)
+        lut_permutation_fixup(); // design 20.2: before signoff and the bitstream see the routing
     telemetry_checksum = getCtx()->checksum();
     note_routing_complete();
     report_lab_states();
