@@ -2698,3 +2698,17 @@ The units, each with its own subsection before code:
 20.2 run in the order 20.0 decides, and 20.4 after 20.1's clusterer
 exists. Every unit keeps section 19's acceptance rule and the legality
 guards, and is measured on the old core and then confirmed on today's.
+
+**20.0 outcome (2026-09-25).** The oracle fit reaches 16.71 MHz with the
+netlist as given, against 25.18 in production, so netlist optimisation
+is a larger share of the gap than assumed. That raises 20.5's value.
+nextpnr's rules admit 346 of the oracle's 3,219 LABs, and hints alone do
+not route. Two rules block 86% of the LABs:
+- **the second register (20.3):** evidence-free; the Quartus
+  differential agrees;
+- **the LAB input count (20.2):** Quartus routes LABs of count 50 and
+  more because it permutes LUT inputs and uses local lines.
+
+Clustering (20.1) follows both. The local-line measurement points at the
+same two units: half of intra-LAB LUT nets detour for want of a
+permuted pin, and first-register outputs have no local line.

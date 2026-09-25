@@ -4710,6 +4710,70 @@ all. Two units of design 20 address these directly: LUT input permutation
 (20.2) lets the router choose a pin the local line reaches, and the
 second register's local output (19.4, 20.3) serves the registers.
 
+### 2026-09-25: Design 20.0 decided: two LAB rules block 86% of Quartus's clustering
+
+**The oracle fit.** Quartus 17.0.2 placed our netlist as given (NAS01
+`core_oracle_20260925`: physical synthesis off, no merging), handed over
+by `mistral/tests/quartus_handover.py` with a name map; locations joined
+by `mistral/tests/oracle_join.py`. Results:
+- 20,391 ALMs, 3,219 LABs, and 13,532 of 15,647 registers kept;
+- **16.71 MHz**, against 25.18 for the production fit of the same
+  netlist and 13.28 for our recipe;
+- 49,756 cells mapped to a LAB, 1,619 not.
+
+Quartus's lead thus splits roughly into netlist optimisation (physical
+synthesis and the rest, 1.5x) and placement and routing (1.26x), mixing
+two timing models.
+
+**Hinted runs (step 0.3).** Old core, seeds 1 to 3, pairing and register
+packing off, `--lab-global-clocks`:
+
+| Run | Result |
+| --- | --- |
+| `--lab-hint` (Quartus's LABs), `--no-sa-refine` | 42 to 46% of hinted legalisations honoured; no seed routes (989,583 to 996,773 wires at iterations 20 to 28, stopped at 60 minutes) |
+| Control, no hints | all route: 11.75, 12.19, 11.85 MHz; 786,800 to 793,317 wires |
+
+A placement 42% Quartus and 58% scattered by the fallback search tests
+neither clustering.
+
+**Why nextpnr refuses Quartus's LABs.** `mistral/tests/rules_gap.py`
+maps every Quartus LAB cell by cell onto nextpnr's bels (the N numbering
+verified by ff2test and en3test) and checks nextpnr's rules as `lab.cc`
+and the control model state them, with the clock global.
+
+| Rule broken | LABs of 3,219 | Cells |
+| --- | ---: | ---: |
+| Second register of a half | 2,224 | 36,110 |
+| LAB input count above 42 | 1,883 | 36,483 |
+| Register fed from the fabric, no E/F left | 324 | 7,269 |
+| ALM inputs above 8 (two shared inputs) | 159 | 3,001 |
+| ALM LUT bits above 64 | 93 | 1,765 |
+| Control lines | 1 | 20 |
+| Legal as packed | 346 | 2,817 |
+
+Quartus's LABs have a nextpnr input count of median 50, 90th percentile
+72, maximum 92. The share of Quartus's LABs legal under nextpnr's rules,
+with rules lifted:
+
+| Rules lifted | Legal LABs |
+| --- | ---: |
+| none | 346 (11%) |
+| the second register | 1,288 (40%) |
+| the input count | 938 (29%) |
+| both | 2,771 (86%) |
+| both and the E/F rule | 3,059 (95%) |
+
+**Phase order.** Quartus's clustering cannot be tested or emulated until
+two rules change:
+- **The second-register refusal (20.3):** the Quartus differential
+  agrees; it waits on silicon.
+- **The input count (20.2):** a routability proxy that LUT input
+  permutation must replace. Quartus routes LABs of count 50 and more
+  because it permutes; 19.10 showed that loosening the count without
+  permutation fails in the router.
+
+20.3 and 20.2 therefore come before 20.1 (clustering).
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -4830,6 +4894,7 @@ second register's local output (19.4, 20.3) serves the registers.
 | 2026-09-24 | Fmax set | **Promote** 19.2 (rows 4, entries 4), 19.6 (affinity 2, reach 5), HeAP timing weight 100, and 19.3b (threshold 0) into the core recipe (`quality.py` configuration `core`, `core_probe_flow.sh`), at the user's direction; defaults unchanged. The set's five-seed run (`f-w100-crit-5s`) is the new core baseline | Quality rule ACCEPT: median 11.17 to 12.59 MHz, every seed routes, worst 12.41 above the old best; exponent 4 lost a seed and is not in the set |
 | 2026-09-24 | policy | A routing-only change, measured from the base's route-prepared checkpoints so every seed keeps its placement, is judged seed by seed (`quality.py compare --kind routing`): every seed the base routes must still route and gain Fmax on its own placement, and the placements must match; at the user's direction | The seed spread of the quality rule measures placement variance, which such a change does not have; 19.9 gained on all five seeds and failed the spread rule |
 | 2026-09-24 | 19.9 | **Promote** the timing repair (`--router2-repair-rounds 2 --router2-repair-crit 0.5`) into the core recipe at the user's direction; defaults unchanged | Routing rule ACCEPT: +0.80, +1.35, +0.35, +0.62, +0.20 MHz; median 12.59 to 13.28 |
+| 2026-09-25 | 20.0 | Order design 20: complete register packing (20.3) and LUT input permutation (20.2) before LAB clustering (20.1) | nextpnr's rules admit 346 of Quartus's 3,219 LABs; lifting the second-register refusal and the input count admits 2,771; hinted runs with the rules as they are do not route |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |
