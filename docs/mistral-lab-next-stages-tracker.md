@@ -4774,6 +4774,62 @@ two rules change:
 
 20.3 and 20.2 therefore come before 20.1 (clustering).
 
+### 2026-09-25: Unit 20.2 first measurement: LUT input permutation, 13.28 to 14.09 MHz on the recipe's placements
+
+`--lut-permutation` (design 20.2).
+- **Pseudo-wires.** Every ALM half gets five logical-input pseudo-wires
+  (`LPERM`), each fed from the half's five physical pins, created with
+  the device.
+- **Pre-route.** `reassign_alm_inputs` maps a plain L5 half's logical
+  inputs to them, except the nets both halves share, which stay on A
+  and B.
+- **After routing.** `lut_permutation_fixup` moves each logical pin
+  onto the physical pin the router chose and unbinds the pseudo-wire.
+
+The first form also permuted the shared nets. On the probe that left
+115 overused wires at the cap (165,263 wires against 149,576 without
+permutation): two five-input halves fit only with their common nets on
+A and B, and negotiation did not find it. Pinning them made that 41,
+and router1 finished. Under the recipe's router settings the probe
+routes in 41 iterations against 16, at 35.98 MHz against 34.56 (router2
+counts the pseudo-wires, so its wire totals read high).
+
+Core, recipe plus `--lut-permutation`, five seeds (tag `lperm-5s`). The
+placements match the recipe's (`rep2-c05-5s`) seed for seed:
+
+| Seed | Recipe | Permuted | Gain | Iterations |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 14.20 | 14.42 | +0.23 | 50 |
+| 2 | 13.76 | 13.60 | -0.16 | 45 |
+| 3 | 13.28 | 14.33 | +1.06 | 82 |
+| 4 | 13.21 | 14.09 | +0.88 | 32 |
+| 5 | 12.68 | 13.58 | +0.90 | 39 |
+| Median | 13.28 | 14.09 | +0.81 | |
+
+- **Router.** It moves 73,833 LUT inputs on 30,995 LUTs.
+- **Wires.** Median local lines rise from 4,626 to 6,740 (+46%); row wires
+  fall from 181,499 to 164,824, column wires from 95,038 to 86,557, and
+  input lines from 120,566 to 115,550.
+- **Routing rule: REJECT,** because seed 2 loses 0.16 MHz.
+- **Quality rule: REJECT,** because the gain is below the 1.52 spread.
+
+The option stays opt-in. Its purpose is the denser LABs of 20.0, which
+come next.
+
+**The correctness guard** (`mistral/tests/lut_perm_check.py`) is
+independent of `compute_lut_mask`. It reads each ALM input's source from
+the RBF decoded by `mistral-cv decomp`, matches it to a net through the
+routed JSON (the ROUTING wires for an input line; the half's LUT or
+second register for a local output, by `xDFF1L NLUT`), and checks every
+plain L5 LUT's function against its mask. On the probe:
+- without permutation: 7,341 of 7,341 LUTs correct;
+- with permutation: 7,341 of 7,341 correct.
+
+A mutation check shows it fails on errors: flipping one mask bit in 20
+ALMs is caught in 15 (the other five hit halves it does not check), and
+swapping the A and C sources in 20 ALMs is caught in 18. Silicon follows
+when the board is back.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
