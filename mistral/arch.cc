@@ -1313,6 +1313,7 @@ bool Arch::run_router_phase()
         int lx = 0, ly = 0;
         sscanf(e, "%d,%d", &lx, &ly);
         std::string td = stringf("TD.%d.%d.", lx, ly), gin = stringf("GIN.%d.%d.", lx, ly);
+        std::string ld = stringf("LD.%d.%d.", lx, ly), gout = stringf("GOUT.%d.%d.", lx, ly);
         for (WireId w : getWires()) {
             std::string n = nameOfWire(w);
             if (n.compare(0, td.size(), td) == 0) {
@@ -1341,6 +1342,24 @@ bool Arch::run_router_phase()
                 for (auto &kv : by_type)
                     t += stringf(" %s=%d", kv.first.c_str(), kv.second);
                 log_info("[lab-lines] %s drives:%s | columns:%s\n", n.c_str(), t.c_str(), cols.c_str());
+            } else if (n.compare(0, ld.size(), ld) == 0 || n.compare(0, gout.size(), gout) == 0) {
+                // Design 20.0: a local line's reach (downhill) and an ALM input's feeds (uphill), by wire type.
+                const bool is_ld = n[0] == 'L';
+                std::map<std::string, int> by_type;
+                if (is_ld)
+                    for (PipId p : getPipsDownhill(w)) {
+                        std::string dname = nameOfWire(getPipDstWire(p));
+                        by_type[dname.substr(0, dname.find('.'))]++;
+                    }
+                else
+                    for (PipId p : getPipsUphill(w)) {
+                        std::string sname = nameOfWire(getPipSrcWire(p));
+                        by_type[sname.substr(0, sname.find('.'))]++;
+                    }
+                std::string t;
+                for (auto &kv : by_type)
+                    t += stringf(" %s=%d", kv.first.c_str(), kv.second);
+                log_info("[lab-lines] %s %s:%s\n", n.c_str(), is_ld ? "drives" : "fed by", t.c_str());
             }
         }
     }

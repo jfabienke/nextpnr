@@ -4686,6 +4686,30 @@ The flag stays opt-in. It is the hardware's truth and today's core needs
 it to place. What the core now needs is routing capacity around full
 LABs, which none of the density levers so far provide.
 
+### 2026-09-25: Design 20.0, step 0.4: why local lines go unused
+
+In the recipe's routed core (`rep2-c05-5s`, seed 1), each net with a sink
+in its driver's LAB was classified by how it reaches that LAB's inputs:
+
+| Driver | Inside the ALM only | Local line (LD) | Out and back in (TD) | Both |
+| --- | ---: | ---: | ---: | ---: |
+| LUT | 17,035 | 3,886 | 3,863 | 720 |
+| First register of a half | | | 4,667 | |
+
+`MISTRAL_DUMP_LAB_LINES` now also dumps local lines and ALM inputs. For
+LAB (40, 30):
+- each of the 20 local lines (one per LUT output) reaches 42 ALM inputs;
+- each ALM input accepts 8 to 12 of the 20 local lines, beside 21 to 25
+  of the 46 input lines.
+
+A LUT's output therefore reaches a sink in its own LAB locally only if
+the sink LUT's physical pin accepts that local line. The pin is fixed by
+the netlist, so half of the intra-LAB LUT nets leave the LAB and re-enter
+by an input line. The first register of a half has no local output at
+all. Two units of design 20 address these directly: LUT input permutation
+(20.2) lets the router choose a pin the local line reaches, and the
+second register's local output (19.4, 20.3) serves the registers.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
