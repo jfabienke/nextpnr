@@ -4649,6 +4649,43 @@ restore.
 - **2026-09-24 core:** the old recipe now places seeds 1 and 2 (163 s,
   314 s), where it failed in the first pass before.
 
+### 2026-09-25: Global clocks measured: today's core places but does not route; the old core loses seeds
+
+`--lab-global-clocks` (binary `nextpnr-mistral.u19-11`), with the full
+recipe.
+
+2026-09-24 core, seeds 1 and 2 (`core0924/gclk`, binary
+`nextpnr-mistral.gclk`: the same flag, set by the experiment's
+environment variable):
+
+| Seed | Placement | Routing |
+| ---: | ---: | --- |
+| 1 | 416 s | 1,685 overused wires at iteration 10, 1,833 at 30, 2,449 at the cap of 100 (873,800 wires) |
+| 2 | 259 s | 9,569 at 10, 17,021 at 30, 18,532 at 56, where the 60-minute limit stopped it |
+
+2026-09-17 core, five seeds, against the recipe's result
+(`rep2-c05-5s`, median 13.28):
+
+| Seed | Recipe | With the flag | Iterations | Wires | Entries per net |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 14.20 | 13.39 | 72 | 734,165 | 1.366 |
+| 2 | 13.76 | 13.39 | 72 | 727,771 | 1.346 |
+| 3 | 13.28 | not routed (cap of 100) | | 747,905 | |
+| 4 | 13.21 | not routed | | 741,311 | |
+| 5 | 12.68 | 12.48 | 27 | 731,440 | 1.368 |
+
+- **Quality rule: REJECT.** Two seeds do not route, and the worst seed
+  (12.48) is below the recipe's worst.
+- Placement takes 186 to 236 s, against about 280 to 350. LAB entries
+  per net fall from 1.41 to 1.35. Seed 1 repeated is identical.
+- With the clock's line freed, a LAB takes a third distinct enable. The
+  enables ride input lines as the data does, and the placer packs to the
+  new capacity without pricing what it costs the router.
+
+The flag stays opt-in. It is the hardware's truth and today's core needs
+it to place. What the core now needs is routing capacity around full
+LABs, which none of the density levers so far provide.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
