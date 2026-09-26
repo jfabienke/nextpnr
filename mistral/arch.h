@@ -26,6 +26,7 @@
 
 #include "base_arch.h"
 #include "build_state.h"
+#include "lab_clustering.h"
 #include "lab_dispatch.h"
 #include "lab_profile.h"
 #include "lab_reuse.h"
@@ -80,6 +81,10 @@ struct ArchArgs
     std::string lab_hint_path;              // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
     bool no_sa_refine = false;              // Design 20.0: skip HeAP's annealing refinement
     bool lut_permutation = false;           // Design 20.2: the router chooses each L5 LUT input's physical pin
+    bool lab_clustering = false;            // Design 20.1: cluster LAB cells before placement
+    int lab_cluster_fill = 16;              // Design 20.1: cells per cluster at most
+    float lab_cluster_line_price = 0.1f;    // Design 20.1: attraction lost per new external input net
+    float lab_cluster_pull = 0;             // Design 20.1: solver pull between a cluster's cells (0: off)
     float router2_repair_crit = 0.9f;       // Design 19.9: the criticality an arc needs to be repaired
     bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
     std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
@@ -977,6 +982,7 @@ struct Arch : BaseArch<ArchRanges>
     // Design 20.2 (lab.cc): after routing, move each permuted LUT input onto the physical pin the router chose.
     void lut_permutation_fixup();
     std::array<IdString, 5> lperm_pins; // bel pins LPERM0..4, set when --lut-permutation builds the device
+    LabClustering lab_clusters;         // design 20.1: the clusters found before placement
 
     // Keeping track of unique MLAB write ports to assign them indices
     dict<IdString, IdString> get_mlab_key(const CellInfo *cell, bool include_raddr = false) const; // lab.cc

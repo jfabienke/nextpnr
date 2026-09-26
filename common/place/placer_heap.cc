@@ -1048,6 +1048,40 @@ class HeAPPlacer
                 process_arc(ubport);
             });
         }
+        if (cfg.pull_weight > 0) {
+            // Design 20.1: pull each group's solver rows together. A cluster child shares its root's row, so the
+            // arcs go between distinct rows; a fixed member contributes its position to the right-hand side.
+            std::vector<CellInfo *> roots;
+            for (const auto &group : cfg.pull_groups) {
+                roots.clear();
+                for (CellInfo *cell : group) {
+                    CellInfo *root = cell->cluster != ClusterId() ? ctx->getClusterRootCell(cell->cluster) : cell;
+                    if (std::find(roots.begin(), roots.end(), root) == roots.end())
+                        roots.push_back(root);
+                }
+                if (roots.size() < 2)
+                    continue;
+                const double base = cfg.pull_weight / double(roots.size() - 1);
+                for (size_t i = 0; i < roots.size(); i++)
+                    for (size_t j = i + 1; j < roots.size(); j++) {
+                        CellInfo *a = roots[i], *b = roots[j];
+                        const int pa = cell_pos(a), pb = cell_pos(b);
+                        const double weight = base / std::max<double>(1, (yaxis ? cfg.hpwl_scale_y : cfg.hpwl_scale_x) *
+                                                                                 std::abs(pa - pb));
+                        auto stamp = [&](CellInfo *self, CellInfo *other, int other_pos) {
+                            if (self->udata == dont_solve)
+                                return;
+                            es.add_coeff(self->udata, self->udata, weight);
+                            if (other->udata != dont_solve)
+                                es.add_coeff(self->udata, other->udata, -weight);
+                            else
+                                es.add_rhs(self->udata, weight * other_pos);
+                        };
+                        stamp(a, b, pb);
+                        stamp(b, a, pa);
+                    }
+            }
+        }
         if (iter != -1) {
             float alpha = cfg.alpha;
             for (size_t row = 0; row < solve_cells.size(); row++) {

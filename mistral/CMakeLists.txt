@@ -59,6 +59,8 @@ set(SOURCES
     reuse_plan.h
     reuse_plan.cc
     build_state.h
+    lab_clustering.h
+    lab_clustering.cc
     build_state.cc
     span_delay.h
     m10k.cc

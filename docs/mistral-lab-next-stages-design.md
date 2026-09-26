@@ -2913,5 +2913,49 @@ says how close the rules let clustering come; 20.3 lifts the rest.
   within the region. The pull weight and the fill target are the
   controls.
 - **Scratch LAB.** The check uses real bels of one empty LAB before
-  placement and unbinds them after each trial. A test asserts that the
-  scratch LAB is empty when the pass ends.
+  placement and unbinds them after each trial. An assertion at the end
+  of the pass checks that the scratch LAB is empty.
+
+**Outcome (2026-09-26): negative in its first form; kept opt-in.** The
+clusterer and both placement forms were built and measured on the old
+core, five seeds each, on the Linux runner (tracker, 2026-09-26). No
+form lowers the LAB count: every run uses 4,157 to 4,178 LABs, the
+baseline's count.
+
+What was built differs from the design in three places:
+- seeds are the units with the most priced nets (no timing term);
+- the hint follows the tile holding most of the cluster's legalised
+  members, with no LAB choice and no per-pass hook (the legaliser
+  unbinds every cell it solves, so a bound member was placed in this
+  pass);
+- the solver pull is a clique between the cluster's distinct solver
+  rows (`PlacerHeapCfg::pull_groups`, `--lab-cluster-pull`), not a star.
+
+What the clusterer finds under the present rules:
+- **Clusters stay small.** At line price 0.1 and fill 16 it forms 8,283
+  clusters of 6.3 cells, of which 712 reach the fill.
+- **The LAB rules are the limit.** Almost every refusal is a rule
+  refusal; hardly any is a missing bel.
+- **The input count is the main rule.** Lifting it, or counting
+  distinct nets (19.10), triples the full clusters (834 to 2,465 at
+  price 0). Lifting the second-register rule alone changes nothing,
+  because the input count refuses first.
+- **Price 0.5 is out of scale.** The design's default line price closes
+  clusters at 3.8 cells, since a shared net is worth at most
+  1 / fanout.
+
+Placement from the clusters loses wirelength and does not gain density:
+- hints alone median 12.15 MHz against 13.11 on the same platform;
+- solver pull 1 or 4 loses two seeds;
+- with 20.2's permutation 12.93 against permutation alone 13.69;
+- anything on the distinct-net model does not route (about 100
+  overused wires at 100 iterations, as in 19.10).
+
+The legaliser still fills LABs to what the rules admit, so moving
+members together only takes them from their solver positions.
+
+This is the ordering 20.0 decided, now measured: clustering has
+nothing to gain until the rules admit denser LABs (20.3, and an input
+rule the router can meet). The pass stays as `--lab-clustering` with its
+statistics for that point, with the measured line price (0.1) as its
+default.

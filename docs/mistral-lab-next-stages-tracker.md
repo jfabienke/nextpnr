@@ -4871,6 +4871,74 @@ still does not route, and a tighter limit only adds congestion. What
 remains is fabric capacity around full LABs: fewer, denser LABs
 (20.1), and the second register (20.3).
 
+### 2026-09-26: A Linux runner, 20.2 confirmed there, and 20.1's first form negative
+
+**The runner.** `nextpnr-runner`, an m8a.4xlarge spot instance (16 Zen 5 cores, 64 GiB, eu-central-1, about $0.45 an
+hour, stopped between batches). nextpnr-mistral is built in an Ubuntu 24.04 container (`nextpnr-build`, Rust
+enabled, Release) from `git archive` of the commit under test. Fifteen core runs in parallel take about 10 minutes
+(placement 330 to 440 s, router2 120 to 230 s), against about 15 minutes for three on the workstation.
+
+**A crash the runner found.** The first Linux build segfaulted at HeAP's first LAB query on the probe.
+`Arch::assign_comb_info` set `combInfo.wclk` and `combInfo.we` for MLAB cells only; for every other LUT they were
+the union's leftover bytes (they overlay `ffInfo`), and both LAB captures read them for every LUT. On macOS the
+bytes happen to be zero; on Linux they held string data (the faulting pointer was `0x5f465f315f515f36`, ASCII). Fixed
+in `77f1abd9` by clearing both for every cell; the probe is byte-identical on macOS (checksums `0xbb18ede9` /
+`0xbc1365c6`), and Linux runs the probe in 29 s at 31.07 MHz.
+
+**Platform.** Linux and macOS place differently from the same inputs (the C++ libraries' `std::sort` orders ties
+differently), so results are compared within one platform. The Linux baseline of the recipe (`aws-base`, commit
+`77f1abd9`):
+
+| Seed | 1 | 2 | 3 | 4 | 5 | Median |
+| --- | --- | --- | --- | --- | --- | --- |
+| Fmax (MHz) | 13.01 | 13.17 | 12.90 | 13.11 | 13.14 | 13.11 |
+| Iterations | 70 | 69 | 64 | 60 | 52 | |
+
+Every seed routes, spread 0.26 MHz (1.52 on macOS), about 4,160 LABs, and seed 1 repeated is byte-identical.
+
+**20.2 on Linux** (`aws-perm`, `--lut-permutation`, same placements): 13.64, 13.15, 14.03, 13.86, 13.69 MHz, median
+13.69. The quality rule accepts it (+0.58 against a spread of 0.26, worst 13.15 above 12.90). The routing rule rejects
+it: per seed +0.64, -0.02, +1.13, +0.75, +0.55, and seed 2 does not gain. The pattern matches macOS (seed 2 -0.16
+there). Row and column wires fall 10% and 9%, local lines rise 46%. Not promoted; the promotion is the user's call
+on two platforms' evidence.
+
+**20.1, the clusterer** (`--lab-clustering`, `mistral/lab_clustering.*`), statistics on the old core with the
+recipe's packing (31,278 units, 51,819 cells):
+
+| Setting | Clusters | Cells per cluster | Absorbed nets | Closed at fill | Rule refusals |
+| --- | --- | --- | --- | --- | --- |
+| price 0.5, 8 tries | 13,616 | 3.81 | 17,668 | 290 | 22,289 |
+| price 0, 8 tries | 7,477 | 6.93 | 19,357 | 637 | |
+| price 0, 64 tries | 6,956 | 7.45 | 19,186 | 834 | 168,259 |
+| price 0, 64 tries, distinct-net inputs | 6,811 | 7.61 | 19,621 | 2,364 | 65,275 |
+| price 0, 64 tries, no input limit | 6,891 | 7.52 | 19,590 | 2,465 | 59,337 |
+| price 0, 64 tries, second register allowed (test only) | 6,955 | 7.45 | 19,186 | 834 | 168,255 |
+| price 0.1, 32 tries (the defaults now) | 8,283 | 6.26 | 20,405 | 712 | 84,465 |
+
+A refusal for want of a bel is rare (at most 799). The C++ and the Rust authority give identical statistics.
+
+**20.1, placement from the clusters**, five seeds on the runner, price 0.1, 32 tries:
+
+| Tag | Options beyond the recipe | Routed | Fmax median (range) | LABs |
+| --- | --- | --- | --- | --- |
+| `aws-base` | | 5 | 13.11 (12.90 to 13.17) | 4,145 to 4,174 |
+| `aws-cl-a` | clustering, hints | 5 | 12.15 (11.12 to 12.51) | 4,159 to 4,178 |
+| `aws-cl-p1` | plus `--lab-cluster-pull 1` | 3 | 12.38 (12.37 to 12.48) | 4,168 to 4,177 |
+| `aws-cl-p4` | plus `--lab-cluster-pull 4` | 3 | 12.09 (11.57 to 12.37) | 4,157 to 4,162 |
+| `aws-perm` | `--lut-permutation` | 5 | 13.69 (13.15 to 14.03) | as base |
+| `aws-cl-perm` | clustering, hints, permutation | 5 | 12.93 (11.86 to 13.45) | 4,159 to 4,178 |
+| `aws-pn` | permutation, `--lab-input-model nets` | 0 | 95 to 116 overused at 100 | |
+| `aws-cl-pn` | clustering on top of `aws-pn` | 0 | 98 to 151 overused at 100 | |
+
+The hints are honoured on 37 to 51% of the legalisations that ask. No form moves the LAB count, and wires rise 2 to
+4%. The workstation's seed-1 runs agree: clustering alone ends at 227 overused wires, and with permutation and
+distinct-net inputs at 125.
+
+**Conclusion.** Under the present LAB rules clustering before placement cannot raise density: the legaliser already
+fills LABs to what the rules admit, and the clusters only pull members from their solver positions. The
+distinct-net input model admits denser clusters and then does not route, as in 19.10. Design 20.1's outcome records
+this; the pass stays opt-in for when 20.3 changes the rules.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -4992,6 +5060,8 @@ remains is fabric capacity around full LABs: fewer, denser LABs
 | 2026-09-24 | policy | A routing-only change, measured from the base's route-prepared checkpoints so every seed keeps its placement, is judged seed by seed (`quality.py compare --kind routing`): every seed the base routes must still route and gain Fmax on its own placement, and the placements must match; at the user's direction | The seed spread of the quality rule measures placement variance, which such a change does not have; 19.9 gained on all five seeds and failed the spread rule |
 | 2026-09-24 | 19.9 | **Promote** the timing repair (`--router2-repair-rounds 2 --router2-repair-crit 0.5`) into the core recipe at the user's direction; defaults unchanged | Routing rule ACCEPT: +0.80, +1.35, +0.35, +0.62, +0.20 MHz; median 12.59 to 13.28 |
 | 2026-09-25 | 20.0 | Order design 20: complete register packing (20.3) and LUT input permutation (20.2) before LAB clustering (20.1) | nextpnr's rules admit 346 of Quartus's 3,219 LABs; lifting the second-register refusal and the input count admits 2,771; hinted runs with the rules as they are do not route |
+| 2026-09-26 | platform | Compare quality only within one platform; the Linux runner has its own baseline (`aws-base`, median 13.11 MHz, spread 0.26) | Linux and macOS place the same inputs differently; determinism holds on each |
+| 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
 | 2026-09-16 | 3a | Typed build states in C++ with runtime adoption at the legacy boundary; a bitstream needs a validated build | `--rbf` on an unrouted design is refused instead of writing a meaningless file |

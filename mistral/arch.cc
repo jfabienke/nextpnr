@@ -25,6 +25,7 @@
 #include <optional>
 
 #include "alm_pairing.h"
+#include "lab_clustering.h"
 #include "log.h"
 #include "nextpnr.h"
 #include "register_packing.h"
@@ -47,6 +48,9 @@
 #include "cyclonev.h"
 
 NEXTPNR_NAMESPACE_BEGIN
+
+// Design 20.1 step 2: clusters smaller than this are fragments of the growth and get no LAB hint.
+static constexpr int LAB_CLUSTER_HINT_MIN = 4;
 
 using namespace mistral;
 
@@ -784,6 +788,13 @@ bool Arch::place()
     // the typed transition; the phase check catches a second placement or a
     // placement of an unpacked design at the legacy boundary.
     const auto started = std::chrono::steady_clock::now();
+    if (args.lab_clustering) {
+        // Design 20.1, step 1: the clusters and their statistics; placement from them is step 2.
+        LabClusteringCfg cfg;
+        cfg.fill_target = args.lab_cluster_fill;
+        cfg.line_price = args.lab_cluster_line_price;
+        lab_clusters = run_lab_clustering(getCtx(), cfg);
+    }
     place_build(Build<BuildPhase::Packed>::adopt(*getCtx()));
     telemetry_placement_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     write_mistral_telemetry(*this, "placed");
@@ -981,6 +992,43 @@ bool Arch::run_placement()
                     if (found == hints->end())
                         return false;
                     loc = found->second;
+                    return true;
+                };
+            } else if (args.lab_clustering) {
+                if (args.lab_cluster_pull > 0) {
+                    cfg.pull_weight = args.lab_cluster_pull;
+                    for (const auto &cluster : lab_clusters.clusters)
+                        if (int(cluster.size()) >= LAB_CLUSTER_HINT_MIN)
+                            cfg.pull_groups.push_back(cluster);
+                }
+                // Design 20.1 step 2: a cell goes to the tile holding most of its cluster's legalised members; the
+                // cluster's first member takes the normal search. The legaliser unbinds every cell it solves before
+                // it starts, so members bound now were placed in this legalisation.
+                cfg.lab_hint = [this](Context *, const CellInfo *cell, Loc &loc) {
+                    auto found = lab_clusters.cluster_of.find(cell->name);
+                    if (found == lab_clusters.cluster_of.end())
+                        return false;
+                    const auto &members = lab_clusters.clusters.at(found->second);
+                    if (int(members.size()) < LAB_CLUSTER_HINT_MIN)
+                        return false;
+                    std::vector<std::pair<Loc, int>> tiles;
+                    for (const CellInfo *member : members) {
+                        if (member == cell || member->bel == BelId())
+                            continue;
+                        Loc at = getBelLocation(member->bel);
+                        at.z = 0;
+                        auto tile = std::find_if(tiles.begin(), tiles.end(),
+                                                 [&](const std::pair<Loc, int> &t) { return t.first == at; });
+                        if (tile == tiles.end())
+                            tiles.emplace_back(at, 1);
+                        else
+                            ++tile->second;
+                    }
+                    if (tiles.empty())
+                        return false;
+                    loc = std::max_element(tiles.begin(), tiles.end(), [](const auto &a, const auto &b) {
+                              return a.second < b.second;
+                          })->first;
                     return true;
                 };
             }

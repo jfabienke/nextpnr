@@ -150,6 +150,14 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("router2-crit-cost",
                            "router2 costs a wire by blending one unit and its delay by the arc's criticality "
                            "(replaces --router2-unit-cost; off by default; experimental)");
+    specific.add_options()("lab-clustering", "decide LAB membership before placement (design 20.1; experimental)");
+    specific.add_options()("lab-cluster-fill", po::value<int>(),
+                           "with --lab-clustering, cells per cluster at most "
+                           "(default 16)");
+    specific.add_options()("lab-cluster-pull", po::value<float>(),
+                           "with --lab-clustering, HeAP solver pull between a cluster's cells (default 0, off)");
+    specific.add_options()("lab-cluster-line-price", po::value<float>(),
+                           "with --lab-clustering, attraction lost per new external input net (default 0.1)");
     specific.add_options()("lut-permutation",
                            "the router chooses each 5-input LUT's physical ALM pins (design 20.2; experimental)");
     specific.add_options()("lab-hint", po::value<std::string>(),
@@ -309,6 +317,13 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.lab_hint_path = vm["lab-hint"].as<std::string>();
     chipArgs.no_sa_refine = vm.count("no-sa-refine") != 0;
     chipArgs.lut_permutation = vm.count("lut-permutation") != 0;
+    chipArgs.lab_clustering = vm.count("lab-clustering") != 0;
+    if (vm.count("lab-cluster-fill"))
+        chipArgs.lab_cluster_fill = std::max(1, vm["lab-cluster-fill"].as<int>());
+    if (vm.count("lab-cluster-line-price"))
+        chipArgs.lab_cluster_line_price = vm["lab-cluster-line-price"].as<float>();
+    if (vm.count("lab-cluster-pull"))
+        chipArgs.lab_cluster_pull = std::max(0.0f, vm["lab-cluster-pull"].as<float>());
     if (vm.count("router2-repair-rounds"))
         chipArgs.router2_repair_rounds = std::max(0, vm["router2-repair-rounds"].as<int>());
     if (vm.count("router2-repair-crit"))

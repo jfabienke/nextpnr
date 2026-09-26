@@ -182,6 +182,10 @@ struct PlacerHeapCfg
     std::function<bool(Context *, const CellInfo *, Loc &)> lab_hint;
     // Skip the simulated-annealing refinement after HeAP (design 20.0: keep a hinted placement as legalised).
     bool skip_refine = false;
+    // Design 20.1: groups of cells the solver pulls together (a clique of pseudo-arcs between the groups' distinct
+    // solver rows, each of pull_weight / (rows - 1), scaled by distance like a net's arc). Off at weight 0.
+    std::vector<std::vector<CellInfo *>> pull_groups;
+    float pull_weight = 0;
 
     bool disableCtrlSet;
 
