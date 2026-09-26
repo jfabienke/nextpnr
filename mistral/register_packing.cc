@@ -191,8 +191,19 @@ RegisterPackingReport pack_registers(Context &ctx)
             ++r.lut_full;
             continue;
         }
-        if (used == 1)
+        if (used == 1) {
+            // With both registers of the half taken, their outputs can hold both of the half's fabric ports (the
+            // third is the local line), and the LUT's own output then has no way out (the core, seed 1: router2
+            // found no path). Only a LUT whose output drives nothing but registers takes a second one.
+            bool only_registers = true;
+            for (const PortRef &user : d->users)
+                only_registers = only_registers && user.cell->type == id_MISTRAL_FF && user.port == id_DATAIN;
+            if (!only_registers) {
+                ++r.lut_full;
+                continue;
+            }
             ++base; // the half's second register bel
+        }
         // The cluster's registers land in one LAB; the control model must admit them together.
         std::vector<const CellInfo *> together;
         for (const CellInfo *child : root->constr_children)

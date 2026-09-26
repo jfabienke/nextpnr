@@ -2338,6 +2338,14 @@ the steps below settle.
 capacity from 20 to 40, one LAB entry fewer for each such register, and
 the density lever that 19.2 and the sweep could not reach.
 
+**Outcome (2026-09-26): the second register works, but the core has no room for it.** Steps 1 and 2 found the
+reason no one wrote down: a half's second register is clocked through the other half's clock select, which the
+writer set only from that half's registers (`MISTRAL_GAPS.md` G9). Step 3 (`--alm-both-registers`) admits it only as
+a register-packing child beside the LUT that drives it, one control set per ALM, and only for a LUT that drives
+nothing but registers (the half's two fabric ports are otherwise both held by the registers). On the core that
+packs nothing: the 3,980 registers counted above sit on about 400 broadcast LUTs, one extra register each at most,
+with mixed control sets. The estimate counted registers where the constraint is per LUT half.
+
 **Risk.** The refusal may exist for a reason no one wrote down; steps 1
 and 2 are there to find it before anything depends on the answer. A
 silicon claim is recorded only from a test that can fail (the lesson of

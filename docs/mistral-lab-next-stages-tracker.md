@@ -5012,6 +5012,35 @@ mode on the probe with the option: 2,553,417 evaluations, zero mismatches, befor
 (it had first caught the detached evaluator still refusing). gtest 67 of 67. The probe packs one second register;
 the core is next.
 
+### 2026-09-26: Unit 20.3 on the core: no room, and a routability limit
+
+Five old-core seeds with `--alm-both-registers` on the Linux runner (binary of `d934aafb`, recipe with permutation):
+**no seed routed**. router2 stopped on its first iteration with an arc from a LUT output that had no path at all
+(`u_core.decoder.ru_u[30]`, `ru_u[32]` and two others across seeds). Five seeds of today's core with global clocks
+failed the same way. The same binary without the option reproduces `aws-perm` seed for seed (13.64, 13.15 MHz), so
+the default path is unchanged.
+
+- **Why routing failed.** The route-prepared core (seed 1) packed two second registers. At 27.49 ALM 0 half 0 the
+  LUT feeds both registers of its half and a LUT in another LAB. A half leaves the ALM through three ports: the
+  first register's (fabric), the second register's (fabric), and the second register's local line. Both
+  registers' outputs have fabric sinks (16 and 29), so they hold both fabric ports, and the LUT's own fabric sink has
+  none. The packer now gives a LUT a second register only when everything its output drives is a register
+  (`register_packing.cc`); the silicon test design is unchanged by that (96 second registers, its LUTs drive only
+  registers).
+- **Why there is little to pack.** The 3,980 registers refused for "LUT slot already taken" (19.4's motivation)
+  come from about 400 LUTs that each drive around ten registers. A half holds two, so a second register could add
+  at most one register per such LUT, and on the core only three of those LUTs drive registers that share one control
+  set. Pack admission with the option refused 3,220 of 8,582 candidates (the ALM's one-control-set clause); with the
+  register-only condition the core packs **0** second registers: 2,024 LUT slots taken, 583 control-set conflicts,
+  1,665 refusals of 7,025 admissions.
+- Verify mode on the core: pack admission agreed on all 8,582 (zero mismatches); the placement phase was stopped
+  with the routing result known.
+
+**Conclusion.** The second register works in silicon and the option is correct (the clock-select fix, `MISTRAL_GAPS`
+G9), but it cannot move this core: its multi-register LUTs are broadcast LUTs with mixed control sets. Design 19.4's
+estimate counted registers, not LUT halves. The option stays off by default; 20.3's density lever is closed for the
+Fabi386 core.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5137,6 +5166,7 @@ the core is next.
 | 2026-09-26 | 20.2 | **Promote** `--lut-permutation` into the core recipe (`quality.py` configuration `core`, `core_probe_flow.sh`), at the user's direction; default unchanged; baselines with it are `lperm-5s` (macOS) and `aws-perm` (Linux); the silicon checksum waits for the board | Quality rule ACCEPT on both platforms (13.28 to 14.09 MHz, 13.11 to 13.69); routing rule REJECT on both for seed 2 alone (-0.16, -0.02); `lut_perm_check.py` 7,341 of 7,341 LUTs correct, with a mutation check |
 | 2026-09-26 | 19.4 | Step 2 passes for the second register beside a LUT of its half (fed by the LUT, 4 inputs, or through E/F beside 2 inputs; with or without the first register); every failing build has one in a half without a LUT; 20.3 admits the second register only in a pack-time cluster with the LUT that drives it, never as a free placement | F7 `match=1`, control F8 `match=0`, F9 (alone) `match=1`; FB to FE and E0 fail; E0 shows the annealer leaving a register alone after moving its LUT |
 | 2026-09-26 | 20.3 | Admit the second register of a half behind `--alm-both-registers` (off by default), only as a register-packing cluster child beside the LUT that drives it, one control set per ALM; the writer sets the other half's clock, clear, and synchronous-clear selects from it | Silicon: E1 (widths 1 to 5), EC (the option's own build) pass with controls; the cause of every earlier failure, the other half's clock select, found (E9, EB against EA); verify mode zero mismatches |
+| 2026-09-26 | 20.3 | Close 20.3 for the core: `--alm-both-registers` stays opt-in, restricted to LUTs that drive only registers (a LUT with both registers of its half taken may have no free fabric port); it packs 0 registers on the core | 3,980 candidate registers sit on about 400 broadcast LUTs, one extra each at most, almost all with mixed control sets; unrestricted, no core seed routed |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
