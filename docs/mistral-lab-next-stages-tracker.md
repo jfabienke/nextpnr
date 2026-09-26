@@ -4939,6 +4939,17 @@ fills LABs to what the rules admit, and the clusters only pull members from thei
 distinct-net input model admits denser clusters and then does not route, as in 19.10. Design 20.1's outcome records
 this; the pass stays opt-in for when 20.3 changes the rules.
 
+**Today's core on the runner** (`core0924`, `--lab-global-clocks`, `--router2-max-iter 200`, five seeds each, stopped
+after an hour with every run diverging):
+
+| Tag | Options | Best overused wires (iteration) per seed | After an hour |
+| --- | --- | --- | --- |
+| `aws-gp200` | plus `--lut-permutation` | 6,574 (8), 1,211 (18), 3,572 (9), 1,719 (85), 2,324 (11) | 5,082 to 9,654 |
+| `aws-g200` | | 9,899 (5), 4,511 (7), 7,239 (6), 6,772 (8), 5,318 (7) | 15,014 to 20,370 |
+
+Permutation halves the overuse and no seed routes; the 406 wires seed 1 reached on the workstation is not typical.
+Today's core needs density the rules do not yet admit (20.3), not more router iterations.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
