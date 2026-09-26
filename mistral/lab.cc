@@ -25,6 +25,7 @@
 #include "lab_v2.h"
 #include "log.h"
 #include "nextpnr.h"
+#include "register_packing.h"
 #include "util.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -476,6 +477,8 @@ template <typename Bound> bool Arch::alm_legal_with(const ALMInfo &alm_data, Bou
     if (luts[0] && luts[1] && luts[0]->combInfo.is_carry != luts[1]->combInfo.is_carry)
         return false;
 
+    const bool l6_lut =
+            (luts[0] && luts[0]->combInfo.lut_input_count > 5) || (luts[1] && luts[1]->combInfo.lut_input_count > 5);
     // For each ALM half; check FF control set sharing and input routeability
     for (int i = 0; i < 2; i++) {
         // There are two ways to route from the fabric into FF data - either routing through a LUT or using the E/F
@@ -492,8 +495,17 @@ template <typename Bound> bool Arch::alm_legal_with(const ALMInfo &alm_data, Bou
             const CellInfo *ff = ffs[i * 2 + j];
             if (!ff)
                 continue;
+            // The second register of a half (MISTRAL_GAPS G9): only a register the packer placed there beside the
+            // LUT of its half that drives it (--alm-both-registers); never in a carry half or beside a six-input LUT.
+            if (j == 1 && !(is_second_register_child(ff) && luts[i] && !carry_mode && !l6_lut && ff->ffInfo.datain &&
+                            ff->ffInfo.datain == luts[i]->combInfo.comb_out))
+                return false;
+            // A second register is clocked through the other half's clock select (MISTRAL_GAPS G9), which the
+            // bitstream writer then sets from it: every register of the ALM must share its control set.
             if (j == 1)
-                return false; // TODO: why are these FFs broken?
+                for (const CellInfo *other : ffs)
+                    if (other && other != ff && other->ffInfo.ctrlset != ff->ffInfo.ctrlset)
+                        return false;
             if (found_ff) {
                 // Two FFs in the same half with an incompatible control set
                 if (ctrlset != ff->ffInfo.ctrlset)

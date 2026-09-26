@@ -185,6 +185,10 @@ pub(crate) fn check_alm<R: Reject>(alm: &AlmView, alm_index: usize, result: &mut
     {
         return result.reject(CARRY_MIX, alm_index as u32, u32::MAX, 0, 0);
     }
+    let six_input = alm
+        .lut
+        .iter()
+        .any(|lut| lut.occupied != 0 && lut.input_count > 5);
     for half in 0..2 {
         let mut route_thru = alm.lut[half].occupied == 0 && !carry && inputs < 8 && bits < 64;
         let mut ef_available =
@@ -196,8 +200,25 @@ pub(crate) fn check_alm<R: Reject>(alm: &AlmView, alm_index: usize, result: &mut
             if ff.occupied == 0 {
                 continue;
             }
-            if j == 1 {
+            // The second register of a half (MISTRAL_GAPS G9): only one the packer placed beside the LUT of its
+            // half that drives it; never in a carry half or beside a six-input LUT.
+            if j == 1
+                && !(ff.flags & FF_SECOND_REGISTER != 0
+                    && alm.lut[half].occupied != 0
+                    && !carry
+                    && !six_input
+                    && ff.datain_net != 0
+                    && ff.datain_net == alm.lut[half].comb_out_net)
+            {
                 return result.reject(ODD_FF, alm_index as u32, slot as u32, 0, 0);
+            }
+            // A second register is clocked through the other half's clock select (MISTRAL_GAPS
+            // G9): every register of the ALM must share its control set.
+            if j == 1
+                && (0..alm.ff.len())
+                    .any(|k| k != slot && alm.ff[k].occupied != 0 && !same_ctrlset(alm.ff[k], ff))
+            {
+                return result.reject(FF_CONTROL, alm_index as u32, slot as u32, 0, 0);
             }
             if first.is_some_and(|old| !same_ctrlset(old, ff)) {
                 return result.reject(FF_CONTROL, alm_index as u32, slot as u32, 0, 0);

@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "alm_pairing.h"
@@ -38,7 +39,8 @@ bool is_plain_lut(IdString type)
     return type.in(id_MISTRAL_ALUT2, id_MISTRAL_ALUT3, id_MISTRAL_ALUT4, id_MISTRAL_ALUT5, id_MISTRAL_ALUT6);
 }
 
-bool is_register_child(const CellInfo *c) { return c->type == id_MISTRAL_FF && (c->constr_z == 2 || c->constr_z == 4); }
+// 2 and 3 are the root's half (first and second register bel), 4 and 5 the partner's.
+bool is_register_child(const CellInfo *c) { return c->type == id_MISTRAL_FF && c->constr_z >= 2 && c->constr_z <= 5; }
 
 } // namespace
 
@@ -79,9 +81,10 @@ bool alm_cluster_placement(const Arch &arch, CellInfo *root, BelId root_bel,
         if (!is_register_child(child)) {
             z = loc.z + 1;
         } else {
-            // 2 is the root's own half, 4 the partner's, which is always the second.
-            const int lut_half = child->constr_z == 4 ? 1 : half;
-            z = alm_base + 2 + 2 * lut_half;
+            // 2 and 3 are the root's own half, 4 and 5 the partner's, which is always the second; the odd ones
+            // are the half's second register bel (design 20.3).
+            const int lut_half = child->constr_z >= 4 ? 1 : half;
+            z = alm_base + 2 + 2 * lut_half + (child->constr_z % 2 == 1 ? 1 : 0);
         }
         BelId bel = arch.getBelByLocation(Loc(loc.x, loc.y, z));
         if (bel == BelId() || !arch.isValidBelForCellType(child->type, bel))
@@ -132,7 +135,10 @@ RegisterPackingReport pack_registers(Context &ctx)
     std::sort(ffs.begin(), ffs.end(),
               [](const CellInfo *a, const CellInfo *b) { return a->name.index < b->name.index; });
     r.registers = ffs.size();
-    std::unordered_set<const CellInfo *> slot_used; // LUTs with their one register slot taken
+    // LUTs by the register slots taken: one, or two under --alm-both-registers (design 20.3), where a LUT's second
+    // register takes the second register bel of its half (not beside a six-input LUT, which the rule refuses).
+    std::unordered_map<const CellInfo *, int> slots_used;
+    const bool both = ctx.args.alm_both_registers;
     // The control model below is the search's filter; what admits a register into a cluster is the
     // authority the placer will ask, on a clean ALM, before it is committed (design section 13).
     PackAdmission gate(ctx, /*assign_facts=*/false);
@@ -180,10 +186,13 @@ RegisterPackingReport pack_registers(Context &ctx)
             ++r.lut_clustered;
             continue;
         }
-        if (slot_used.count(lut)) {
+        const int used = slots_used.count(lut) ? slots_used.at(lut) : 0;
+        if (used >= (both && lut->type != id_MISTRAL_ALUT6 ? 2 : 1)) {
             ++r.lut_full;
             continue;
         }
+        if (used == 1)
+            ++base; // the half's second register bel
         // The cluster's registers land in one LAB; the control model must admit them together.
         std::vector<const CellInfo *> together;
         for (const CellInfo *child : root->constr_children)
@@ -221,8 +230,9 @@ RegisterPackingReport pack_registers(Context &ctx)
             ++r.refused;
             continue;
         }
-        slot_used.insert(lut);
+        slots_used[lut] = used + 1;
         ++r.packed;
+        r.second_registers += used == 1;
         if (kind == Single)
             ++r.onto_single;
         else if (kind == PairRoot)
@@ -238,11 +248,11 @@ void report_register_packing(const RegisterPackingReport &r)
 {
     log_info("Register packing: %" PRIu64 " registers, %" PRIu64 " driven by a plain LUT, %" PRIu64
              " packed with it (%" PRIu64 " onto a single LUT, %" PRIu64 " onto a pair's root, %" PRIu64
-             " onto a pair's partner); not packed: %" PRIu64 " LUT slots already taken, %" PRIu64
-             " LUTs in another cluster, %" PRIu64 " registers already constrained, %" PRIu64
-             " control-set conflicts inside the cluster.\n",
-             r.registers, r.lut_driven, r.packed, r.onto_single, r.onto_pair_root, r.onto_pair_child, r.lut_full,
-             r.lut_clustered, r.ff_constrained, r.control_conflict);
+             " onto a pair's partner; %" PRIu64 " on a second register bel); not packed: %" PRIu64
+             " LUT slots already taken, %" PRIu64 " LUTs in another cluster, %" PRIu64
+             " registers already constrained, %" PRIu64 " control-set conflicts inside the cluster.\n",
+             r.registers, r.lut_driven, r.packed, r.onto_single, r.onto_pair_root, r.onto_pair_child,
+             r.second_registers, r.lut_full, r.lut_clustered, r.ff_constrained, r.control_conflict);
 }
 
 NEXTPNR_NAMESPACE_END

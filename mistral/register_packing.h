@@ -48,6 +48,7 @@ struct RegisterPackingReport
     uint64_t onto_single = 0;      // the LUT became a cluster root for it
     uint64_t onto_pair_root = 0;   // the LUT was a pair's root
     uint64_t onto_pair_child = 0;  // the LUT was a pair's partner
+    uint64_t second_registers = 0; // on the second register bel of the LUT's half (--alm-both-registers)
     uint64_t lut_full = 0;         // the LUT's register slot was already taken
     uint64_t lut_clustered = 0;    // the LUT sits in a chain or another cluster
     uint64_t ff_constrained = 0;   // the register already has a cluster or children
@@ -55,7 +56,17 @@ struct RegisterPackingReport
     uint64_t refused = 0;          // the LAB legality authority refused the cluster with it (design 13)
 };
 
-// A plain-LUT root whose children are a pair partner at relative z 1 and/or registers at 2 or 4.
+// Design 20.3 (--alm-both-registers): a register the packer put on the second register bel of its LUT's half, a
+// cluster child at relative z 3 (the root's half) or 5 (a pair partner's half). Silicon (MISTRAL_GAPS G9) admits a
+// second register beside the LUT of its half that drives it; only such children may take that bel, and a cluster
+// moves as one unit, so the LUT never leaves it behind.
+inline bool is_second_register_child(const CellInfo *c)
+{
+    return c->type == id_MISTRAL_FF && c->cluster != ClusterId() && c->cluster != c->name && !c->constr_abs_z &&
+           (c->constr_z == 3 || c->constr_z == 5);
+}
+
+// A plain-LUT root whose children are a pair partner at relative z 1 and/or registers at 2 to 5.
 bool is_alm_cluster_root(const CellInfo *root);
 
 // Places a pair or register cluster on one ALM from the root's bel: the partner on the other

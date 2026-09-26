@@ -92,8 +92,8 @@ struct MistralBitgen
                     if (u.port == id_OE)
                         feeds_oe = true;
                 if (feeds_oe)
-                    log_info("  [dbg] net '%s': %d wire(s), %d user(s) - feeds an IO OE\n",
-                             ctx->nameOf(ni), int(ni->wires.size()), int(ni->users.entries()));
+                    log_info("  [dbg] net '%s': %d wire(s), %d user(s) - feeds an IO OE\n", ctx->nameOf(ni),
+                             int(ni->wires.size()), int(ni->users.entries()));
             }
             for (auto &wire : ni->wires) {
                 PipId pip = wire.second.pip;
@@ -122,10 +122,9 @@ struct MistralBitgen
             NetInfo *n = ci->getPort(pin);
             WireId w = ctx->getBelPinWire(ci->bel, pin);
             log_info("  [io] %s bel=%s %s pin_wire=%s net=%s%s\n", ctx->nameOf(ci), ctx->nameOfBel(ci->bel),
-                     pin.c_str(ctx), w == WireId() ? "<none>" : ctx->nameOfWire(w),
-                     n ? ctx->nameOf(n) : "<none>",
+                     pin.c_str(ctx), w == WireId() ? "<none>" : ctx->nameOfWire(w), n ? ctx->nameOf(n) : "<none>",
                      (n && w != WireId() && n->wires.count(w)) ? "  ROUTE REACHES PIN"
-                                                              : "  *** net does NOT include the pin wire ***");
+                                                               : "  *** net does NOT include the pin wire ***");
         }
     }
 
@@ -195,8 +194,8 @@ struct MistralBitgen
                 // (Both bypass writes are also omitted for a DDR clock pad: the vendor altddio
                 // ground truth carries NEITHER on the clock lane.)
                 if (!dyn_oe_cell(ci) && !ddr_clk)
-                    cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL,
-                                   CycloneV::pn2bi(dqs), CycloneV::SEL_LOCKED_DPA);
+                    cv->bmux_m_set(CycloneV::DQS16, CycloneV::pn2p(dqs), CycloneV::INPUT_REG4_SEL, CycloneV::pn2bi(dqs),
+                                   CycloneV::SEL_LOCKED_DPA);
                 // The unregistered-path delay setting is REPLACED by the register path: every
                 // registered ground-truth pair (qrbase->qrout, ->qrall) REMOVES it. Writing it on a
                 // registered pad would reinstate the combinational delay chain alongside the OUTREG.
@@ -269,13 +268,12 @@ struct MistralBitgen
                     }
                 }
                 if (code >= 0) {
-                    bool ok = cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::RB_T1_SEL_IREG_CFF_DELAY,
-                                             dbi, (uint64_t)code);
-                    log_info("VUP_IREG_DELAY: IO '%s' DQ%d lane %d <- delay %d : %s\n", nm.c_str(),
-                             dqidx, dbi, code, ok ? "OK" : "FAILED(unmapped)");
+                    bool ok = cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::RB_T1_SEL_IREG_CFF_DELAY, dbi,
+                                             (uint64_t)code);
+                    log_info("VUP_IREG_DELAY: IO '%s' DQ%d lane %d <- delay %d : %s\n", nm.c_str(), dqidx, dbi, code,
+                             ok ? "OK" : "FAILED(unmapped)");
                     if (getenv("VUP_IREG_ROUTE"))
-                        cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::INPUT_REG1_SEL, dbi,
-                                       CycloneV::SEL_1X_DELAY);
+                        cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::INPUT_REG1_SEL, dbi, CycloneV::SEL_1X_DELAY);
                 }
             }
             if (reg_out) {
@@ -283,19 +281,19 @@ struct MistralBitgen
                 // OUTREG_POWER_UP_STATE = the intended pad value at power-up. FFs init to 0, so
                 // this is exactly the pack-time inversion parity (a pad whose data arrived through
                 // an inverter powered up HIGH in the fabric version, and must keep doing so).
-                uint32_t out_init = ci->params.count(id_IOREG_OUT_INIT) ? ci->params.at(id_IOREG_OUT_INIT).as_int64() : 0;
+                uint32_t out_init =
+                        ci->params.count(id_IOREG_OUT_INIT) ? ci->params.at(id_IOREG_OUT_INIT).as_int64() : 0;
                 cv->bmux_r_set(CycloneV::DQS16, dp, CycloneV::OUTREG_POWER_UP_STATE, dbi, out_init);
                 // POISON GATE (DDR clock-output feasibility): is the DQS16 DDR-output mode
                 // RE-mapped in the CRAM model? VUP_DDR_OUT=1 flips this OUTREG to DDR mode +
                 // the 2x-FF path. If bmux_m_set returns OK and the bitstream changes, we can
                 // configure a pad-launched DDR clock (altddio_out equivalent) in the open flow.
                 if (getenv("VUP_DDR_OUT")) {
-                    bool okm = cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_MODE_SEL, dbi,
-                                              CycloneV::DDR);
-                    bool oko = cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_OUTPUT_SEL, dbi,
-                                              CycloneV::SEL_2XFF);
-                    log_info("VUP_DDR_OUT: IO '%s' lane %d -> MODE_SEL=ddr(%s) OUTPUT_SEL=2xff(%s)\n",
-                             ctx->nameOf(ci), dbi, okm ? "OK" : "FAIL", oko ? "OK" : "FAIL");
+                    bool okm = cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_MODE_SEL, dbi, CycloneV::DDR);
+                    bool oko =
+                            cv->bmux_m_set(CycloneV::DQS16, dp, CycloneV::OUTREG_OUTPUT_SEL, dbi, CycloneV::SEL_2XFF);
+                    log_info("VUP_DDR_OUT: IO '%s' lane %d -> MODE_SEL=ddr(%s) OUTPUT_SEL=2xff(%s)\n", ctx->nameOf(ci),
+                             dbi, okm ? "OK" : "FAIL", oko ? "OK" : "FAIL");
                 }
             }
             if (reg_oe) {
@@ -425,8 +423,8 @@ struct MistralBitgen
         auto bt = ctx->pllclk_pos_is_vertical(uint32_t(pos)) ? CycloneV::CMUXVG : CycloneV::CMUXHG;
         cv->bmux_r_set(bt, pos, CycloneV::INPUT_SEL, bi, uint32_t(sel));
         cv->bmux_m_set(bt, pos, CycloneV::TESTSYN_ENOUT_SELECT, bi, CycloneV::PRE_SYNENB);
-        log_info("PLLCLK '%s': cmux(%d,%d)%s gclk %d INPUT_SEL=0x%x selects FPLL(%d,%d) C%d\n", ctx->nameOf(ci), x,
-                 y, bt == CycloneV::CMUXVG ? "VG" : "HG", bi, sel, pl.x, pl.y, counter);
+        log_info("PLLCLK '%s': cmux(%d,%d)%s gclk %d INPUT_SEL=0x%x selects FPLL(%d,%d) C%d\n", ctx->nameOf(ci), x, y,
+                 bt == CycloneV::CMUXVG ? "VG" : "HG", bi, sel, pl.x, pl.y, counter);
     }
 
     void write_m10k_cell(CellInfo *ci, int x, int y, int bi)
@@ -437,8 +435,8 @@ struct MistralBitgen
         // DATA_FLOW_THRU is probably transparent reads.
 
         auto dbits = ci->params.at(id_CFG_DBITS).as_int64();
-        log_info("M10K emit: '%s' at (%d,%d) bi=%d dbits=%ld%s\n", ctx->nameOf(ci), x, y, bi,
-                 dbits, ci->params.count(id_M10K_DC) ? " DC" : "");
+        log_info("M10K emit: '%s' at (%d,%d) bi=%d dbits=%ld%s\n", ctx->nameOf(ci), x, y, bi, dbits,
+                 ci->params.count(id_M10K_DC) ? " DC" : "");
 
         cv->bmux_b_set(CycloneV::M10K, pos, CycloneV::A_DATA_FLOW_THRU, bi, 1);
         cv->bmux_n_set(CycloneV::M10K, pos, CycloneV::A_DATA_WIDTH, bi, dbits);
@@ -611,12 +609,12 @@ struct MistralBitgen
         // VCO 300 MHz. The search keeps the PFD near the attested 10 MHz and prefers a VCO near the
         // attested 480, so a solution stays as close to the validated configuration as the requested
         // frequencies allow. VUP_PLL_FIXED_NM restores the old pinned pair.
-        int N = 5, M = 48;                          // attested fallback: PFD = f_ref/5 = 10 MHz
+        int N = 5, M = 48; // attested fallback: PFD = f_ref/5 = 10 MHz
         if (!getenv("VUP_PLL_FIXED_NM") && !fout.empty()) {
             double best = 1e30;
             for (int n = 1; n <= 32; n++) {
                 double pfd = f_ref / double(n);
-                if (pfd < 5.0 || pfd > 50.0)        // stay in the band the attested recipe sits in
+                if (pfd < 5.0 || pfd > 50.0) // stay in the band the attested recipe sits in
                     continue;
                 for (int m = 1; m <= 512; m++) {
                     double v = f_ref * double(m) / double(n);
@@ -628,23 +626,30 @@ struct MistralBitgen
                         if (f <= 0)
                             continue;
                         long C = std::lround(v / f);
-                        if (C < 1 || C > 511) { ok = false; break; }
+                        if (C < 1 || C > 511) {
+                            ok = false;
+                            break;
+                        }
                         err += std::fabs(v / double(C) - f) / f;
                     }
                     if (!ok)
                         continue;
                     double score = err * 1e6 + std::fabs(pfd - 10.0) * 1e2 + std::fabs(v - 480.0) * 1e-3;
-                    if (score < best) { best = score; N = n; M = m; }
+                    if (score < best) {
+                        best = score;
+                        N = n;
+                        M = m;
+                    }
                 }
             }
         }
         double vco = f_ref * double(M) / double(N); // 480 MHz -- inside the attested band
         int m_hi = M / 2, m_lo = M - m_hi;
-        int n_hi = (N + 1) / 2, n_lo = N - n_hi;    // 3 + 2, as ground truth encodes an odd N
+        int n_hi = (N + 1) / 2, n_lo = N - n_hi; // 3 + 2, as ground truth encodes an odd N
         bool gt_clone = getenv("VUP_PLL_GT_CLONE") != nullptr;
 
-        log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz (INTEGER family%s)\n",
-                 ctx->nameOf(ci), f_ref, N, M, vco, gt_clone ? ", GT-clone C dividers" : "");
+        log_info("FPLL '%s': f_ref=%.3f MHz, N=%d, M=%d, VCO=%.3f MHz (INTEGER family%s)\n", ctx->nameOf(ci), f_ref, N,
+                 M, vco, gt_clone ? ", GT-clone C dividers" : "");
 
         // ---- program the block ----
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::N_CNT_HI_DIV_SETTING, 0, n_hi);
@@ -713,13 +718,12 @@ struct MistralBitgen
                 if (ph_ps != 0.0) {
                     double vco_period_ps = 1.0e6 / vco; // vco is MHz
                     int taps = int(std::lround(ph_ps * 8.0 / vco_period_ps));
-                    int period_taps = 8 * C; // one full output period
+                    int period_taps = 8 * C;                                   // one full output period
                     taps = ((taps % period_taps) + period_taps) % period_taps; // normalise, allow negative
                     cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_PH_MUX_PRESET, phys, taps % 8);
                     cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::CNT_PRESET, phys, taps / 8 + 1);
-                    log_info("  C%d phase shift %.0f ps = %d VCO taps (%.1f deg) -> PH_MUX=%d, PRESET=%d\n",
-                             phys, ph_ps, taps, 360.0 * double(taps) / double(period_taps), taps % 8,
-                             taps / 8 + 1);
+                    log_info("  C%d phase shift %.0f ps = %d VCO taps (%.1f deg) -> PH_MUX=%d, PRESET=%d\n", phys,
+                             ph_ps, taps, 360.0 * double(taps) / double(period_taps), taps % 8, taps / 8 + 1);
                 }
             }
             // Enable this counter's clock output.
@@ -767,13 +771,12 @@ struct MistralBitgen
         // is fed back -- consistent with the original hardcoded _3 and the fabi386 note. Left as a
         // knob defaulting to the attested value for our position; do not generalise on one point.
         static const CycloneV::bmux_type_t pll_fb_en[4] = {
-                CycloneV::PLL_FEEDBACK_ENABLE_0, CycloneV::PLL_FEEDBACK_ENABLE_1,
-                CycloneV::PLL_FEEDBACK_ENABLE_2, CycloneV::PLL_FEEDBACK_ENABLE_3};
+                CycloneV::PLL_FEEDBACK_ENABLE_0, CycloneV::PLL_FEEDBACK_ENABLE_1, CycloneV::PLL_FEEDBACK_ENABLE_2,
+                CycloneV::PLL_FEEDBACK_ENABLE_3};
         int fb_gclk = 0; // the reference's value; VUP_PLL_FB_GCLK makes it sweepable
         if (const char *e = getenv("VUP_PLL_FB_GCLK"))
             fb_gclk = int(strtoul(e, nullptr, 0)) & 3;
-        cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), pll_fb_en[fb_gclk], 0,
-                       CycloneV::PLL_MCNT0);
+        cv->bmux_m_set(CycloneV::CMUXVG, CycloneV::xy2pos(42, 0), pll_fb_en[fb_gclk], 0, CycloneV::PLL_MCNT0);
         cv->bmux_r_set(CycloneV::FPLL, pos, CycloneV::TCLK_SEL, 0, 0);
 
         // REFERENCE-CLOCK ENABLE. The positive control (a Quartus build of THIS telemetry design,
@@ -834,73 +837,77 @@ struct MistralBitgen
         // The proper home for the fix is libmistral's routing model; this is the interim.
         if (CycloneV::pos2x(pos) == 0 && CycloneV::pos2y(pos) == 14 && !getenv("VUP_PLL_LEGACY") &&
             ci->attrs.count(id_PLLCLK_ATTESTED_REF)) {
-            static const struct { uint32_t x, y; uint8_t v; } spine[] = {
-        {865, 796, 0},
-        {866, 797, 0},
-        {857, 968, 0},
-        {857, 970, 0},
-        {857, 1140, 0},
-        {857, 1142, 0},
-        {857, 1312, 0},
-        {857, 1314, 0},
-        {857, 1484, 0},
-        {857, 1486, 0},
-        {857, 1656, 0},
-        {857, 1658, 0},
-        {857, 1828, 0},
-        {857, 1830, 0},
-        {857, 2000, 0},
-        {857, 2002, 0},
-        {857, 2172, 0},
-        {857, 2174, 0},
-        {857, 2344, 0},
-        {857, 2346, 0},
-        {836, 2508, 1},
-        {858, 2516, 0},
-        {860, 2516, 1},
-        // Two further bits at the y=76 tile, found only when a PURE nextpnr build was re-diffed
-        // against the donor: the pair the table was extracted from happened to already agree on
-        // them, so one differential pair can under-report. Always re-diff the BUILT artifact.
-        // The spine is not purely vertical: a HORIZONTAL segment at tile row 76 carries it across
-        // columns 12 and 15 as well. Found by diffing the built artifact against the donor after
-        // column 9 already matched byte-for-byte and the PLL still did not lock.
-        // The spine is a NETWORK, not one column: a second vertical run in column 15, the row-76
-        // horizontal continuing to column 18, and taps at (0,1)/(6,50). Each round of "diff the
-        // built artifact against the donor, add what is missing" revealed the next segment -- which
-        // is why the table is empirical and gated to the one attested (pin, PLL position) pair.
-        {0, 137, 1},
-        {657, 4380, 1},
-        {658, 4380, 1},
-        {657, 4381, 1},
-        {657, 4386, 1},
-        {657, 4387, 1},
-        {658, 4387, 1},
-        {1473, 98, 0},
-        {1473, 99, 1},
-        {1472, 102, 1},
-        {1473, 102, 0},
-        {1474, 381, 1},
-        {1476, 381, 0},
-        {1479, 788, 0},
-        {1479, 790, 0},
-        {1465, 2516, 1},
-        {1466, 2538, 1},
-        {1656, 6550, 0},
-        {1656, 6552, 0},
-        {1468, 780, 0},
-        {1469, 781, 0},
-        {1042, 6576, 0},
-        {1042, 6577, 0},
-        {1469, 6602, 1},
-        {1468, 6603, 1},
-        {859, 796, 0},
-        {859, 797, 0},
-        {865, 6590, 0},
-        {865, 6591, 0},
-        {865, 6584, 0},
-        {865, 6586, 0},
-        {859, 6592, 1},
-        {860, 6593, 1},
+            static const struct
+            {
+                uint32_t x, y;
+                uint8_t v;
+            } spine[] = {
+                    {865, 796, 0},
+                    {866, 797, 0},
+                    {857, 968, 0},
+                    {857, 970, 0},
+                    {857, 1140, 0},
+                    {857, 1142, 0},
+                    {857, 1312, 0},
+                    {857, 1314, 0},
+                    {857, 1484, 0},
+                    {857, 1486, 0},
+                    {857, 1656, 0},
+                    {857, 1658, 0},
+                    {857, 1828, 0},
+                    {857, 1830, 0},
+                    {857, 2000, 0},
+                    {857, 2002, 0},
+                    {857, 2172, 0},
+                    {857, 2174, 0},
+                    {857, 2344, 0},
+                    {857, 2346, 0},
+                    {836, 2508, 1},
+                    {858, 2516, 0},
+                    {860, 2516, 1},
+                    // Two further bits at the y=76 tile, found only when a PURE nextpnr build was re-diffed
+                    // against the donor: the pair the table was extracted from happened to already agree on
+                    // them, so one differential pair can under-report. Always re-diff the BUILT artifact.
+                    // The spine is not purely vertical: a HORIZONTAL segment at tile row 76 carries it across
+                    // columns 12 and 15 as well. Found by diffing the built artifact against the donor after
+                    // column 9 already matched byte-for-byte and the PLL still did not lock.
+                    // The spine is a NETWORK, not one column: a second vertical run in column 15, the row-76
+                    // horizontal continuing to column 18, and taps at (0,1)/(6,50). Each round of "diff the
+                    // built artifact against the donor, add what is missing" revealed the next segment -- which
+                    // is why the table is empirical and gated to the one attested (pin, PLL position) pair.
+                    {0, 137, 1},
+                    {657, 4380, 1},
+                    {658, 4380, 1},
+                    {657, 4381, 1},
+                    {657, 4386, 1},
+                    {657, 4387, 1},
+                    {658, 4387, 1},
+                    {1473, 98, 0},
+                    {1473, 99, 1},
+                    {1472, 102, 1},
+                    {1473, 102, 0},
+                    {1474, 381, 1},
+                    {1476, 381, 0},
+                    {1479, 788, 0},
+                    {1479, 790, 0},
+                    {1465, 2516, 1},
+                    {1466, 2538, 1},
+                    {1656, 6550, 0},
+                    {1656, 6552, 0},
+                    {1468, 780, 0},
+                    {1469, 781, 0},
+                    {1042, 6576, 0},
+                    {1042, 6577, 0},
+                    {1469, 6602, 1},
+                    {1468, 6603, 1},
+                    {859, 796, 0},
+                    {859, 797, 0},
+                    {865, 6590, 0},
+                    {865, 6591, 0},
+                    {865, 6584, 0},
+                    {865, 6586, 0},
+                    {859, 6592, 1},
+                    {860, 6593, 1},
             };
             int changed = 0;
             for (const auto &b : spine)
@@ -908,7 +915,6 @@ struct MistralBitgen
             log_info("  refclk spine: %d/%zu unmodelled CRAM bits corrected in column 9\n", changed,
                      sizeof(spine) / sizeof(spine[0]));
         }
-
     }
 
     // G7: the combinational unsigned 18x18 multiply recipe. Every value is Quartus ground truth
@@ -1067,6 +1073,15 @@ struct MistralBitgen
                 cv->bmux_b_set(block_type, pos, en_ninv[ce_idx], 0, ff->ffInfo.ctrlset.ena.inverted);
             } else {
                 cv->bmux_b_set(block_type, pos, en_en[ce_idx], 0, false);
+            }
+            if (i % 2 == 1) {
+                // Design 20.3 (MISTRAL_GAPS G9): a half's second register is clocked through the other half's clock
+                // select; silicon passes with that half's clock, clear, and synchronous-clear selects set from it (the
+                // rules make every register of the ALM share its control set, so this agrees with the other half's).
+                cv->bmux_m_set(block_type, pos, clk_sel[1 - i / 2], alm, clk_choice[ce_idx]);
+                cv->bmux_b_set(block_type, pos, clr_sel[1 - i / 2], alm, alm_data.aclr_idx[i / 2] == 1);
+                if (ff->ffInfo.ctrlset.sclr.net == nullptr)
+                    cv->bmux_b_set(block_type, pos, sclr_dis[1 - i / 2], alm, true);
             }
             // ACLR
             int aclr_idx = alm_data.aclr_idx[i / 2];

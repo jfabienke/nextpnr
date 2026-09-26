@@ -158,6 +158,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "with --lab-clustering, HeAP solver pull between a cluster's cells (default 0, off)");
     specific.add_options()("lab-cluster-line-price", po::value<float>(),
                            "with --lab-clustering, attraction lost per new external input net (default 0.1)");
+    specific.add_options()("alm-both-registers",
+                           "with --register-packing, a LUT's second register takes the second register bel of its "
+                           "ALM half (design 20.3; experimental)");
     specific.add_options()("lut-permutation",
                            "the router chooses each 5-input LUT's physical ALM pins (design 20.2; experimental)");
     specific.add_options()("lab-hint", po::value<std::string>(),
@@ -317,6 +320,7 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.lab_hint_path = vm["lab-hint"].as<std::string>();
     chipArgs.no_sa_refine = vm.count("no-sa-refine") != 0;
     chipArgs.lut_permutation = vm.count("lut-permutation") != 0;
+    chipArgs.alm_both_registers = vm.count("alm-both-registers") != 0;
     chipArgs.lab_clustering = vm.count("lab-clustering") != 0;
     if (vm.count("lab-cluster-fill"))
         chipArgs.lab_cluster_fill = std::max(1, vm["lab-cluster-fill"].as<int>());

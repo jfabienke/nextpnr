@@ -35,6 +35,10 @@
 //!    the cell it places at a bel or empty facts where it displaces one, held
 //!    in view together and never applied. An edit overrides a pending trial of
 //!    the same bel, since it says what the bel would hold.
+//!
+//! In any of these shapes a register patch at a second register bel may carry
+//! `FF_SECOND_REGISTER` (design 20.3: a register packed beside the LUT that
+//! drives it); the generators put flagged and unflagged registers there.
 
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
@@ -494,15 +498,17 @@ impl ResidentLabs {
         let (trials, trial_count) = Self::sync(lab, patches, recompute)?;
         let query = if is_lut { QUERY_COMB_BEL } else { QUERY_FF_BEL };
         let is_mlab = lab.facts.is_mlab != 0;
+        let second_allowed = !is_lut && shaped.ff.flags & FF_SECOND_REGISTER != 0;
         let trials = &trials[..trial_count];
         let mut at = shaped;
         for (index, &bel) in order.iter().enumerate() {
             at.alm = u32::from(bel) / (LUTS + FFS) as u32;
             at.slot = u32::from(bel) % (LUTS + FFS) as u32;
-            if !is_lut && Self::second_register_bel(at.slot as usize) {
+            if !is_lut && !second_allowed && Self::second_register_bel(at.slot as usize) {
                 // More than half the bels a scan is asked about on a crowded LAB: the ALM rule
-                // refuses a register there whatever else the ALM holds (`check_alm`, ODD_FF; the
-                // test `the_second_register_bel_of_a_half_is_always_refused` ties this to it).
+                // refuses a register without the second-register flag there whatever else the ALM
+                // holds (`check_alm`, ODD_FF; the test
+                // `the_second_register_bel_of_a_half_is_always_refused` ties this to it).
                 continue;
             }
             // `verdict` takes its trials as one array; only the rare paths that need it build it.
@@ -614,7 +620,7 @@ impl ResidentLabs {
     }
 
     /// The second register bel of an ALM half (slots 3 and 5 of the six): `check_alm` refuses any
-    /// register there.
+    /// register there that does not carry `FF_SECOND_REGISTER`.
     fn second_register_bel(slot: usize) -> bool {
         slot >= LUTS && (slot - LUTS) % 2 == 1
     }
@@ -1056,13 +1062,26 @@ mod tests {
     }
 
     fn random_ff(rng: &mut Lcg, keys: &[u32], slot: usize) -> LabFfV2 {
+        random_ff_at(rng, keys, slot, false)
+    }
+
+    /// `second`: a second register bel (odd slot) may be filled (one draw in three), usually with
+    /// FF_SECOND_REGISTER (design 20.3), sometimes without. Only patches that are
+    /// never applied (trials, scan candidates) fill it, so the committed state
+    /// the sequences build keeps its legal LABs; the flag also appears on first
+    /// register bels, where the rules ignore it.
+    fn random_ff_at(rng: &mut Lcg, keys: &[u32], slot: usize, second: bool) -> LabFfV2 {
         // Mostly one register per half with the LAB's clock and nothing else,
         // so legal control sets are common; sometimes a random control set.
         let mut ff = LabFfV2::default();
-        if slot % 2 == 1 || rng.next(3) == 0 {
+        let odd = slot % 2 == 1;
+        if rng.next(3) == 0 || (odd && (!second || rng.next(3) != 0)) {
             return ff;
         }
         ff.occupied = 1;
+        if (odd && rng.next(4) != 0) || rng.next(8) == 0 {
+            ff.flags = FF_SECOND_REGISTER;
+        }
         if rng.next(3) != 0 {
             ff.datain_net = keys[rng.next(keys.len() as u32) as usize];
         }
@@ -1091,7 +1110,7 @@ mod tests {
         if (slot as usize) < LUTS {
             patch.lut = random_lut(rng, keys);
         } else {
-            patch.ff = random_ff(rng, keys, slot as usize - LUTS);
+            patch.ff = random_ff_at(rng, keys, slot as usize - LUTS, patch.commit == 0);
         }
         patch
     }
@@ -1128,7 +1147,7 @@ mod tests {
         let (mut scans, mut scans_later, mut scans_none) = (0u32, 0u32, 0u32);
         let (mut edits_legal, mut edits_illegal) = (0u32, 0u32);
         let (mut edits_removing, mut edits_overriding, mut edits_over_budget) = (0u32, 0u32, 0u32);
-        for step in 0..8000u64 {
+        for step in 0..16000u64 {
             let lab = rng.next(3) as usize;
             let count = rng.next(4) as usize;
             let mut patches: Vec<BelPatchV2> = Vec::new();
@@ -1239,8 +1258,24 @@ mod tests {
                         }
                     } else {
                         let ff_slot = rng.next(FFS as u32) as usize;
-                        candidate.ff = random_ff(&mut rng, &keys, ff_slot);
+                        candidate.ff = random_ff_at(&mut rng, &keys, ff_slot, true);
                         if candidate.ff.occupied == 1 {
+                            // A flagged register usually takes the output of a LUT this LAB
+                            // holds, so a second register bel beside that LUT can be its answer.
+                            let luts: Vec<u32> = expected
+                                .alm
+                                .iter()
+                                .flat_map(|alm| alm.lut.iter())
+                                .filter(|lut| lut.occupied == 1)
+                                .map(|lut| lut.comb_out_net)
+                                .collect();
+                            if candidate.ff.flags & FF_SECOND_REGISTER != 0
+                                && !luts.is_empty()
+                                && rng.next(4) != 0
+                            {
+                                candidate.ff.datain_net =
+                                    luts[rng.next(luts.len() as u32) as usize];
+                            }
                             break;
                         }
                     }
@@ -1257,6 +1292,13 @@ mod tests {
                             order.push((alm * (LUTS + FFS) + slot) as u8);
                         }
                     }
+                }
+                if !want_lut && candidate.ff.flags & FF_SECOND_REGISTER != 0 && rng.next(3) != 0 {
+                    // Only second register bels: the first register bel of the same half would
+                    // otherwise answer first, and the shortcut's skip would never be tested.
+                    order.retain(|&bel| {
+                        ResidentLabs::second_register_bel(usize::from(bel) % (LUTS + FFS))
+                    });
                 }
                 for i in (1..order.len()).rev() {
                     order.swap(i, rng.next(i as u32 + 1) as usize);
@@ -1321,6 +1363,27 @@ mod tests {
                         edit.ff = LabFfV2::default();
                     }
                     edits.push(edit);
+                }
+                // A cluster candidate with a second register (design 20.3) brings the LUT that
+                // drives it: usually wire such a register to a LUT the same edits place in its half.
+                for i in 0..edits.len() {
+                    let (alm, slot) = (edits[i].alm, edits[i].slot as usize);
+                    if slot < LUTS
+                        || (slot - LUTS) % 2 == 0
+                        || edits[i].ff.flags & FF_SECOND_REGISTER == 0
+                    {
+                        continue;
+                    }
+                    let half = (slot - LUTS) / 2;
+                    let driver = edits
+                        .iter()
+                        .find(|e| e.alm == alm && e.slot as usize == half && e.lut.occupied == 1)
+                        .map(|e| e.lut.comb_out_net);
+                    if let Some(net) = driver
+                        && rng.next(4) != 0
+                    {
+                        edits[i].ff.datain_net = net;
+                    }
                 }
                 let same_bel = |a: &BelPatchV2, b: &BelPatchV2| a.alm == b.alm && a.slot == b.slot;
                 let answer = resident.evaluate_edits(lab, &in_view, &edits, step % 2 == 0);
@@ -1401,13 +1464,130 @@ mod tests {
         );
     }
 
-    /// The scan skips the second register bel of a half without asking the ALM rule; this holds
-    /// the shortcut to the rule over random ALMs, registers, and both such bels of each ALM.
+    /// Design 20.3: a register carrying `FF_SECOND_REGISTER` is found on the second register bel
+    /// beside the LUT that drives it. Legal LABs (plain two-input LUTs, one clock, some first
+    /// registers fed by their LUT), scans of flagged registers over the free second register bels
+    /// only, each answered against the capture path. A scan that skipped every register at those
+    /// bels (the shortcut before this change) finds none of them and fails here.
+    #[test]
+    fn flagged_registers_are_found_on_second_register_bels() {
+        let keys: Vec<u32> = (0..12).map(|i| 7_919 * (i + 3) + 1).collect();
+        let clock = ControlSignalV1 {
+            net_id: keys[0],
+            flags: 0,
+        };
+        let mut rng = Lcg(20_260_926);
+        let (mut scans, mut found_second) = (0u32, 0u32);
+        for round in 0..400u32 {
+            let mut resident = ResidentLabs::new(1, 42).unwrap();
+            resident.reset(0, false).unwrap();
+            let mut facts = LabFactsV2 {
+                input_limit: 42,
+                ..LabFactsV2::default()
+            };
+            let mut patches = Vec::new();
+            let mut outputs = Vec::new();
+            for alm in 0..ALMS {
+                for half in 0..LUTS {
+                    if rng.next(3) == 0 {
+                        continue;
+                    }
+                    let mut lut = LabLutV2 {
+                        occupied: 1,
+                        input_count: 2,
+                        used_input_count: 2,
+                        bits_count: 4,
+                        mlab_group: -1,
+                        comb_out_net: 1_000_000 + round * 64 + (alm * LUTS + half) as u32,
+                        ..LabLutV2::default()
+                    };
+                    lut.input_net[0] = keys[1 + rng.next(4) as usize];
+                    lut.input_net[1] = keys[5 + rng.next(4) as usize];
+                    outputs.push(lut.comb_out_net);
+                    patches.push(BelPatchV2 {
+                        alm: alm as u32,
+                        slot: half as u32,
+                        commit: 1,
+                        lut,
+                        ..BelPatchV2::default()
+                    });
+                    if rng.next(2) == 0 {
+                        let mut ff = LabFfV2 {
+                            occupied: 1,
+                            datain_net: lut.comb_out_net,
+                            ..LabFfV2::default()
+                        };
+                        ff.control[0] = clock;
+                        patches.push(BelPatchV2 {
+                            alm: alm as u32,
+                            slot: (LUTS + 2 * half) as u32,
+                            commit: 1,
+                            ff,
+                            ..BelPatchV2::default()
+                        });
+                    }
+                }
+            }
+            for patch in &patches {
+                ResidentLabs::apply_bel(&mut facts.alm[patch.alm as usize], patch);
+            }
+            for patch in &mut patches {
+                patch.alm_inputs = recompute_inputs(&AlmView::of(&facts.alm[patch.alm as usize]));
+            }
+            resident
+                .evaluate(0, &patches, QUERY_COMB_BEL, 0, true)
+                .unwrap();
+            if outputs.is_empty() {
+                continue;
+            }
+            let mut candidate = BelPatchV2::default();
+            candidate.ff.occupied = 1;
+            candidate.ff.control[0] = clock;
+            candidate.ff.flags = FF_SECOND_REGISTER;
+            candidate.ff.datain_net = outputs[rng.next(outputs.len() as u32) as usize];
+            let mut order: Vec<u8> = (0..ALMS)
+                .flat_map(|alm| [1usize, 3].map(|odd| (alm * (LUTS + FFS) + LUTS + odd) as u8))
+                .collect();
+            for i in (1..order.len()).rev() {
+                order.swap(i, rng.next(i as u32 + 1) as usize);
+            }
+            let found = resident
+                .evaluate_scan(0, &[], &candidate, &order, round % 2 == 0)
+                .unwrap();
+            let mut reference = None;
+            for (index, &bel) in order.iter().enumerate() {
+                let mut at = candidate;
+                at.alm = u32::from(bel) / (LUTS + FFS) as u32;
+                at.slot = u32::from(bel) % (LUTS + FFS) as u32;
+                let mut with = facts;
+                ResidentLabs::apply_bel(&mut with.alm[at.alm as usize], &at);
+                with.query = QUERY_FF_BEL;
+                with.query_alm = at.alm;
+                if evaluate_facts(&with).status == LAB_LEGAL {
+                    reference = Some(index);
+                    break;
+                }
+            }
+            assert_eq!(found, reference, "round {round}: {order:?}");
+            scans += 1;
+            found_second += u32::from(found.is_some());
+        }
+        assert!(
+            scans > 300 && found_second >= 100,
+            "{found_second} of {scans} scans found a second register bel"
+        );
+    }
+
+    /// The scan skips the second register bel of a half without asking the ALM rule when the
+    /// candidate lacks `FF_SECOND_REGISTER`; this holds that shortcut to the rule over random
+    /// ALMs and registers at both such bels of each ALM. The generator is hostile: it also puts
+    /// flagged registers there beside the LUT that drives them, which the rule admits, so the old
+    /// claim ("always refused") fails on it (counted below).
     #[test]
     fn the_second_register_bel_of_a_half_is_always_refused() {
         let keys: Vec<u32> = (0..12).map(|i| 7_919 * (i + 3) + 1).collect();
         let mut rng = Lcg(55_511);
-        let mut checked = 0;
+        let (mut checked, mut flagged_admitted) = (0, 0);
         for _ in 0..4000 {
             let mut alm = AlmFactsV2::default();
             for slot in 0..LUTS {
@@ -1425,19 +1605,35 @@ mod tests {
             }
             for odd in [1usize, 3] {
                 let mut with = alm;
-                // The generator leaves odd bels empty; an even bel's register goes there.
                 loop {
-                    with.ff[odd] = random_ff(&mut rng, &keys, 0);
+                    with.ff[odd] = random_ff_at(&mut rng, &keys, odd, true);
                     if with.ff[odd].occupied == 1 {
                         break;
                     }
                 }
+                let half = odd / 2;
+                if rng.next(2) == 0 && with.lut[half].occupied == 1 {
+                    // Often driven by the half's LUT: the case a flag can make legal.
+                    with.ff[odd].datain_net = with.lut[half].comb_out_net;
+                }
+                let mut unflagged = with;
+                unflagged.ff[odd].flags = 0;
                 let mut result = LabAssessmentV2::default();
-                assert!(!check_alm(&AlmView::of(&with), 0, &mut result));
+                assert!(!check_alm(&AlmView::of(&unflagged), 0, &mut result));
+                let mut result = LabAssessmentV2::default();
+                if with.ff[odd].flags & FF_SECOND_REGISTER != 0
+                    && check_alm(&AlmView::of(&with), 0, &mut result)
+                {
+                    flagged_admitted += 1;
+                }
                 checked += 1;
             }
         }
         assert_eq!(checked, 8000);
+        assert!(
+            flagged_admitted > 100,
+            "flagged second registers admitted: {flagged_admitted}"
+        );
     }
 
     /// The main oracle's LABs almost never make a control refusal depend on the bel, and a scan

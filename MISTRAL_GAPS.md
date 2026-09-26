@@ -19,7 +19,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. **CLOSED 2026-08-09: IO-register packing implemented and silicon-verified** — registered MemTest passes @50 (transparency, 0 errors) AND **@135 MHz** (BUILD_ID C2), the frequency that failed at every phase without registers. Pack rule + DQS16 emission in nextpnr (`pack_io_registers`), qsf `FAST_*_REGISTER`-gated; controllers need the pad-launch-stage RTL shape (`sdramreg_tmpl.v`). |
 | **G7** | DSP / `MISTRAL_MUL18X18` | **SOLVED on silicon** — 5000 multiplies through a real DSP block match a golden checksum. Bel + packing + emission (mistral/dsp.cc); operand→lane mapping silicon-derived (last six B lanes are REVERSED); ground truth's odd `DATA_INV` masks decoded as Quartus cancelling its own routing inversions. Combinational 18×18 only; registered/accumulate modes remain |
 | **G8** | two PLLs in one design abort the tool | **LARGELY DISSOLVED.** The need was misdiagnosed: Quartus **merges** same-reference PLLs into ONE physical PLL with multiple counters (`Total PLLs: 1/6` for a two-instance design), and our flow already does that shape — **10 MHz + 25 MHz from one PLL, both `LOCKED=1` on silicon**. Two *independent* FPLLs now place and route; only one locks, because the reference spine exists for one position. Rarely needed |
-| **G9** | the second register of an ALM half (`lab.cc`: "why are these FFs broken?") | **2026-09-26, silicon: works beside a LUT in its half, fails without one.** Both registers of a half fed by the half's 4-input LUT, the second fed through E/F beside a 2-input LUT, and either alone: 20,000-cycle golden checksums match, controls fail as they must. Every failing build has a second register in a half with no LUT. Carry halves and 6-input LUTs untested |
+| **G9** | the second register of an ALM half (`lab.cc`: "why are these FFs broken?") | **2026-09-26, silicon: works beside a LUT in its half, fails without one.** Both registers of a half fed by the half's 4-input LUT, the second fed through E/F beside a 2-input LUT, and either alone: 20,000-cycle golden checksums match, controls fail as they must. Root cause: it is clocked through the other half's clock select, which the writer now sets (fixed, EC passes). Carry halves and 6-input LUTs untested |
 
 > **Caution on "SOLVED".** G4 carried that label for a day while two defects sat inside it, each
 > fatal to the first real core that tried to use it: attestation failed for any **buffered** clock
@@ -1116,6 +1116,19 @@ LUT, beside the first register or alone. **Fails:** every failing build has a se
 LUT (FD, with exactly one besides one fed by its own LUT, fails the checksum); F4's were fed through the route-through
 LUT (`$ROUTETHRU`, `COMBOUT` to `FFIN`), FE's mostly through E/F, which is not isolated further. **Untested:** carry halves (the variant did not
 place), 6-input LUTs, a 5-input LUT feeding its second register, and E/F beside a LUT of more than two inputs.
+
+**Root cause, found 2026-09-26 (later the same day).** A half's second register is clocked through the **other
+half's** clock select (`TCLK_SEL`/`BCLK_SEL`, which also chooses the enable line). nextpnr's writer set each half's
+select only from that half's registers, so a second register beside a half with no register of its own ran on the
+default select. Every hand-placed pass above had registers in both halves with one control set, which hid it. The
+end-to-end build of the option (`--register-packing --alm-both-registers`, 96 second registers packed with their
+LUTs) failed (E3, E5, E8) until the writer also set the other half's selects: mirroring the clock, clear, and
+synchronous-clear selects (E9), or the clock select alone (EB), passes; the synchronous-clear select alone (EA) does
+not. The same netlist without the option passes on three seeds (E4, E6, E7). The fix: the writer sets the other
+half's selects from the second register, and the rules require every register of an ALM with a second register to
+share its control set. With it, the option's build passes (EC `done=1 match=1 sig_lo=4c8d`, its control ED
+`match=0`). The failing builds F4, FB to FE, and E0 all had second registers in ALMs whose other half held no
+register, so the "no LUT in the half" pattern above was very likely this clock select.
 
 **Consequence for the placer:** "a second register needs a LUT in its half" is not monotone under removal, and the
 annealer checks only the bels a move fills (design 18.1), so a free-placement rule is unsound: E0 shows a register

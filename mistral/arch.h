@@ -81,6 +81,7 @@ struct ArchArgs
     std::string lab_hint_path;              // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
     bool no_sa_refine = false;              // Design 20.0: skip HeAP's annealing refinement
     bool lut_permutation = false;           // Design 20.2: the router chooses each L5 LUT input's physical pin
+    bool alm_both_registers = false;        // Design 20.3: register packing may use a half's second register bel
     bool lab_clustering = false;            // Design 20.1: cluster LAB cells before placement
     int lab_cluster_fill = 16;              // Design 20.1: cells per cluster at most
     float lab_cluster_line_price = 0.1f;    // Design 20.1: attraction lost per new external input net

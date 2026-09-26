@@ -14,15 +14,16 @@
 #include "lab_v2_replay.h"
 #include "log.h"
 #include "nextpnr.h"
+#include "register_packing.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
 static_assert(std::is_standard_layout<NpnrLabFactsV2>::value && std::is_trivially_copyable<NpnrLabFactsV2>::value,
               "V2 facts must be C value transport");
-static_assert(sizeof(NpnrLabLutV2) == 80 && sizeof(NpnrLabFfV2) == 52 && sizeof(NpnrAlmFactsV2) == 376, "V2 fact ABI");
-static_assert(sizeof(NpnrLabFactsV2) == 3808 && offsetof(NpnrLabFactsV2, alm) == 48, "V2 input ABI");
+static_assert(sizeof(NpnrLabLutV2) == 80 && sizeof(NpnrLabFfV2) == 56 && sizeof(NpnrAlmFactsV2) == 392, "V2 fact ABI");
+static_assert(sizeof(NpnrLabFactsV2) == 3968 && offsetof(NpnrLabFactsV2, alm) == 48, "V2 input ABI");
 static_assert(sizeof(NpnrLabAssessmentV2) == 328 && offsetof(NpnrLabAssessmentV2, control) == 112, "V2 result ABI");
-static_assert(sizeof(NpnrBelPatchV2) == 148 && offsetof(NpnrBelPatchV2, lut) == 16 &&
+static_assert(sizeof(NpnrBelPatchV2) == 152 && offsetof(NpnrBelPatchV2, lut) == 16 &&
                       offsetof(NpnrBelPatchV2, ff) == 96,
               "V2 bel patch ABI");
 static_assert(sizeof(NpnrLabVerdictV2) == 88 && offsetof(NpnrLabVerdictV2, recomputed_input_count) == 48,
@@ -154,6 +155,8 @@ bool check_alm(const NpnrLabFactsV2 &input, unsigned alm_index, NpnrLabAssessmen
     const bool carry = (alm.lut[0].occupied && alm.lut[0].is_carry) || (alm.lut[1].occupied && alm.lut[1].is_carry);
     if (alm.lut[0].occupied && alm.lut[1].occupied && alm.lut[0].is_carry != alm.lut[1].is_carry)
         return fail(result, NPNR_LAB_V2_CARRY_MIX, alm_index);
+    const bool six_input =
+            (alm.lut[0].occupied && alm.lut[0].input_count > 5) || (alm.lut[1].occupied && alm.lut[1].input_count > 5);
     for (unsigned half = 0; half < 2; ++half) {
         bool route_thru = !alm.lut[half].occupied && !carry && total_lut_inputs < 8 && used_lut_bits < 64;
         bool ef_available = !alm.lut[1 - half].occupied || alm.lut[1 - half].used_input_count <= 2;
@@ -163,8 +166,17 @@ bool check_alm(const NpnrLabFactsV2 &input, unsigned alm_index, NpnrLabAssessmen
             const auto &ff = alm.ff[slot];
             if (!ff.occupied)
                 continue;
-            if (j == 1)
+            // The second register of a half (MISTRAL_GAPS G9, design 20.3): only one the packer placed beside the
+            // LUT of its half that drives it; never in a carry half or beside a six-input LUT.
+            if (j == 1 && !((ff.flags & NPNR_LAB_FF_SECOND_REGISTER) && alm.lut[half].occupied && !carry &&
+                            !six_input && ff.datain_net && ff.datain_net == alm.lut[half].comb_out_net))
                 return fail(result, NPNR_LAB_V2_ODD_FF, alm_index, slot);
+            // A second register is clocked through the other half's clock select (MISTRAL_GAPS G9): every register
+            // of the ALM must share its control set.
+            if (j == 1)
+                for (const auto &other : alm.ff)
+                    if (other.occupied && &other != &ff && !same_ctrlset(other, ff))
+                        return fail(result, NPNR_LAB_V2_FF_CONTROL, alm_index, slot);
             if (first && !same_ctrlset(*first, ff))
                 return fail(result, NPNR_LAB_V2_FF_CONTROL, alm_index, slot);
             if (!first)
@@ -339,6 +351,7 @@ void fill_ff_facts(const CellInfo &cell, NetId &&net_id, Signal &&signal, NpnrLa
     const std::array<ControlSig, 5> controls{cs.clk, cs.sload, cs.sclr, cs.aclr, cs.ena};
     for (unsigned kind = 0; kind < controls.size(); ++kind)
         ff.control[kind] = signal(controls[kind]);
+    ff.flags = is_second_register_child(&cell) ? NPNR_LAB_FF_SECOND_REGISTER : 0u;
 }
 
 template <typename Bound, typename NetId, typename Signal>

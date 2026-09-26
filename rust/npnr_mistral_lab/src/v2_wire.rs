@@ -3,7 +3,10 @@
 
 use crate::wire::{CONTROL_COUNT, ControlSignalV1, LabControlResultV1};
 
-pub const ABI_VERSION_V2: u32 = 2;
+pub const ABI_VERSION_V2: u32 = 3;
+/// `LabFfV2::flags`: the register may take the second register bel of the ALM half whose LUT drives it (design
+/// 20.3, a pack-time cluster child of that LUT).
+pub const FF_SECOND_REGISTER: u32 = 1;
 pub const ALMS: usize = 10;
 pub const LUTS: usize = 2;
 pub const FFS: usize = 4;
@@ -58,6 +61,7 @@ pub struct LabFfV2 {
     pub datain_net: u32,
     pub sdata_net: u32,
     pub control: [ControlSignalV1; CONTROL_COUNT],
+    pub flags: u32,
 }
 
 #[repr(C)]
@@ -260,13 +264,13 @@ impl Default for LabAssessmentV2 {
 const _: () = {
     use core::mem::{offset_of, size_of};
     assert!(size_of::<LabLutV2>() == 80);
-    assert!(size_of::<LabFfV2>() == 52);
-    assert!(size_of::<AlmFactsV2>() == 376);
-    assert!(size_of::<LabFactsV2>() == 3808);
+    assert!(size_of::<LabFfV2>() == 56);
+    assert!(size_of::<AlmFactsV2>() == 392);
+    assert!(size_of::<LabFactsV2>() == 3968);
     assert!(offset_of!(LabFactsV2, alm) == 48);
     assert!(size_of::<LabAssessmentV2>() == 328);
     assert!(offset_of!(LabAssessmentV2, control) == 112);
-    assert!(size_of::<BelPatchV2>() == 148);
+    assert!(size_of::<BelPatchV2>() == 152);
     assert!(offset_of!(BelPatchV2, lut) == 16);
     assert!(offset_of!(BelPatchV2, ff) == 96);
     assert!(size_of::<LabVerdictV2>() == 88);

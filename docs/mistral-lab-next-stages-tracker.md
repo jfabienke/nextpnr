@@ -4979,6 +4979,39 @@ the LUT's presence is unsound under the annealer's move check, so 20.3 admits th
 pack-time cluster with the LUT that drives it. The work-in-progress option (`--alm-both-registers`, C++ rule only) is
 saved as `build/stage6-fullcore/ff2test/u20-3-wip.patch`, not committed.
 
+### 2026-09-26: Unit 20.3: the second register's clock select, and `--alm-both-registers`
+
+The board stayed up (`192.168.25.30`), so the LUT widths register packing produces were tested first:
+`gen.py --widths` (build E1), LUT widths 5, 3, 2, 1, 5, 3 by ALM, half 0 with both registers fed by its LUT, half 1
+with the second only, golden `db9d7d18`: `done=1 match=1 sig_lo=7d18`; its control E2 `match=0 sig_lo=7d18` (a
+first control was void: the build-id `sed` also rewrote an ALUT3 mask of `8'hE1`).
+
+**The option.** `--alm-both-registers` (with `--register-packing`): the packer gives a LUT a second register as a
+cluster child at relative z 3 or 5 (the second register bel of its half), not beside a six-input LUT. The rule,
+in `lab.cc`, the detached V2 evaluator (`lab_v2.cc`), and Rust (`v2.rs`), admits a register on a second register
+bel only when it carries `NPNR_LAB_FF_SECOND_REGISTER` (set by the capture for such cluster children,
+`is_second_register_child`), is fed by the LUT of its half, is not in a carry half or beside a six-input LUT, and
+every register of its ALM shares its control set. `NpnrLabFfV2` gained `flags` (ABI v3; 56 bytes, the facts 3,968,
+the bel patch 152); the tile scan skips second register bels only for unflagged candidates. The rule depends on the
+LUT, but only inside a cluster, which moves as one unit.
+
+**Silicon, end to end.** The ff2sil netlist without bel constraints through the option (96 second registers)
+failed (E3 `match=0`) where the same netlist without the option passes on seeds 1 to 3 (E4, E6, E7). Neither MLAB
+tiles (E5) nor LUT input sharing (E8) was the cause; the decoded bitstreams showed ALMs with registers in one half
+only, which no passing build had. Mirroring the second register's control selects onto the other half passes (E9);
+the synchronous-clear select alone does not (EA); the clock select alone does (EB). The writer now sets the other
+half's selects from a second register, and the rules require one control set per such ALM. The option's build
+passes (EC `done=1 match=1 sig_lo=4c8d`, control ED `match=0`), Rust authority, MLAB tiles allowed. `MISTRAL_GAPS`
+G9 records the cause.
+
+**Guards.** Rust: the generators put flagged and unflagged registers on second register bels; a dedicated test
+scans flagged registers beside their LUT against the capture path (at least 100 of 400 scans answer on a second
+register bel); a mutation that keeps the old skip for every register fails it and the random-sequence oracle;
+the random-sequence test runs 16,000 steps (the new generator made the 8,000-step coverage floors marginal). Verify
+mode on the probe with the option: 2,553,417 evaluations, zero mismatches, before and after the control-set clause
+(it had first caught the detached evaluator still refusing). gtest 67 of 67. The probe packs one second register;
+the core is next.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5103,6 +5136,7 @@ saved as `build/stage6-fullcore/ff2test/u20-3-wip.patch`, not committed.
 | 2026-09-26 | platform | Compare quality only within one platform; the Linux runner has its own baseline (`aws-base`, median 13.11 MHz, spread 0.26) | Linux and macOS place the same inputs differently; determinism holds on each |
 | 2026-09-26 | 20.2 | **Promote** `--lut-permutation` into the core recipe (`quality.py` configuration `core`, `core_probe_flow.sh`), at the user's direction; default unchanged; baselines with it are `lperm-5s` (macOS) and `aws-perm` (Linux); the silicon checksum waits for the board | Quality rule ACCEPT on both platforms (13.28 to 14.09 MHz, 13.11 to 13.69); routing rule REJECT on both for seed 2 alone (-0.16, -0.02); `lut_perm_check.py` 7,341 of 7,341 LUTs correct, with a mutation check |
 | 2026-09-26 | 19.4 | Step 2 passes for the second register beside a LUT of its half (fed by the LUT, 4 inputs, or through E/F beside 2 inputs; with or without the first register); every failing build has one in a half without a LUT; 20.3 admits the second register only in a pack-time cluster with the LUT that drives it, never as a free placement | F7 `match=1`, control F8 `match=0`, F9 (alone) `match=1`; FB to FE and E0 fail; E0 shows the annealer leaving a register alone after moving its LUT |
+| 2026-09-26 | 20.3 | Admit the second register of a half behind `--alm-both-registers` (off by default), only as a register-packing cluster child beside the LUT that drives it, one control set per ALM; the writer sets the other half's clock, clear, and synchronous-clear selects from it | Silicon: E1 (widths 1 to 5), EC (the option's own build) pass with controls; the cause of every earlier failure, the other half's clock select, found (E9, EB against EA); verify mode zero mismatches |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |

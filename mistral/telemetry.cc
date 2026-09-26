@@ -85,6 +85,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"lab_hint", a.lab_hint_path},
             {"no_sa_refine", a.no_sa_refine},
             {"lut_permutation", a.lut_permutation},
+            {"alm_both_registers", a.alm_both_registers},
             {"lab_clustering", a.lab_clustering},
             {"lab_cluster_fill", a.lab_cluster_fill},
             {"lab_cluster_line_price", double(a.lab_cluster_line_price)},

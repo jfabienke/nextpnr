@@ -11,7 +11,7 @@ extern "C" {
 
 enum
 {
-    NPNR_LAB_ABI_V2 = 2,
+    NPNR_LAB_ABI_V2 = 3,
     NPNR_LAB_V2_ALMS = 10,
     NPNR_LAB_V2_LUTS = 2,
     NPNR_LAB_V2_FFS = 4,
@@ -68,12 +68,17 @@ typedef struct NpnrLabLutV2
     NpnrControlSignalV1 we;
 } NpnrLabLutV2;
 
+// NpnrLabFfV2.flags: the register may take the second register bel of the ALM half whose LUT drives it
+// (design 20.3: a pack-time cluster child of that LUT, under --alm-both-registers).
+#define NPNR_LAB_FF_SECOND_REGISTER 1u
+
 typedef struct NpnrLabFfV2
 {
     uint32_t occupied;
     uint32_t datain_net;
     uint32_t sdata_net;
     NpnrControlSignalV1 control[NPNR_LAB_CONTROL_COUNT];
+    uint32_t flags;
 } NpnrLabFfV2;
 
 typedef struct NpnrAlmFactsV2
