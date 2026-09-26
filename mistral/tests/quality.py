@@ -44,7 +44,8 @@ CONFIGS = {
     # The recipe that routes the full Fabi386 core (CLAUDE.md, Stage 6 6h), inputs outside git. Since
     # 2026-09-24 it carries the Fmax set of design 19 (19.2, 19.6, HeAP timing weight 100, 19.3b) and the
     # timing repair (19.9); runs recorded before then (base-faf70aa0 and the 19.x screenings) used the 6h
-    # recipe without them.
+    # recipe without them. Since 2026-09-26 it carries LUT input permutation (20.2); the baselines with it are
+    # lperm-5s (macOS) and aws-perm (the Linux runner), those without rep2-c05-5s and aws-base.
     'core': {
         'inputs': ['--json', 'build/stage6-fullcore/f386_core_probe.json', '--qsf',
                    'build/stage6-fullcore/core_probe.qsf'],
@@ -55,7 +56,7 @@ CONFIGS = {
                     '--router2-reroute-contested', '--sa-row-weight', '4', '--sa-entry-weight', '4',
                     '--heap-lab-affinity', '2', '--heap-lab-reach', '5', '--placer-heap-timingweight', '100',
                     '--router2-crit-cost', '--router2-crit-threshold', '0', '--router2-repair-rounds', '2',
-                    '--router2-repair-crit', '0.5'],
+                    '--router2-repair-crit', '0.5', '--lut-permutation'],
     },
     # The same recipe on the 2026-09-24 core (12.4% more logic; fabi386's build/openflow/core_probe.json),
     # which the per-ALM input count cannot place (tracker, 2026-09-24).

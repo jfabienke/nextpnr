@@ -332,6 +332,16 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   base's route-prepared checkpoints (`compare --kind routing`). Every option is off by default. The
   arch used to fix HeAP's criticality exponent at 7 over `--placer-heap-critexp`; `--heap-crit-exp`
   now sets it (default 7). `MISTRAL_DUMP_ARC_DELAYS=file` writes every routed arc's tiles and delay.
+- Design 20 (2026-09-25/26, closing the algorithmic gap): LUT input permutation (20.2,
+  `--lut-permutation`: `LPERM` pseudo-wires per ALM half let router2 choose each plain L5 LUT's
+  physical pins, nets both halves share stay on A/B, `Arch::lut_permutation_fixup` rewrites the pins
+  after routing; `mistral/tests/lut_perm_check.py` checks every LUT's function in the decoded
+  bitstream) joined the core recipe on 2026-09-26 at the user's direction: median 13.28 to 14.09 MHz
+  (macOS, tag `lperm-5s`), 13.11 to 13.69 (Linux, `aws-perm`), seed 2 flat on both. LAB clustering
+  before placement (20.1, `--lab-clustering`, `--lab-cluster-pull`) is measured negative under the
+  present rules (LAB count unchanged, Fmax down) and stays opt-in for after 20.3 (the second
+  register). Five-seed runs go to the AWS runner (`nextpnr-runner`, Linux): Linux places
+  differently from macOS, so compare only within one platform.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   the router2 experiment block `MISTRAL_R2_*`, the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`, the
