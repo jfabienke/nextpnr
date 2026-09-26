@@ -5088,6 +5088,36 @@ pin model is contradicted where it differs most (lane 18, twelve inverter hops, 
 10.4 ns, where the old model says 9.27 ns and the pin model 14.64 ns). Next for 20.4b: register `run`, repeat each
 point near a lane's edge, and force long wires; no calibration is taken from this sweep.
 
+### 2026-09-26: Timing lanes, second sweep: routing is about 30% pessimistic, nearly uniformly
+
+The first sweep's limit near 100 MHz was the harness: one 16-bit compare fanned out as the enable of every
+register. `lane_timing.py` now registers the run window and gives each lane its own registered copy (each lane still
+sees exactly 20,000 enabled cycles; all 22 pass in simulation). Same lanes, same placement, routing identical across
+all 29 builds (0 of 1,831 nets differ); a 300 MHz constraint routes the lanes identically to 12 MHz, so the long
+wires (H14, V12) cannot be forced this way. Swept on the DE10 from 80 to 409 MHz in 6% steps, achieved clock taken as
+the VCO over its integer counter.
+
+- Every lane now has a sharp edge between 80 and 272 MHz (one pass above its edge, lane 5 at 272 MHz). The
+  single-hop lanes at rows 66 to 72, next to the HPS, fail at 203 MHz while 4- to 8-hop lanes elsewhere pass to
+  228 MHz: not path delay, left out of the fit.
+- Above 272 MHz the pattern is impossible for path timing (lanes pass at 288 MHz that failed at 203), and several
+  points run the fPLL's VCO below its rated range or with a 5 MHz phase detector: points above 272 MHz are not used,
+  and a later harness should measure its own clock.
+- Nineteen lanes (4.3 to 12.1 ns): nextpnr's signoff model predicts 1.4 times silicon (silicon over model 0.58 to
+  0.84), rms error 3.09 ns. One uniform factor (0.70) leaves 0.72 ns rms. A per-class fit (constant 1.91 ns, per hop
+  0.28 ns, H3 0.22, H6 and H14 0.19, V2 and the other column wires 0.09 ns per wire) predicts held-out lanes to
+  0.62 ns rms: vertical wires may be relatively cheaper than the model says, but with 19 lanes and five unknowns that
+  is a lead, not a calibration.
+- The physical-pin model (20.4a) predicts about 2 times silicon on these inverter chains, where the logical table
+  predicts 1.4 times: silicon contradicts it on every lane where the two differ. libmistral's pin names are the
+  likely reason (its C need not be Quartus's C).
+
+**Conclusion.** The routing model is about 30% pessimistic in silicon, nearly uniformly, as the gaps file's single
+chain said; the optimiser's relative costs are only mildly off, which fits 20.4a's neutral core result. A uniform
+correction would make reports honest but cannot move silicon Fmax. 20.4a stays opt-in and unpromoted; its premise is
+wrong. Next for 20.4b, if pursued: lanes that isolate V2 against H3 at equal hop counts, and a clock measurement in
+the harness.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5214,6 +5244,7 @@ point near a lane's edge, and force long wires; no calibration is taken from thi
 | 2026-09-26 | 19.4 | Step 2 passes for the second register beside a LUT of its half (fed by the LUT, 4 inputs, or through E/F beside 2 inputs; with or without the first register); every failing build has one in a half without a LUT; 20.3 admits the second register only in a pack-time cluster with the LUT that drives it, never as a free placement | F7 `match=1`, control F8 `match=0`, F9 (alone) `match=1`; FB to FE and E0 fail; E0 shows the annealer leaving a register alone after moving its LUT |
 | 2026-09-26 | 20.3 | Admit the second register of a half behind `--alm-both-registers` (off by default), only as a register-packing cluster child beside the LUT that drives it, one control set per ALM; the writer sets the other half's clock, clear, and synchronous-clear selects from it | Silicon: E1 (widths 1 to 5), EC (the option's own build) pass with controls; the cause of every earlier failure, the other half's clock select, found (E9, EB against EA); verify mode zero mismatches |
 | 2026-09-26 | 20.3 | Close 20.3 for the core: `--alm-both-registers` stays opt-in, restricted to LUTs that drive only registers (a LUT with both registers of its half taken may have no free fabric port); it packs 0 registers on the core | 3,980 candidate registers sit on about 400 broadcast LUTs, one extra each at most, almost all with mixed control sets; unrestricted, no core seed routed |
+| 2026-09-26 | 20.4 | Do not promote `--lut-pin-delays`: silicon lanes contradict the physical-pin table; the routing model is about 30% pessimistic almost uniformly, so a correction would change reports, not silicon Fmax; per-class calibration waits for lanes that isolate wire classes | 19 lanes: model 1.4 times silicon, one factor leaves 0.72 ns rms, per-class fit 0.62 ns held out; pin model about 2 times silicon |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |

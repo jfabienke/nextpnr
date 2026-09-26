@@ -2,6 +2,7 @@
 """Design 20.4b: silicon timing lanes for calibrating routing-delay classes.
 
 usage: lane_timing.py gen LABMAP.json OUT.v FREQ_MHZ BUILD_ID_HEX
+       lane_timing.py fit LANES.json ROUTED.json SWEEP.jsonl [MODEL.json]
 
 One bitstream holds 22 independent lanes. Each lane launches an LFSR bit from a hand-placed register, crosses a
 chain of hand-placed inverting LUTs spaced along a row, a column, a diagonal, or inside one LAB, and lands in a
@@ -102,9 +103,11 @@ def gen(labmap, out, freq, build_id):
          '  altera_pll #(.reference_clock_frequency("50.0 MHz"), .number_of_clocks(1),',
          f'               .output_clock_frequency0("{freq} MHz")) p (.refclk(FPGA_CLK1_50), .rst(1\'b0), '
          '.outclk(clk), .locked(lk));',
-         "  reg [15:0] n = 16'd0;",
-         f"  wire run = lk && (n != 16'd{NCYC});",
-         "  always @(posedge clk) if (run) n <= n + 16'd1;",
+         # The run window is a register and each lane has its own registered copy, so no enable is a long,
+         # high-fanout path (the first sweep's limit near 100 MHz). Each lane still sees exactly NCYC enabled cycles.
+         "  reg [15:0] n = 16'd0; reg run = 1'b0;",
+         f"  always @(posedge clk) if (lk && n != 16'd{NCYC}) n <= n + 16'd1;",
+         f"  always @(posedge clk) run <= lk && (n != 16'd{NCYC});",
          f'  wire [{LANES - 1}:0] pass;']
     for li, (kind, tiles) in enumerate(plan):
         seed = (0xACE1 + 0x1F3 * li) & 0xFFFF
@@ -128,11 +131,12 @@ def gen(labmap, out, freq, build_id):
         x0, y0 = tiles[0]
         o.append(f'  // lane {li}: {kind}, {hops} hops, tiles {tiles}')
         o.append(f"  reg [15:0] lf{li} = 16'h{seed:04X}; reg [15:0] sig{li} = 16'd0;")
-        o.append(f'  always @(posedge clk) if (run) lf{li} <= {{lf{li}[14:0], ' +
+        o.append(f"  (* keep *) reg run{li} = 1'b0; always @(posedge clk) run{li} <= run;")
+        o.append(f'  always @(posedge clk) if (run{li}) lf{li} <= {{lf{li}[14:0], ' +
                  ' ^ '.join(f'lf{li}[{t}]' for t in TAPS) + '};')
         o.append(f'  wire s{li}_0;')
         o.append(f'  (* BEL="MISTRAL_FF.{x0}.{y0}.{a0 * 6 + 2}", keep *) MISTRAL_FF S{li} (.DATAIN(lf{li}[0]), '
-                 f".CLK(clk), .ACLR(1'b1), .ENA(run), .SCLR(1'b0), .SLOAD(1'b0), .SDATA(1'b0), .Q(s{li}_0));")
+                 f".CLK(clk), .ACLR(1'b1), .ENA(run{li}), .SCLR(1'b0), .SLOAD(1'b0), .SDATA(1'b0), .Q(s{li}_0));")
         prev = f's{li}_0'
         for h, t in enumerate(tiles[1:-1]):
             a = alm_at(t)
@@ -145,12 +149,12 @@ def gen(labmap, out, freq, build_id):
         ae = alm_at(tiles[-1])
         o.append(f'  wire c{li};')
         o.append(f'  (* BEL="MISTRAL_FF.{xe}.{ye}.{ae * 6 + 2}", keep *) MISTRAL_FF C{li} (.DATAIN({prev}), '
-                 f".CLK(clk), .ACLR(1'b1), .ENA(run), .SCLR(1'b0), .SLOAD(1'b0), .SDATA(1'b0), .Q(c{li}));")
-        o.append(f"  always @(posedge clk) if (run) sig{li} <= {{sig{li}[14:0], sig{li}[15]}} ^ "
+                 f".CLK(clk), .ACLR(1'b1), .ENA(run{li}), .SCLR(1'b0), .SLOAD(1'b0), .SDATA(1'b0), .Q(c{li}));")
+        o.append(f"  always @(posedge clk) if (run{li}) sig{li} <= {{sig{li}[14:0], sig{li}[15]}} ^ "
                  f"({{16{{c{li}}}}} & 16'h8005);")
         o.append(f"  assign pass[{li}] = (sig{li} == 16'h{sig:04X});")
         lanes.append({'lane': li, 'kind': kind, 'hops': hops, 'tiles': tiles, 'golden': sig})
-    o += ["  wire done = lk && (n == 16'd%d);" % NCYC,
+    o += ["  wire done = lk && (n == 16'd%d) && !run;" % NCYC,
           '  wire [31:0] gp_to_arm = {BUILD_ID, done, lk, pass};',
           '  wire [31:0] gp_from_arm;',
           '  cyclonev_hps_interface_mpu_general_purpose hps_gp (.gp_in(gp_to_arm), .gp_out(gp_from_arm));',
@@ -170,9 +174,95 @@ def gen(labmap, out, freq, build_id):
     print(f'{LANES} lanes, hops {[l["hops"] for l in lanes]}')
 
 
+def achieved_mhz(vco, req):
+    """The PLL output: the VCO over the integer counter nearest to it."""
+    return vco / max(1, round(vco / req))
+
+
+def fit(lanes_json, routed_json, sweep_jsonl, model_json=None):
+    """Per-lane silicon delay bounds from a sweep, and a least-squares fit of per-class wire delays."""
+    import collections
+    import re
+    plan = json.load(open(lanes_json))['lanes']
+    m = list(json.load(open(routed_json))['modules'].values())[0]
+    comp = {}
+    for l in plan:
+        li, c = l['lane'], collections.Counter()
+        for n, nn in m['netnames'].items():
+            if re.fullmatch(rf's{li}_\d+', n) or n.startswith(f'C{li}$ROUTETHRU'):
+                for w in nn['attributes'].get('ROUTING', '').split(';')[0::3]:
+                    if w:
+                        c[w.split('.')[0]] += 1
+        comp[li] = c
+    points = []
+    for line in open(sweep_jsonl):
+        r = json.loads(line)
+        mm = re.search(r'done=1 locked=1 pass=([01]{%d})' % LANES, r['result'])
+        if not mm:
+            continue  # a void point (no readout, not locked, not done)
+        bits = mm.group(1)
+        points.append((achieved_mhz(r['vco'], r['req']), {li: bits[LANES - 1 - li] == '1' for li in range(LANES)}))
+    points.sort()
+    model = {r['lane']: r for r in json.load(open(model_json))} if model_json else {}
+    rows = []
+    for l in plan:
+        li = l['lane']
+        # the highest frequency below which every point passes, and the first failure above it
+        f_pass, f_fail = None, None
+        for f, ok in points:
+            if ok[li] and f_fail is None:
+                f_pass = f
+            elif not ok[li] and f_fail is None:
+                f_fail = f
+        flips = sum(1 for f, ok in points if f_fail is not None and f > f_fail and ok[li])
+        if f_pass is None:
+            continue
+        t_hi = 1000.0 / f_pass
+        t_lo = 1000.0 / f_fail if f_fail else None
+        t = (t_hi + t_lo) / 2 if t_lo else None
+        rows.append((li, l['kind'], l['hops'], f_pass, f_fail, flips, t, comp[li], model.get(li, {})))
+    cls = ['H3', 'H6', 'V2']
+    fitted = [r for r in rows if r[6] is not None]
+    x = []
+    for li, kind, hops, fp, ff, fl, t, c, mo in fitted:
+        longw = c.get('H14', 0) + c.get('V4', 0) + c.get('V12', 0)
+        x.append([1.0, float(hops)] + [float(c.get(k, 0)) for k in cls] + [float(longw)])
+    names = ['constant', 'per hop (LUT + exit/entry)'] + [f'{k} wire' for k in cls] + ['long wire (H14/V4/V12)']
+    coef = None
+    if len(fitted) > len(names):
+        # normal equations with a small ridge, solved by Gaussian elimination (no numpy needed)
+        n = len(names)
+        ata = [[sum(r[i] * r[j] for r in x) + (1e-6 if i == j else 0) for j in range(n)] for i in range(n)]
+        atb = [sum(r[i] * f[6] for r, f in zip(x, fitted)) for i in range(n)]
+        for col in range(n):
+            piv = max(range(col, n), key=lambda k: abs(ata[k][col]))
+            ata[col], ata[piv], atb[col], atb[piv] = ata[piv], ata[col], atb[piv], atb[col]
+            for k in range(n):
+                if k != col and ata[col][col]:
+                    fct = ata[k][col] / ata[col][col]
+                    ata[k] = [a - fct * b for a, b in zip(ata[k], ata[col])]
+                    atb[k] -= fct * atb[col]
+        coef = [atb[i] / ata[i][i] for i in range(n)]
+    print(f'{"lane":>4} {"kind":6} {"hops":>4} {"pass MHz":>8} {"fail MHz":>8} {"flips":>5} {"silicon ns":>10} '
+          f'{"fit ns":>7} {"model ns":>8} {"pins ns":>7}')
+    for (li, kind, hops, fp, ff, fl, t, c, mo), *_ in zip(rows):
+        pred = None
+        if coef and t is not None:
+            longw = c.get('H14', 0) + c.get('V4', 0) + c.get('V12', 0)
+            xr = [1.0, float(hops)] + [float(c.get(k, 0)) for k in cls] + [float(longw)]
+            pred = sum(a * b for a, b in zip(coef, xr))
+        fmt = lambda v, w=7: (f'{v:{w}.2f}' if v is not None else ' ' * (w - 1) + '-')
+        print(f'{li:4d} {kind:6} {hops:4d} {fmt(fp, 8)} {fmt(ff, 8)} {fl:5d} {fmt(t, 10)} {fmt(pred)} '
+              f'{fmt(mo.get("model_default_ns"), 8)} {fmt(mo.get("model_pins_ns"))}')
+    if coef:
+        print('fit (ns):', ', '.join(f'{nm} {v:.3f}' for nm, v in zip(names, coef)))
+
+
 if __name__ == '__main__':
     if len(sys.argv) == 6 and sys.argv[1] == 'gen':
         gen(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif len(sys.argv) in (5, 6) and sys.argv[1] == 'fit':
+        fit(*sys.argv[2:])
     else:
         print(__doc__)
         sys.exit(1)
