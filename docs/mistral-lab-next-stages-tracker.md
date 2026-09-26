@@ -4950,6 +4950,35 @@ after an hour with every run diverging):
 Permutation halves the overuse and no seed routes; the 406 wires seed 1 reached on the workstation is not typical.
 Today's core needs density the rules do not yet admit (20.3), not more router iterations.
 
+### 2026-09-26: Unit 19.4 step 2 on silicon: the second register works beside its LUT
+
+The DE10-Nano was power-cycled and came back at `192.168.25.30` (DHCP; MAC `02:03:04:05:06:07`, MiSTer's default).
+openflow-test's `run_hybrid.sh` now takes the address from `BOARD` (default unchanged). Every build is the 19.4 test
+design (`build/stage6-fullcore/ff2silicon/`) loaded through `run_hybrid.sh` with the md5 checked on the board and
+read by `measure_ff2.sh`; the full table and the classes are in `MISTRAL_GAPS.md` G9.
+
+- **The prepared test fails, and not on the test registers.** F4 and its control read `done=0`: the 20,000-cycle
+  counter never stops (the signature changes between reads seconds apart). The rule was lifted for every cell, and
+  34 harness registers took second-register bels, nine of them counter bits; 33 of the 34 had no first register
+  beside them and several no LUT in the half.
+- **With the lift limited to the 192 constrained test registers** (F7), the board reads `done=1 match=1
+  sig_lo=4c8d`, and the control (F8, golden off by one bit) `done=1 match=0` with the same `sig_lo`. Patterns P and
+  Q, as the Quartus differential of step 1 had them, work on silicon.
+- **Alone in its half** (F9, `gen.py --lone`, golden `bac4514b`): `done=1 match=1 sig_lo=514b`.
+- **What fails:** the F4 netlist rebuilt with harness registers admitted by class (FB, FC, FD) fails whenever a
+  second register sits in a half with no LUT; FD fails the checksum with exactly one such register. A first rule for
+  `--alm-both-registers` (no route-through into a second register, which instead takes E/F) still fails (FE,
+  13 such registers); requiring a LUT in the half (FF) makes the counter work and the checksum fail; admitting only
+  the verified envelope (E0) fails again because the annealer moved a LUT away from a harness second register and
+  checks only the bels it fills (design 18.1).
+- **Carry halves** were not reached: the carry variant did not place (post-placement check).
+
+**Conclusion.** The refusal in `lab.cc` guards a real failure, but a narrower one than "every second register": a
+second register works beside a LUT of its half, fed by that LUT or through E/F. A free-placement rule that depends on
+the LUT's presence is unsound under the annealer's move check, so 20.3 admits the second register only inside a
+pack-time cluster with the LUT that drives it. The work-in-progress option (`--alm-both-registers`, C++ rule only) is
+saved as `build/stage6-fullcore/ff2test/u20-3-wip.patch`, not committed.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5073,6 +5102,7 @@ Today's core needs density the rules do not yet admit (20.3), not more router it
 | 2026-09-25 | 20.0 | Order design 20: complete register packing (20.3) and LUT input permutation (20.2) before LAB clustering (20.1) | nextpnr's rules admit 346 of Quartus's 3,219 LABs; lifting the second-register refusal and the input count admits 2,771; hinted runs with the rules as they are do not route |
 | 2026-09-26 | platform | Compare quality only within one platform; the Linux runner has its own baseline (`aws-base`, median 13.11 MHz, spread 0.26) | Linux and macOS place the same inputs differently; determinism holds on each |
 | 2026-09-26 | 20.2 | **Promote** `--lut-permutation` into the core recipe (`quality.py` configuration `core`, `core_probe_flow.sh`), at the user's direction; default unchanged; baselines with it are `lperm-5s` (macOS) and `aws-perm` (Linux); the silicon checksum waits for the board | Quality rule ACCEPT on both platforms (13.28 to 14.09 MHz, 13.11 to 13.69); routing rule REJECT on both for seed 2 alone (-0.16, -0.02); `lut_perm_check.py` 7,341 of 7,341 LUTs correct, with a mutation check |
+| 2026-09-26 | 19.4 | Step 2 passes for the second register beside a LUT of its half (fed by the LUT, 4 inputs, or through E/F beside 2 inputs; with or without the first register); every failing build has one in a half without a LUT; 20.3 admits the second register only in a pack-time cluster with the LUT that drives it, never as a free placement | F7 `match=1`, control F8 `match=0`, F9 (alone) `match=1`; FB to FE and E0 fail; E0 shows the annealer leaving a register alone after moving its LUT |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |

@@ -19,6 +19,7 @@ core is G3 (HPS hard IP), the timing/router work — and **DSP, which is absent 
 | **G6** | bidirectional IO, then the SDRAM controller path | **slices 1–3 SOLVED @ 50 MHz** — tristate pads + full 32 MB MemTest, 0 errors. **135 MHz needs IO registers (input AND output), CONFIRMED.** First found+fixed a controller port bug (bad delay scaling) — the clean controller (`sdram135clean.v`: CL3, init 14000, tRFC 11) passes @50, fails @135. Then a full SDRAM-clock phase sweep @135 (926–6482 ps, reboot each) still fails 255 from addr 0 — all-phases-fail is the WRITE-launch signature, so 135 needs IO registers on both the capture and launch DQ paths. Ground truth (Quartus `FAST_INPUT_REGISTER`): DQS16 `RB_FIFO_WCLK_EN=1` + `RB_FIFO_WCLK_INV=1` per DQ bit, the FF RELOCATED into the DQS16, FIFO write clock via HCLK→XCLKB. **CLOSED 2026-08-09: IO-register packing implemented and silicon-verified** — registered MemTest passes @50 (transparency, 0 errors) AND **@135 MHz** (BUILD_ID C2), the frequency that failed at every phase without registers. Pack rule + DQS16 emission in nextpnr (`pack_io_registers`), qsf `FAST_*_REGISTER`-gated; controllers need the pad-launch-stage RTL shape (`sdramreg_tmpl.v`). |
 | **G7** | DSP / `MISTRAL_MUL18X18` | **SOLVED on silicon** — 5000 multiplies through a real DSP block match a golden checksum. Bel + packing + emission (mistral/dsp.cc); operand→lane mapping silicon-derived (last six B lanes are REVERSED); ground truth's odd `DATA_INV` masks decoded as Quartus cancelling its own routing inversions. Combinational 18×18 only; registered/accumulate modes remain |
 | **G8** | two PLLs in one design abort the tool | **LARGELY DISSOLVED.** The need was misdiagnosed: Quartus **merges** same-reference PLLs into ONE physical PLL with multiple counters (`Total PLLs: 1/6` for a two-instance design), and our flow already does that shape — **10 MHz + 25 MHz from one PLL, both `LOCKED=1` on silicon**. Two *independent* FPLLs now place and route; only one locks, because the reference spine exists for one position. Rarely needed |
+| **G9** | the second register of an ALM half (`lab.cc`: "why are these FFs broken?") | **2026-09-26, silicon: works beside a LUT in its half, fails without one.** Both registers of a half fed by the half's 4-input LUT, the second fed through E/F beside a 2-input LUT, and either alone: 20,000-cycle golden checksums match, controls fail as they must. Every failing build has a second register in a half with no LUT. Carry halves and 6-input LUTs untested |
 
 > **Caution on "SOLVED".** G4 carried that label for a day while two defects sat inside it, each
 > fatal to the first real core that tried to use it: attestation failed for any **buffered** clock
@@ -1091,6 +1092,35 @@ main reason to be sceptical of wiring in `timing_opt` (`common/place/timing_opt.
 before G5 is addressed.
 
 ---
+
+## G9 — the second register of an ALM half (2026-09-26, silicon)
+
+nextpnr refused the second register bel of every ALM half ("TODO: why are these FFs broken?"). Design 19.4 asked
+why. Step 1 (Quartus 17.0.2 differential, 2026-09-23) found the model's bits for two patterns identical to Quartus's.
+Step 2 is a golden-checksum test on the DE10-Nano (`build/stage6-fullcore/ff2silicon/`, `gen.py` seed 194): 384
+hand-placed registers in LABs x16-17, y20-27, a 32-bit MISR over 20,000 cycles, read on the HPS gp register
+(`{BUILD_ID, done, match, 1, sig[15:0], 5'b0}`), each build loaded and read by `run_hybrid.sh` (md5-checked).
+
+| Build | What is on second-register bels | Result |
+| --- | --- | --- |
+| F4 (and F5, its control) | 192 test registers, plus 34 harness registers (the counter, LFSR, signature, readout) wherever the rule lifted for every cell allowed | `done=0`: the counter never stops |
+| F7 | the 192 test registers only: pattern P (the half's ALUT4 drives both registers) and Q (ALUT2 drives the first, the second takes a fabric net through E/F) | `done=1 match=1 sig_lo=4c8d` (golden `e73a4c8d`) |
+| F8, F7's control (golden off by one bit) | the same | `done=1 match=0 sig_lo=4c8d` |
+| F9 (`gen.py --lone`) | 192 second registers, each alone in its half (first register empty), P and Q | `done=1 match=1 sig_lo=514b` (golden `bac4514b`) |
+| FB, FC, FD | the F4 netlist, harness registers admitted by class | each with one or more registers in a half without a LUT: `done=0` or `match=0` |
+| FE | a rule that admits a second register without a LUT in its half through E/F | `done=0` |
+| FF, E0 | narrower rules; the annealer still leaves a harness second register alone in a half without a LUT after moving its LUT away | `match=0`, `done=0` |
+
+**Verified on silicon:** the second register works fed by its half's LUT (4-input) or through E/F beside a 2-input
+LUT, beside the first register or alone. **Fails:** every failing build has a second register in a half with no
+LUT (FD, with exactly one besides one fed by its own LUT, fails the checksum); F4's were fed through the route-through
+LUT (`$ROUTETHRU`, `COMBOUT` to `FFIN`), FE's mostly through E/F, which is not isolated further. **Untested:** carry halves (the variant did not
+place), 6-input LUTs, a 5-input LUT feeding its second register, and E/F beside a LUT of more than two inputs.
+
+**Consequence for the placer:** "a second register needs a LUT in its half" is not monotone under removal, and the
+annealer checks only the bels a move fills (design 18.1), so a free-placement rule is unsound: E0 shows a register
+left alone after its LUT moved. The second register is admitted only inside a pack-time cluster with the LUT that
+drives it (design 20.3), which moves as one unit.
 
 ## Capability audit (2026-08-07) — implicit assumptions made explicit
 
