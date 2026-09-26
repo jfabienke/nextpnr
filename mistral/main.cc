@@ -161,6 +161,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("alm-both-registers",
                            "with --register-packing, a LUT's second register takes the second register bel of its "
                            "ALM half (design 20.3; experimental)");
+    specific.add_options()("lut-pin-delays", po::value<std::string>(),
+                           "time LUT inputs by the physical pin they enter on: off, report (routed as before, "
+                           "reported by pin), on (design 20.4a; experimental)");
     specific.add_options()("lut-permutation",
                            "the router chooses each 5-input LUT's physical ALM pins (design 20.2; experimental)");
     specific.add_options()("lab-hint", po::value<std::string>(),
@@ -320,6 +323,12 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         chipArgs.lab_hint_path = vm["lab-hint"].as<std::string>();
     chipArgs.no_sa_refine = vm.count("no-sa-refine") != 0;
     chipArgs.lut_permutation = vm.count("lut-permutation") != 0;
+    if (vm.count("lut-pin-delays")) {
+        const auto mode = vm["lut-pin-delays"].as<std::string>();
+        if (mode != "off" && mode != "report" && mode != "on")
+            log_error("--lut-pin-delays must be off, report, or on, not '%s'\n", mode.c_str());
+        chipArgs.lut_pin_delays = mode == "report" ? 1 : mode == "on" ? 2 : 0;
+    }
     chipArgs.alm_both_registers = vm.count("alm-both-registers") != 0;
     chipArgs.lab_clustering = vm.count("lab-clustering") != 0;
     if (vm.count("lab-cluster-fill"))

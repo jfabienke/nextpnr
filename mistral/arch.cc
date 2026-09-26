@@ -103,6 +103,7 @@ bool Arch::has_port(CycloneV::block_type_t bt, int x, int y, int bi, CycloneV::p
 Arch::Arch(ArchArgs args)
 {
     this->args = args;
+    lut_pin_delays_active = args.lut_pin_delays == 2; // design 20.4a, on: every timing analysis times LUT pins
     this->cyclonev = mistral::CycloneV::get_model(args.device);
     NPNR_ASSERT(this->cyclonev != nullptr);
 
@@ -1544,6 +1545,12 @@ bool Arch::run_router_phase()
     }
     if (args.lut_permutation && result)
         lut_permutation_fixup(); // design 20.2: before signoff and the bitstream see the routing
+    if (args.lut_pin_delays == 1 && result) {
+        // Design 20.4a, report: routed under the logical table; the timing result the report writes is redone by pin.
+        lut_pin_delays_active = true;
+        log_info("LUT pin delays (report): timing the routed design by physical LUT pin.\n");
+        timing_analysis(getCtx(), false, true, false, false, true);
+    }
     telemetry_checksum = getCtx()->checksum();
     note_routing_complete();
     report_lab_states();

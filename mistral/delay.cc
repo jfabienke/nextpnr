@@ -18,6 +18,8 @@
 
 #include <cstring>
 
+#include <algorithm>
+
 #include "nextpnr.h"
 #include "span_delay.h"
 
@@ -172,6 +174,29 @@ TimingClockingInfo Arch::getPortClockingInfo(const CellInfo *cell, IdString port
     NPNR_ASSERT_FALSE("unreachable");
 }
 
+namespace {
+// Design 20.4a: a LUT input's delay by physical pin class (0 A, 1 B, 2 C, 3 D, 4 E, 5 F), the -7 table's quads
+// (they match Quartus's by physical pin; tracker 2026-09-17). The logical table below assumes the last logical
+// input sits on F, which the input assignment does not do.
+DelayQuad lut_pin_class_delay(int cls)
+{
+    switch (cls) {
+    case 0:
+        return DelayQuad{/* RF */ 592, /* RR */ 605, /* FF */ 567, /* FR */ 573};
+    case 1:
+        return DelayQuad{/* RF */ 580, /* RR */ 583, /* FF */ 560, /* FR */ 574};
+    case 2:
+        return DelayQuad{/* RR */ 429, /* RF */ 496, /* FR */ 440, /* FF */ 510};
+    case 3:
+        return DelayQuad{/* RR */ 432, /* RF */ 499, /* FR */ 444, /* FF */ 512};
+    case 4:
+        return DelayQuad{/* RR */ 263, /* RF */ 354, /* FF */ 362, /* FR */ 400};
+    default:
+        return DelayQuad{/* RR */ 90, /* RF */ 96, /* FF */ 83, /* FR */ 97};
+    }
+}
+} // namespace
+
 bool Arch::getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const
 {
     // Based on 1.1V 100C timing corner of sx120f, using delays from LUT input to DFF input.
@@ -184,6 +209,29 @@ bool Arch::getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort
 
     if (cell->type.in(id_MISTRAL_NOT, id_MISTRAL_BUF, id_MISTRAL_ALUT2, id_MISTRAL_ALUT3, id_MISTRAL_ALUT4,
                       id_MISTRAL_ALUT5, id_MISTRAL_ALUT6)) {
+        if (toPort == id_Q && lut_pin_delays_active) {
+            // Design 20.4a: once the inputs are assigned (routing preparation), time the pin the signal enters on.
+            // A permutation pseudo-pin costs nothing here; its pseudo-pip carries the chosen pin's delay.
+            auto found = cell->pin_data.find(fromPort);
+            if (found != cell->pin_data.end() && !found->second.bel_pins.empty()) {
+                const IdString phys = found->second.bel_pins.front();
+                if (std::find(lperm_pins.begin(), lperm_pins.end(), phys) != lperm_pins.end() && phys != IdString()) {
+                    delay = DelayQuad{0};
+                    return true;
+                }
+                const int cls = phys == id_A            ? 0
+                                : phys == id_B          ? 1
+                                : phys == id_C          ? 2
+                                : phys == id_D          ? 3
+                                : phys.in(id_E0, id_E1) ? 4
+                                : phys.in(id_F0, id_F1) ? 5
+                                                        : -1;
+                if (cls >= 0) {
+                    delay = lut_pin_class_delay(cls);
+                    return true;
+                }
+            }
+        }
         if (toPort == id_Q) {
             if (cell->type == id_MISTRAL_ALUT6 && fromPort == id_A) {
                 delay = DelayQuad{/* RF */ 592, /* RR */ 605, /* FF */ 567, /* FR */ 573};
@@ -292,8 +340,15 @@ DelayQuad Arch::getPipDelay(PipId pip) const
 {
     WireId src = getPipSrcWire(pip), dst = getPipDstWire(pip);
 
-    if (src.is_nextpnr_created() || dst.is_nextpnr_created())
+    if (src.is_nextpnr_created() || dst.is_nextpnr_created()) {
+        if (lut_pin_delays_active && dst.is_nextpnr_created()) {
+            // Design 20.4a: a permutation pseudo-pip carries the delay of the physical pin it comes from.
+            auto found = lut_input_class.find(src);
+            if (found != lut_input_class.end())
+                return lut_pin_class_delay(found->second);
+        }
         return DelayQuad{20};
+    }
 
     // This is guesswork based on average of (interconnect delay / number of pips)
     auto src_type = CycloneV::rn2t(src.node);

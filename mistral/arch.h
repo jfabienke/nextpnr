@@ -82,13 +82,14 @@ struct ArchArgs
     bool no_sa_refine = false;              // Design 20.0: skip HeAP's annealing refinement
     bool lut_permutation = false;           // Design 20.2: the router chooses each L5 LUT input's physical pin
     bool alm_both_registers = false;        // Design 20.3: register packing may use a half's second register bel
-    bool lab_clustering = false;            // Design 20.1: cluster LAB cells before placement
-    int lab_cluster_fill = 16;              // Design 20.1: cells per cluster at most
-    float lab_cluster_line_price = 0.1f;    // Design 20.1: attraction lost per new external input net
-    float lab_cluster_pull = 0;             // Design 20.1: solver pull between a cluster's cells (0: off)
-    float router2_repair_crit = 0.9f;       // Design 19.9: the criticality an arc needs to be repaired
-    bool register_packing = false;          // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
-    std::string telemetry_path;             // --telemetry: the run's counters and phase times, as JSON
+    int lut_pin_delays = 0; // Design 20.4a: LUT inputs timed by physical pin: 0 off, 1 report (after routing), 2 on
+    bool lab_clustering = false;         // Design 20.1: cluster LAB cells before placement
+    int lab_cluster_fill = 16;           // Design 20.1: cells per cluster at most
+    float lab_cluster_line_price = 0.1f; // Design 20.1: attraction lost per new external input net
+    float lab_cluster_pull = 0;          // Design 20.1: solver pull between a cluster's cells (0: off)
+    float router2_repair_crit = 0.9f;    // Design 19.9: the criticality an arc needs to be repaired
+    bool register_packing = false;       // Stage 6 (6g): pack a register with the LUT that drives it into one ALM
+    std::string telemetry_path;          // --telemetry: the run's counters and phase times, as JSON
     // Designs 14 and 16.1: the Rust session's batch forms in the Rust legality modes, the strict
     // legaliser's tile scan and a cluster candidate's edits as one call. Off: one question per bel,
     // and frozen whole-LAB records per cluster candidate, as before them. Results are identical.
@@ -983,6 +984,10 @@ struct Arch : BaseArch<ArchRanges>
     // Design 20.2 (lab.cc): after routing, move each permuted LUT input onto the physical pin the router chose.
     void lut_permutation_fixup();
     std::array<IdString, 5> lperm_pins; // bel pins LPERM0..4, set when --lut-permutation builds the device
+    // Design 20.4a (--lut-pin-delays): the physical LUT input pin class (0 A, 1 B, 2 C, 3 D, 4 E, 5 F) of each ALM
+    // port wire that feeds a permutation pseudo-pip, so the pseudo-pip carries that pin's delay.
+    dict<WireId, uint8_t> lut_input_class;
+    bool lut_pin_delays_active = false; // --lut-pin-delays on from the start, report from the end of routing
     LabClustering lab_clusters;         // design 20.1: the clusters found before placement
 
     // Keeping track of unique MLAB write ports to assign them indices

@@ -2721,6 +2721,56 @@ Clustering (20.1) follows both. The local-line measurement points at the
 same two units: half of intra-LAB LUT nets detour for want of a
 permuted pin, and first-register outputs have no local line.
 
+### 20.4 Timing: a model the optimiser can trust (the arch, then silicon)
+
+**Why.** Two measurements frame it:
+- **Against silicon** (`MISTRAL_GAPS.md`, 2026-08-08, `fmaxtest`): signoff is about 30% pessimistic on one carry
+  chain and 60% on 32 chains, and the error grows with size.
+- **Against Quartus** (tracker, 2026-09-17): the cell constants are the -7 table arc for arc, and the routing is
+  1.19 to 1.26 times Quartus per hop (libmistral's simulation).
+
+A uniform error changes only the report. Fmax on silicon moves only where the model's *relative* costs are wrong,
+because then the placer and the router optimise the wrong paths. G5 is the warning: a better-fitting placer
+estimate, fitted blind, made placement worse.
+
+**Found while scoping.** `Arch::getCellDelay` keys a LUT input's delay by the *logical* pin and the LUT's size. It
+assumes the last logical input sits on the fastest physical pin (F). The input assignment
+(`reassign_alm_inputs`) does the opposite: for a five-input LUT, logical A to E go to C, E, F, B, A. So the model
+times the fast logical E at 0.09 ns while it enters on A (0.6 ns), and the slow logical C at 0.43 to 0.51 ns while
+it enters on F (0.10 ns). The constants themselves match Quartus by physical pin (A 0.605, B 0.583, C 0.510,
+D 0.512, E 0.400, F 0.097 ns). Only the mapping is wrong, so every timing-driven decision sees wrong input costs.
+Under 20.2's permutation the router picks the physical pin, but its pseudo-pips cost a flat 20 ps, and the cell
+delay still follows the logical pin. Nothing prefers F for a critical arc, as Quartus does.
+
+**20.4a, physical-pin LUT delays (`--lut-pin-delays`, opt-in).**
+- A plain LUT input bound to a physical pin (A, B, C, D, E0/E1, F0/F1) is timed by that pin's constants, the
+  existing quads re-keyed by physical pin.
+- An input on a permutation pseudo-wire (`LPERM`, during routing) costs nothing in the cell. Its pseudo-pip from a
+  physical pin carries that pin's delay. router2's delay-blended cost for critical arcs (19.3b) and the timing
+  repair (19.9) then choose F and E for critical arcs, and the fixup's rebinding keeps signoff consistent.
+- Arithmetic cells and L6 LUTs keep their table (their pins are fixed by mode).
+
+Measured in two parts, since part of any change is the report:
+1. **Re-timing.** The baseline's routed placements re-timed under the new model, with no re-placement or
+   re-routing. That is the model correction alone.
+2. **Five seeds** with the option, under the quality rule, against the platform baseline.
+
+Then silicon. The `fmaxtest` chains built with and without the option, swept on the board: does the real Fmax
+move?
+
+**20.4b, routing classes on silicon.** A lane design: many independent register-to-register paths in one
+bitstream. Each launches an LFSR bit, crosses a chosen distance along a row, a column, or both, with pass-through
+LUTs spaced to set its length, and folds what it captures into its own checksum. Each lane reports its own
+pass bit on the HPS gp register. One PLL sweep then gives a failing frequency per lane. The routed JSON gives each
+lane's actual wires (H3, H6, H14, V2, V4, V12, TD, LD, GIN/GOUT). A least-squares fit over the lanes gives a
+correction per wire class, with a constant term for clock-to-output, setup, and skew. The fit is checked on lanes
+held out of it, and against Quartus's per-hop delays from the oracle fit. The factors go into `getPipDelay` and
+the signoff behind an option, and are judged like 20.4a: re-timing, five seeds, and silicon.
+
+**Exit.** Signoff within 15% of silicon on both `fmaxtest` sizes (30 to 60% today), and a silicon Fmax gain on
+`fmaxtest` from the optimiser's side, not only in the report.
+
+
 ### 20.2 LUT input permutation in the router (the arch; router2 unchanged)
 
 **Why.** `reassign_alm_inputs` (`lab.cc`) fixes each LUT's logical inputs

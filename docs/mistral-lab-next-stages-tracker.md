@@ -5041,6 +5041,22 @@ G9), but it cannot move this core: its multi-register LUTs are broadcast LUTs wi
 estimate counted registers, not LUT halves. The option stays off by default; 20.3's density lever is closed for the
 Fabi386 core.
 
+### 2026-09-26: Unit 20.4a built: LUT inputs timed by physical pin
+
+`--lut-pin-delays off|report|on` (design 20.4). `getCellDelay` timed a LUT input by its logical pin and the LUT's
+size, as if the last logical input sat on F; `reassign_alm_inputs` puts a five-input LUT's logical A to E on C, E,
+F, B, A. With the option a plain LUT input is timed by its physical pin (the table's quads re-keyed: A 0.605, B
+0.583, C 0.510, D 0.512, E 0.400, F 0.097 ns); under 20.2's permutation an `LPERM` pin costs nothing in the cell and
+its pseudo-pip carries the chosen pin's delay (`Arch::lut_input_class`). Pins are assigned at routing preparation,
+so placement is unchanged and every comparison is a routing comparison. `report` routes under the old table and
+redoes the post-route timing (and the report) by pin: the yardstick for the old routes.
+
+Exec probe, seed 1, recipe router settings with `--lut-permutation`: `off` 39.48 MHz (the old model), `report`
+34.83 MHz (the same routing, checksum `0x8b2f05a9`, timed by pin), `on` 36.38 MHz (routed by pin): +4.4% on the
+same yardstick. Signoff (`--rbf`) agrees: 33.71 re-timed against 35.45 routed by pin. Without permutation the
+option cannot choose pins and the one seed moved the other way (35.60 re-timed, 33.40), inside probe noise; the
+core over five seeds decides.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

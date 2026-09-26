@@ -126,6 +126,11 @@ static void create_alm(Arch *arch, int x, int y, int z, uint32_t lab_idx)
             const std::array<CycloneV::port_type_t, 5> phys{CycloneV::A, CycloneV::B, i ? CycloneV::D : CycloneV::C,
                                                             i ? CycloneV::E1 : CycloneV::E0,
                                                             i ? CycloneV::F1 : CycloneV::F0};
+            if (arch->args.lut_pin_delays != 0)
+                for (int p = 0; p < 5; p++)
+                    arch->lut_input_class[arch->get_port(block_type, x, y, z, phys[p])] = uint8_t(p < 2    ? p
+                                                                                                  : p == 2 ? (i ? 3 : 2)
+                                                                                                           : p + 1);
             for (int k = 0; k < 5; k++) {
                 WireId w = arch->add_wire(x, y, arch->idf("LPERM%d_%d[%d]", i, k, z));
                 arch->add_bel_pin(bel, arch->lperm_pins[k], PORT_IN, w);
