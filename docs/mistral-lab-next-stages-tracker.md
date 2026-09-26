@@ -5057,6 +5057,37 @@ same yardstick. Signoff (`--rbf`) agrees: 33.71 re-timed against 35.45 routed by
 option cannot choose pins and the one seed moved the other way (35.60 re-timed, 33.40), inside probe noise; the
 core over five seeds decides.
 
+### 2026-09-26: 20.4a on the core, and the first silicon timing lanes (20.4b)
+
+**20.4a on the core** (Linux runner, binary `36218db6`, recipe with permutation, five seeds):
+
+| Tag | Mode | Fmax median (range) |
+| --- | --- | --- |
+| `aws-perm` | `off` (the old logical table) | 13.69 (13.15 to 14.03) |
+| `aws-pins-report` | `report`: the same routes, timed by physical pin | 12.61 (12.40 to 13.00) |
+| `aws-pins-on` | `on`: routed by physical pin | 12.69 (11.67 to 13.11) |
+
+Under the corrected model, routing by pin moves the median by +0.08 MHz, inside the 0.60 spread, and seed 5 falls
+below the re-timed baseline's worst (quality rule: reject). `on` also moved the placements (`compare --kind routing`
+refuses the comparison): some LUT pins are assigned before routing preparation, so the option is not routing-only as
+designed. Not promoted.
+
+**Timing lanes** (`mistral/tests/lane_timing.py`, design 20.4b): 22 lanes of hand-placed registers and inverter
+chains (rows, columns, diagonals, inside one LAB), one golden signature per lane, pass bits on the HPS gp register;
+all 22 pass in simulation, all 165 lane cells land on their planned tiles, and the routing is identical at every PLL
+frequency (only the PLL settings differ). The router builds even twelve-row column lanes from V2 and H3 hops; V12 and
+H14 never appear at the design's loose constraint. Swept on the DE10 from 60 MHz in 7% steps:
+- all lanes pass at 60.0, 64.2, 68.7 and 73.5 MHz;
+- 78.6 MHz: lanes 14, 15, 18 and 21 fail; 84.2 to 96.3 MHz only lane 7 (column, 12 hops) fails, the other three pass
+  again, so results near an edge are not monotonic;
+- 103.1 MHz: most lanes fail at random, short lanes included: the harness's own `run` enable (a 16-bit compare fanned
+  out to every register) is the limit, and points above about 100 MHz measure nothing. The sweep was stopped there.
+
+Read with that caveat: both models are pessimistic (lane 7 near 12 ns against 16.6 ns in the old model), and the
+pin model is contradicted where it differs most (lane 18, twelve inverter hops, passes at 96 MHz, under about
+10.4 ns, where the old model says 9.27 ns and the pin model 14.64 ns). Next for 20.4b: register `run`, repeat each
+point near a lane's edge, and force long wires; no calibration is taken from this sweep.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
