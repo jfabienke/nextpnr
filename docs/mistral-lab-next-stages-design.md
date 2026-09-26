@@ -2819,3 +2819,99 @@ permutation:
   ALM rule's E/F availability) remain placement-time rules. The router
   can always fall back to the fixed assignment, so no LAB the rules admit
   today becomes unroutable in principle.
+
+### 20.1 LAB clustering before placement (the arch and HeAP)
+
+**Why.** 20.0 and the limit screens settled where the density gap is:
+- Quartus fills its LABs to 15.9 cells and nextpnr to 13.2.
+- Loosening a limit does not change that: at an input limit of 44 the
+  old core's LABs stay at 13.3 cells and about 4,150 LABs.
+- HeAP decides LAB membership cell by cell in its legaliser, from the
+  analytic solver's positions, with only 19.6's neighbour tiles as a
+  hint of connectivity.
+
+Quartus decides which cells share a LAB first, from connectivity and
+timing, and places LABs. Today's core does not route because its
+~4,190 LABs are full everywhere and the fabric around them cannot
+carry the traffic. Fewer, fuller LABs whose nets stay inside them are
+the lever that remains within the present rules.
+
+**Design, in two steps.**
+
+1. **The clusterer** (`mistral/lab_clustering.{h,cc}`, `--lab-clustering`),
+   a pass after packing (pairing, register packing, admission).
+   - **Units.** A cell with its pack-time cluster (a pair, a LUT and its
+     register) is one unit. Carry chains, MLAB LUTRAM, and IO and
+     global cells stay out: chains are shaped already, and the rest are
+     not in LABs.
+   - **Seeds.** Take the most critical unit first, from a timing analysis
+     over `predictDelay`; ties and a run without timing fall back to the
+     most connections.
+   - **Growth.** A candidate is a unit that shares a net of at most 64
+     sinks with the cluster. Its attraction is:
+
+         attraction = sum over shared nets of w(net) * (1 + absorbed(net))
+                      - lambda * new_lines(unit)
+                      + tau * crit(unit)
+
+     where:
+     - `w` is `1 / fanout`;
+     - `absorbed` is 1 when the net would have every pin inside the
+       cluster (it needs no LAB entry);
+     - `new_lines` counts the unit's external input nets the cluster does
+       not already have (19.10's distinct-net demand, used here as a
+       price, not a rule);
+     - `crit` is the unit's arc criticality.
+   - **Legality.** The best candidate is admitted only if the LAB rules
+     accept it. The cluster is laid on a scratch LAB (all LABs are empty
+     before placement): candidate bels are tried in order and asked
+     `isBelLocationValid`, the same check the legaliser makes, under
+     whichever authority is selected. A refused candidate is dropped for
+     this cluster.
+   - **Stop and order.** Growth stops when no candidate is legal, or at a
+     fill target (`--lab-cluster-fill`, cells per LAB, default 16), or
+     when the best attraction falls below a floor. The order is
+     deterministic: units by name, with ties broken by name.
+   - **Output.** A cluster id per cell, and statistics: clusters, cells
+     per cluster, nets absorbed, and external nets per cluster.
+2. **Placement from clusters** (HeAP, generic):
+   - `PlacerHeapCfg::lab_hint` (20.0) becomes dynamic. The first member
+     of a cluster legalised in a pass picks the free LAB nearest its
+     solver position, and the other members are then hinted there.
+   - A new `PlacerHeapCfg::on_legalise_begin` resets the choices every
+     pass, since the solver moves.
+   - The solver gets a pull between a cluster's members: pseudo-nets of
+     one star per cluster, weight `--lab-cluster-pull`, so members land
+     together before legalisation.
+   - The annealer runs as usual. 19.2's entry price already values a net
+     kept inside a LAB, so it should keep clusters rather than scatter
+     them; the measurement says whether it does.
+
+**What it changes.** The placement, not the rules. Every bel is still
+certified by `isBelLocationValid`, and a member refused by its hinted LAB
+falls back to the ordinary search and is counted as a broken cluster.
+
+**Measurement.**
+1. The clusterer alone, on the old and today's core: clusters, cells per
+   cluster, absorbed nets, and external nets against Quartus's LABs from
+   the oracle fit (`rules_gap.py` has the per-LAB counts).
+2. The placement from clusters on the old core, seeds 1 and 2:
+   - LABs used, cells per LAB, entries per net, and local lines;
+   - routing and Fmax;
+   - the fill target at 14, 16 and 18.
+3. The best setting on five seeds under the quality rule.
+4. Today's core: does it route?
+
+Exit, as design 20 set it: LABs ≤ 3,600, cells per LAB ≥ 15, entries
+per net ≤ 1.1 on the old core, and today's core routes. With the present
+rules (no second register) that density may be out of reach. The record
+says how close the rules let clustering come; 20.3 lifts the rest.
+
+**Cost and risk.** About 500 lines, most in the clusterer.
+- **Spreading.** Clusters that fill LABs can make HeAP's spreading
+  coarser: a cluster lands in one tile and its members no longer spread
+  within the region. The pull weight and the fill target are the
+  controls.
+- **Scratch LAB.** The check uses real bels of one empty LAB before
+  placement and unbinds them after each trial. A test asserts that the
+  scratch LAB is empty when the pass ends.
