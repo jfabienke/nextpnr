@@ -291,6 +291,10 @@ void Arch::assign_comb_info(CellInfo *cell) const
     cell->combInfo.carry_end = false;
     cell->combInfo.chain_shared_input_count = 0;
     cell->combInfo.mlab_group = -1;
+    // Only MLAB cells have write controls; the LAB captures read them for every LUT, and the union's bytes are
+    // otherwise whatever the allocator left (zero on macOS, string data on Linux).
+    cell->combInfo.wclk = ControlSig{nullptr, false};
+    cell->combInfo.we = ControlSig{nullptr, false};
 
     if (cell->type == id_MISTRAL_MLAB) {
         cell->combInfo.wclk = get_ctrlsig(getCtx(), cell, id_CLK1);
