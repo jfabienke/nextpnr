@@ -174,6 +174,9 @@ po::options_description MistralCommandHandler::getArchOptions()
                            "clocks the global network carries take no LAB DATAIN line in the control model, freeing "
                            "it for a third enable (off by default; experimental)");
     specific.add_options()(
+            "lab-net-cap-carry", po::value<int>(),
+            "with --lab-input-model nets, the distinct-net cap of a LAB with a carry chain (design 20.6)");
+    specific.add_options()(
             "lab-net-cap", po::value<int>(),
             "with --lab-input-model nets, the distinct-net cap of a LAB without a carry chain (design 20.6)");
     specific.add_options()("lab-input-model", po::value<std::string>(),
@@ -275,6 +278,8 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
     }
     if (vm.count("lab-net-cap"))
         chipArgs.lab_net_cap = vm["lab-net-cap"].as<int>();
+    if (vm.count("lab-net-cap-carry"))
+        chipArgs.lab_net_cap_carry = vm["lab-net-cap-carry"].as<int>();
     const auto reuse_mode = vm["lab-reuse"].as<std::string>();
     if (reuse_mode == "off")
         chipArgs.lab_reuse = LabReuseMode::Off;

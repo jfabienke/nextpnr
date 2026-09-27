@@ -808,15 +808,18 @@ int Arch::lab_demand_overlay(uint32_t lab_index, const BelOverlay &overlay) cons
 template <typename Bound> int Arch::lab_net_limit(uint32_t lab, Bound bound) const
 {
     const int limit = resolved_lab_input_limit();
-    if (args.lab_net_cap <= 0 || args.lab_net_cap >= limit)
-        return limit;
+    const int cap = (args.lab_net_cap > 0 && args.lab_net_cap < limit) ? args.lab_net_cap : limit;
+    const int carry_cap =
+            (args.lab_net_cap_carry > 0 && args.lab_net_cap_carry < limit) ? args.lab_net_cap_carry : limit;
+    if (cap == carry_cap)
+        return cap;
     for (const auto &alm : labs[lab].alms)
         for (BelId bel : alm.lut_bels) {
             const CellInfo *cell = bound(bel);
             if (cell && cell->combInfo.is_carry)
-                return limit;
+                return carry_cap;
         }
-    return args.lab_net_cap;
+    return cap;
 }
 
 bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const

@@ -77,7 +77,8 @@ struct ArchArgs
     float router2_crit_threshold = 0;       // Design 19.3b: arcs below this criticality keep the unit cost
     int router2_repair_rounds = 0;          // Design 19.9: timing repair rounds after convergence; 0 = off
     bool lab_input_nets = false;            // Design 19.10: the LAB input limit counts distinct nets
-    int lab_net_cap = 0; // Design 20.6: with lab_input_nets, the distinct-net cap of a LAB without a carry chain
+    int lab_net_cap = 0;       // Design 20.6: with lab_input_nets, the distinct-net cap of a LAB without a carry chain
+    int lab_net_cap_carry = 0; // Design 20.6: the same for a LAB with a carry cell (0: the full input limit)
     bool lab_global_clocks = false;  // Design 19.11: globally routed clocks take no LAB DATAIN line
     std::string lab_hint_path;       // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
     bool no_sa_refine = false;       // Design 20.0: skip HeAP's annealing refinement

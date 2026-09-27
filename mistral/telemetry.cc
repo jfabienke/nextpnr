@@ -86,6 +86,7 @@ void write_mistral_telemetry(const Arch &arch, const std::string &phase)
             {"no_sa_refine", a.no_sa_refine},
             {"lut_permutation", a.lut_permutation},
             {"lab_net_cap", a.lab_net_cap},
+            {"lab_net_cap_carry", a.lab_net_cap_carry},
             {"lut_pin_delays", a.lut_pin_delays},
             {"alm_both_registers", a.alm_both_registers},
             {"lab_clustering", a.lab_clustering},
