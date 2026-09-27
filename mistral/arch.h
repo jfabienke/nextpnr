@@ -77,11 +77,12 @@ struct ArchArgs
     float router2_crit_threshold = 0;       // Design 19.3b: arcs below this criticality keep the unit cost
     int router2_repair_rounds = 0;          // Design 19.9: timing repair rounds after convergence; 0 = off
     bool lab_input_nets = false;            // Design 19.10: the LAB input limit counts distinct nets
-    bool lab_global_clocks = false;         // Design 19.11: globally routed clocks take no LAB DATAIN line
-    std::string lab_hint_path;              // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
-    bool no_sa_refine = false;              // Design 20.0: skip HeAP's annealing refinement
-    bool lut_permutation = false;           // Design 20.2: the router chooses each L5 LUT input's physical pin
-    bool alm_both_registers = false;        // Design 20.3: register packing may use a half's second register bel
+    int lab_net_cap = 0; // Design 20.6: with lab_input_nets, the distinct-net cap of a LAB without a carry chain
+    bool lab_global_clocks = false;  // Design 19.11: globally routed clocks take no LAB DATAIN line
+    std::string lab_hint_path;       // Design 20.0: a LAB (x y) per cell name, tried first by HeAP's legaliser
+    bool no_sa_refine = false;       // Design 20.0: skip HeAP's annealing refinement
+    bool lut_permutation = false;    // Design 20.2: the router chooses each L5 LUT input's physical pin
+    bool alm_both_registers = false; // Design 20.3: register packing may use a half's second register bel
     int lut_pin_delays = 0; // Design 20.4a: LUT inputs timed by physical pin: 0 off, 1 report (after routing), 2 on
     bool lab_clustering = false;         // Design 20.1: cluster LAB cells before placement
     int lab_cluster_fill = 16;           // Design 20.1: cells per cluster at most
@@ -837,6 +838,7 @@ struct Arch : BaseArch<ArchRanges>
     bool is_alm_legal_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const;
     int alm_input_count_overlay(uint32_t lab, uint8_t alm, const BelOverlay &overlay) const;
     bool check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const;
+    template <typename Bound> int lab_net_limit(uint32_t lab, Bound bound) const; // design 20.6
     bool is_lab_ctrlset_legal_overlay(uint32_t lab, const BelOverlay &overlay) const;
     bool check_mlab_groups_overlay(uint32_t lab, const BelOverlay &overlay) const;
     bool overlay_bels_legal(const BelOverlay &overlay) const;

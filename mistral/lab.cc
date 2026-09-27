@@ -803,10 +803,27 @@ int Arch::lab_demand_overlay(uint32_t lab_index, const BelOverlay &overlay) cons
     return demand;
 }
 
+// Design 20.6: a LAB holding no carry cell takes at most --lab-net-cap distinct external nets (Quartus's LABs: 90% at
+// or below 34); a carry chain's LAB-sized segment keeps the full limit, which it needs (about 40 on the Fabi386 cores).
+template <typename Bound> int Arch::lab_net_limit(uint32_t lab, Bound bound) const
+{
+    const int limit = resolved_lab_input_limit();
+    if (args.lab_net_cap <= 0 || args.lab_net_cap >= limit)
+        return limit;
+    for (const auto &alm : labs[lab].alms)
+        for (BelId bel : alm.lut_bels) {
+            const CellInfo *cell = bound(bel);
+            if (cell && cell->combInfo.is_carry)
+                return limit;
+        }
+    return args.lab_net_cap;
+}
+
 bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay) const
 {
     if (args.lab_input_nets && !labs[lab].is_mlab)
-        return lab_demand_overlay(lab, overlay) <= resolved_lab_input_limit();
+        return lab_demand_overlay(lab, overlay) <=
+               lab_net_limit(lab, [&](BelId b) { return overlay.lookup(b, bels_by_tile[pos2idx(b.pos)][b.z].bound); });
     // Stored counts for untouched ALMs, recomputed counts for ALMs the overlay changes.
     int count = 0;
     const auto &lab_data = labs[lab];
@@ -822,7 +839,8 @@ bool Arch::check_lab_input_count_overlay(uint32_t lab, const BelOverlay &overlay
 bool Arch::check_lab_input_count(uint32_t lab) const
 {
     if (args.lab_input_nets && !labs[lab].is_mlab)
-        return labs[lab].net_demand <= resolved_lab_input_limit(); // design 19.10
+        return labs[lab].net_demand <=
+               lab_net_limit(lab, [&](BelId b) { return bels_by_tile[pos2idx(b.pos)][b.z].bound; }); // 19.10, 20.6
     // There are only 46 TD signals available to route signals from general routing to the ALM input. Currently, we
     // check the total sum of ALM inputs is less than 42; 46 minus 4 FF control inputs. This is a conservative check for
     // several reasons, because LD signals are also available for feedback routing from ALM output to input, and because

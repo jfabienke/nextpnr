@@ -2721,6 +2721,23 @@ Clustering (20.1) follows both. The local-line measurement points at the
 same two units: half of intra-LAB LUT nets detour for want of a
 permuted pin, and first-register outputs have no local line.
 
+### 20.6 LABs capped by distinct external nets (the arch)
+
+**Why.** Quartus's LABs on the old core hold 15.5 cells and take a mean of 20.3 distinct external data nets (90th
+percentile 34), with 9.3 nets per LAB driven inside it. Ours hold 13.3 cells and take 23.4, with 4.4 inside
+(tracker, 2026-09-27). Our routes carry 1.49 times Quartus's external net entries, which is the traffic that keeps
+today's core from routing. 98% of Quartus's LABs would pass a distinct-net rule at 40; 19.10's distinct-net model
+failed because our LABs then filled to 42 distinct nets, dense in inputs rather than in connections.
+
+**Design.** `--lab-net-cap N`, with `--lab-input-model nets` (C++ rules, `--lab-legality legacy`): a LAB without a
+carry cell takes at most N distinct external nets; a LAB with one keeps the full limit, since a carry chain's
+LAB-sized segment needs about 40 (19.10's lower limits could not place the cores' chains). The cap steers the
+legaliser toward LABs whose inputs the routing can feed; 20.1's clusterer, run under the same rule, is what should
+fill them with connected cells.
+
+**Measure.** Old core and today's core, five seeds, cap 34 with and without `--lab-clustering`, against the recipe:
+LABs, external nets per LAB, routing, Fmax. Exit: today's core routes on most seeds.
+
 ### 20.4 Timing: a model the optimiser can trust (the arch, then silicon)
 
 **Why.** Two measurements frame it:

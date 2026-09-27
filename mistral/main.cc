@@ -173,6 +173,9 @@ po::options_description MistralCommandHandler::getArchOptions()
     specific.add_options()("lab-global-clocks",
                            "clocks the global network carries take no LAB DATAIN line in the control model, freeing "
                            "it for a third enable (off by default; experimental)");
+    specific.add_options()(
+            "lab-net-cap", po::value<int>(),
+            "with --lab-input-model nets, the distinct-net cap of a LAB without a carry chain (design 20.6)");
     specific.add_options()("lab-input-model", po::value<std::string>(),
                            "LAB input limit counts count (each ALM's unique inputs, summed; default) or nets (the "
                            "distinct nets a LAB needs lines for; experimental, --lab-legality legacy only)");
@@ -270,6 +273,8 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         if (chipArgs.lab_input_nets && chipArgs.lab_legality != LabLegalityMode::Legacy)
             log_error("--lab-input-model nets needs --lab-legality legacy until the Rust rules have it.\n");
     }
+    if (vm.count("lab-net-cap"))
+        chipArgs.lab_net_cap = vm["lab-net-cap"].as<int>();
     const auto reuse_mode = vm["lab-reuse"].as<std::string>();
     if (reuse_mode == "off")
         chipArgs.lab_reuse = LabReuseMode::Off;
