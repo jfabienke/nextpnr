@@ -5170,6 +5170,26 @@ at iteration 9 and 10,172 at iteration 5) and were stopped at the three-hour lim
 neutral on Fmax (quality rule: no gain) with 2% fewer wires and 6% fewer LAB entries per net. Placement under the C++
 rules takes about twice as long as under the Rust authority.
 
+### 2026-09-27: 20.6 follow-up: a lower cap and a carry cap do not beat cap 34; the rule in Rust
+
+Today's core, five seeds, `--lab-global-clocks --router2-max-iter 200`, C++ rules (binary `005f051c`, which adds
+`--lab-net-cap-carry`):
+
+| Setting | Routed | Routed Fmax | Best overuse of the others |
+| --- | --- | --- | --- |
+| cap 34 (`aws-g-cap34b`, earlier) | 3 of 5 | 16.62, 16.86, 17.60 | 3,192, 10,172 |
+| cap 32 (`aws-g-cap32`) | 1 of 5 (seed 3) | 17.82 | 1,026 to 2,202 |
+| cap 34, carry LABs 40 (`aws-g-cap34-k40`) | 1 of 5 (seed 2) | 17.44 | 5 (seed 3), 1,560 to 2,727 |
+
+Which seeds route moves with every variant (cap 34 routes 1, 4, 5; the carry cap routes 2 and nearly 3), so today's
+core sits at the edge of routability and seed variance dominates: neither tightening routes more seeds. Cap 34 alone
+stays the setting.
+
+**The rule in Rust** (`0732e348`): `NpnrLabFactsV2.input_model` carries the model and both caps; `v2::net_demand`
+and the detached C++ evaluator count a LAB's distinct external data nets from the facts, in the capture path, the
+resident verdict, the tile scan, and cluster edits. `--lab-input-model nets` no longer needs `--lab-legality legacy`.
+Verify mode on the probe with caps 30 and 36: 13,736,638 evaluations, 0 mismatches, 0 errors.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5299,6 +5319,7 @@ rules takes about twice as long as under the Rust authority.
 | 2026-09-26 | 20.4 | Do not promote `--lut-pin-delays`: silicon lanes contradict the physical-pin table; the routing model is about 30% pessimistic almost uniformly, so a correction would change reports, not silicon Fmax; per-class calibration waits for lanes that isolate wire classes | 19 lanes: model 1.4 times silicon, one factor leaves 0.72 ns rms, per-class fit 0.62 ns held out; pin model about 2 times silicon |
 | 2026-09-27 | row cost | Keep `--row-cost 2.5`: the integer row weight takes only 1 or 2, and 1 loses two seeds and 0.63 MHz | Five seeds each; 2.0 reproduces 2.5 seed for seed |
 | 2026-09-27 | 20.6 | Keep `--lab-net-cap` opt-in (C++ rules); it is the first setting under which today's core routes (3 of 5 seeds, 16.6 to 17.6 MHz); neutral on the old core; the annealer checks emptied LABs under the distinct-net model; clustering stays off | `aws-g-cap34b`, `aws-cap34b`; seeds 2 and 3 of today's core diverge from the start |
+| 2026-09-27 | 20.6 | Cap 34 stays the setting for today's core; a cap of 32 or a carry-LAB cap of 40 each route 1 of 5 seeds; the distinct-net rule and its caps move to the Rust evaluator (verify: 0 mismatches) | `aws-g-cap32`, `aws-g-cap34-k40`; probe verify 13.7 million evaluations |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
