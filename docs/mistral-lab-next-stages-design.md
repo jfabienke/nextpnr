@@ -2738,6 +2738,13 @@ fill them with connected cells.
 **Measure.** Old core and today's core, five seeds, cap 34 with and without `--lab-clustering`, against the recipe:
 LABs, external nets per LAB, routing, Fmax. Exit: today's core routes on most seeds.
 
+**Outcome (2026-09-27): today's core routes on 3 of 5 seeds; kept opt-in.** With cap 34, seeds 1, 4 and 5 of today's
+core route (16.62, 16.86, 17.60 MHz by the model), the first routes of that core; seeds 2 and 3 diverge from the
+first iterations. On the old core the cap is neutral on Fmax with fewer wires. The clusterer on top made today's core
+worse. One correctness fix came out of it: under the distinct-net model a LAB's demand can rise when a cell leaves
+it, so the annealer's swap seam now checks the LABs a move empties. Open: the two diverging seeds, and the rules in
+Rust (placement under the C++ rules takes about twice as long).
+
 ### 20.4 Timing: a model the optimiser can trust (the arch, then silicon)
 
 **Why.** Two measurements frame it:

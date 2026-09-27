@@ -5148,6 +5148,28 @@ count refuses them (20.0). 19.10's distinct-net runs failed because our LABs the
 in inputs rather than in connections. The lever is clustering by connectivity under a distinct-net cap near
 Quartus's 90th percentile, with carry-chain LABs kept at their 40-net segments.
 
+### 2026-09-27: Unit 20.6: today's core routes for the first time (3 of 5 seeds)
+
+`--lab-input-model nets --lab-net-cap 34 --lab-legality legacy` (design 20.6) on the Linux runner. The first batch
+(binary `7d7a6f4b`) lost placements to the post-placement check: under the distinct-net model a LAB's demand can rise
+when a cell leaves it (a LUT that fed cells of its own LAB takes its net outside), and the annealer certified only
+the bels a move fills. `84931a9f` checks the LABs a move empties as well; every placement since finishes. The
+clusterer (`--lab-clustering`) on top made today's core worse (3,000 to 11,000 overused wires) and is dropped.
+
+Binary `84931a9f`, five seeds each:
+
+| Core | Options beyond the recipe | Routed | Fmax median (range) | Wires | LAB entries per net | Place s |
+| --- | --- | --- | --- | --- | --- | --- |
+| old (`aws-perm`) | none | 5 | 13.69 (13.15 to 14.03) | 770 to 774k | 1.41 | 336 to 443 |
+| old (`aws-cap34b`) | cap 34 | 5 | 13.63 (13.45 to 14.49) | 754 to 762k | 1.33 | 730 to 909 |
+| today's (`aws-g-cap34b`) | cap 34, `--lab-global-clocks`, 200 iterations | **3** | 16.86 (16.62 to 17.60) | 848 to 891k | 1.35 to 1.41 | 289 to 572 |
+
+Today's core had never routed under any option (best before: 406 overused wires at the cap, most seeds diverging to
+thousands). Seeds 1, 4 and 5 route at iterations 131, 150 and 126. Seeds 2 and 3 diverge from the start (best 3,192
+at iteration 9 and 10,172 at iteration 5) and were stopped at the three-hour limit. On the old core the cap is
+neutral on Fmax (quality rule: no gain) with 2% fewer wires and 6% fewer LAB entries per net. Placement under the C++
+rules takes about twice as long as under the Rust authority.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5276,6 +5298,7 @@ Quartus's 90th percentile, with carry-chain LABs kept at their 40-net segments.
 | 2026-09-26 | 20.3 | Close 20.3 for the core: `--alm-both-registers` stays opt-in, restricted to LUTs that drive only registers (a LUT with both registers of its half taken may have no free fabric port); it packs 0 registers on the core | 3,980 candidate registers sit on about 400 broadcast LUTs, one extra each at most, almost all with mixed control sets; unrestricted, no core seed routed |
 | 2026-09-26 | 20.4 | Do not promote `--lut-pin-delays`: silicon lanes contradict the physical-pin table; the routing model is about 30% pessimistic almost uniformly, so a correction would change reports, not silicon Fmax; per-class calibration waits for lanes that isolate wire classes | 19 lanes: model 1.4 times silicon, one factor leaves 0.72 ns rms, per-class fit 0.62 ns held out; pin model about 2 times silicon |
 | 2026-09-27 | row cost | Keep `--row-cost 2.5`: the integer row weight takes only 1 or 2, and 1 loses two seeds and 0.63 MHz | Five seeds each; 2.0 reproduces 2.5 seed for seed |
+| 2026-09-27 | 20.6 | Keep `--lab-net-cap` opt-in (C++ rules); it is the first setting under which today's core routes (3 of 5 seeds, 16.6 to 17.6 MHz); neutral on the old core; the annealer checks emptied LABs under the distinct-net model; clustering stays off | `aws-g-cap34b`, `aws-cap34b`; seeds 2 and 3 of today's core diverge from the start |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
