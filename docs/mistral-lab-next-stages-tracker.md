@@ -5190,6 +5190,10 @@ and the detached C++ evaluator count a LAB's distinct external data nets from th
 resident verdict, the tile scan, and cluster edits. `--lab-input-model nets` no longer needs `--lab-legality legacy`.
 Verify mode on the probe with caps 30 and 36: 13,736,638 evaluations, 0 mismatches, 0 errors.
 
+On today's core (`aws-g-cap34-rust`, binary `75fcc9e7`, the Rust authority, cap 34, seeds 1, 4, 5): both
+checksums and the report are byte-identical to the C++ runs (`aws-g-cap34b`), with the same routes and Fmax (16.62,
+16.86, 17.60 MHz); HeAP 121, 233, 378 s against 83, 171, 249 s under C++.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |

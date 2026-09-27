@@ -341,7 +341,12 @@ directory. A/B runs are compared with `cmp` on `--write` JSON and `--report` JSO
   before placement (20.1, `--lab-clustering`, `--lab-cluster-pull`) is measured negative under the
   present rules (LAB count unchanged, Fmax down) and stays opt-in for after 20.3 (the second
   register). Five-seed runs go to the AWS runner (`nextpnr-runner`, Linux): Linux places
-  differently from macOS, so compare only within one platform.
+  differently from macOS, so compare only within one platform. **Today's core (2026-09-24) routes**
+  only with 20.6, `--lab-input-model nets --lab-net-cap 34 --lab-global-clocks --router2-max-iter 200`
+  on top of the recipe: 3 of 5 seeds, 16.6 to 17.6 MHz (tracker 2026-09-27). The distinct-net rule
+  and its caps are in both the C++ and the Rust rules (`NpnrLabFactsV2.input_model`, byte-identical
+  under either authority); under it a LAB's demand can rise when a cell leaves, so the annealer's
+  seam checks the LABs a move empties. A cap of 32 or a carry-LAB cap route fewer seeds.
 - Many experimental knobs are `getenv`-driven (`MISTRAL_LAB_INPUT_LIMIT`, `MISTRAL_HEAP_BETA`,
   `NEXTPNR_ROUTER2_DUMP_OVERUSE`, the signoff report switches `MISTRAL_SIGNOFF_TEMP|EST|BOUND`,
   the router2 experiment block `MISTRAL_R2_*`, the graph dump `MISTRAL_DUMP_LAB_LINES=x,y`, the
