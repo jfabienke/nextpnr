@@ -5118,6 +5118,36 @@ correction would make reports honest but cannot move silicon Fmax. 20.4a stays o
 wrong. Next for 20.4b, if pursued: lanes that isolate V2 against H3 at equal hop counts, and a clock measurement in
 the harness.
 
+### 2026-09-27: The row cost re-checked, and Quartus's LABs against ours by external nets
+
+**Row cost.** The lanes hinted that column wires are cheaper in silicon than the model says, so `--row-cost` (2.5
+in the recipe) was re-checked: 1.0, 1.5 and 2.0, five old-core seeds each on the Linux runner (binary `cd8724fe`),
+against `aws-perm`. The solver reads the weight as an integer (`hpwl_scale_y`, noted under 19.6), so 1.0 and 1.5 give
+identical results and so do 2.0 and 2.5:
+
+| Row cost | Routed | Fmax median (range) |
+| --- | --- | --- |
+| 1.0 and 1.5 | 3 of 5 | 13.06 (12.81 to 13.32) |
+| 2.0 (identical to 2.5, `aws-perm`) | 5 of 5 | 13.69 (13.15 to 14.03) |
+
+Without the vertical penalty two seeds do not route and the median falls 0.63 MHz: the penalty earns its place by
+routability, whatever the column wires cost. The recipe keeps 2.5.
+
+**LAB demand, Quartus against nextpnr** (old core, the 20.0 oracle fit joined through the name map, against the
+recipe with permutation, seed 1; external data nets are nets on LUT and register data pins not driven inside the LAB):
+
+| | LABs | Cells per LAB | External data nets per LAB | Nets fed from inside the LAB | External nets, total |
+| --- | --- | --- | --- | --- | --- |
+| Quartus 17.0.2 | 3,219 | 15.5 | mean 20.3, median 21, 90th percentile 34, max 52 | 9.3 | 65,463 |
+| nextpnr | 4,157 | 13.3 | mean 23.4, median 24, 90th percentile 33, max 42 | 4.4 | 97,346 |
+
+Quartus puts more cells in a LAB and brings fewer nets into it: twice as many of a LAB's nets are driven inside it.
+Our routes carry 1.49 times its external net entries, which is the 1.52 times the input lines measured on the routes.
+98% of Quartus's LABs stay within 40 distinct external nets, so a distinct-net rule would admit them where the per-ALM
+count refuses them (20.0). 19.10's distinct-net runs failed because our LABs then filled to 42 distinct nets, dense
+in inputs rather than in connections. The lever is clustering by connectivity under a distinct-net cap near
+Quartus's 90th percentile, with carry-chain LABs kept at their 40-net segments.
+
 ## Decision log
 
 | Date | Unit | Decision | Evidence |
@@ -5245,6 +5275,7 @@ the harness.
 | 2026-09-26 | 20.3 | Admit the second register of a half behind `--alm-both-registers` (off by default), only as a register-packing cluster child beside the LUT that drives it, one control set per ALM; the writer sets the other half's clock, clear, and synchronous-clear selects from it | Silicon: E1 (widths 1 to 5), EC (the option's own build) pass with controls; the cause of every earlier failure, the other half's clock select, found (E9, EB against EA); verify mode zero mismatches |
 | 2026-09-26 | 20.3 | Close 20.3 for the core: `--alm-both-registers` stays opt-in, restricted to LUTs that drive only registers (a LUT with both registers of its half taken may have no free fabric port); it packs 0 registers on the core | 3,980 candidate registers sit on about 400 broadcast LUTs, one extra each at most, almost all with mixed control sets; unrestricted, no core seed routed |
 | 2026-09-26 | 20.4 | Do not promote `--lut-pin-delays`: silicon lanes contradict the physical-pin table; the routing model is about 30% pessimistic almost uniformly, so a correction would change reports, not silicon Fmax; per-class calibration waits for lanes that isolate wire classes | 19 lanes: model 1.4 times silicon, one factor leaves 0.72 ns rms, per-class fit 0.62 ns held out; pin model about 2 times silicon |
+| 2026-09-27 | row cost | Keep `--row-cost 2.5`: the integer row weight takes only 1 or 2, and 1 loses two seeds and 0.63 MHz | Five seeds each; 2.0 reproduces 2.5 seed for seed |
 | 2026-09-26 | 20.1 | The first form of LAB clustering (hints, solver pull) is negative; keep `--lab-clustering` and `--lab-cluster-pull` opt-in and revisit after 20.3 | LABs unchanged at about 4,160 in every form; median 12.15 against 13.11, and two seeds lost with the pull; the input count refuses most additions |
 | 2026-09-16 | 3a | Compute a reuse plan with reasons before applying anything, and validate each decision again when applying | Plans for both controlled edits name exactly the edited cells with the right reason |
 | 2026-09-16 | 3b | Region expansion releases transplants by growing radius around the dirty cells, then everything, each retry from the pre-placement RNG state | Forced ladder: 3,606 then 5,844 then 2,126 then the rest; the last rung is the clean placement |
