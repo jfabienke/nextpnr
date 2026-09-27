@@ -285,9 +285,20 @@ Placer1SwapAssessment mistral_assess_swap(Context *ctx, const std::vector<Placer
     const auto stamp = arch.placement_revision.stamp();
     assessment.stamp_session = stamp.session.value;
     assessment.stamp_revision = stamp.revision;
-    assessment.status = arch.overlay_bels_legal(overlay, certify, certify_count)
-                                ? Placer1SwapAssessment::Status::Legal
-                                : Placer1SwapAssessment::Status::Illegal;
+    bool legal = arch.overlay_bels_legal(overlay, certify, certify_count);
+    if (legal && arch.args.lab_input_nets) {
+        // Design 19.10/20.6: under the distinct-net model a LAB's demand can rise when a cell leaves it (a LUT that
+        // fed cells of its own LAB takes its net outside), so the LABs a move empties are checked as well.
+        for (const auto &edit : edits) {
+            const auto &data = arch.bel_data(edit.bel);
+            if (!arch.labs[data.lab_data.lab].is_mlab &&
+                !arch.check_lab_input_count_overlay(data.lab_data.lab, overlay)) {
+                legal = false;
+                break;
+            }
+        }
+    }
+    assessment.status = legal ? Placer1SwapAssessment::Status::Legal : Placer1SwapAssessment::Status::Illegal;
     return assessment;
 }
 
