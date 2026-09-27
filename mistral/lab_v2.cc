@@ -56,9 +56,51 @@ bool signal_shape_valid(const NpnrControlSignalV1 &signal, uint32_t net_count)
            (signal.net_id || !(signal.flags & NPNR_CONTROL_GLOBAL));
 }
 
+// Design 19.10 and 20.6, the detached form of Arch::check_lab_input_count under --lab-input-model nets: the LAB's
+// distinct external data nets (LUT inputs, register data and SDATA nets that no LUT of the LAB drives) against the cap
+// that applies (the carry cap when a LUT of the LAB is a carry cell). Leaves observed and limit alone under the per-ALM
+// count and for an MLAB. The Rust evaluator's net_demand is the same rule.
+void lab_net_demand(const NpnrLabFactsV2 &input, int &observed, int &limit)
+{
+    if ((input.input_model & 0xffu) != NPNR_LAB_INPUT_MODEL_NETS || input.is_mlab)
+        return;
+    std::vector<uint32_t> data, driven;
+    bool carry = false;
+    for (const auto &alm : input.alm) {
+        for (const auto &lut : alm.lut) {
+            if (!lut.occupied)
+                continue;
+            carry = carry || lut.is_carry;
+            if (lut.comb_out_net)
+                driven.push_back(lut.comb_out_net);
+            for (unsigned k = 0; k < std::min(lut.input_count, 6u); ++k)
+                if (lut.input_net[k])
+                    data.push_back(lut.input_net[k]);
+        }
+        for (const auto &ff : alm.ff) {
+            if (!ff.occupied)
+                continue;
+            if (ff.datain_net)
+                data.push_back(ff.datain_net);
+            if (ff.sdata_net)
+                data.push_back(ff.sdata_net);
+        }
+    }
+    std::sort(data.begin(), data.end());
+    data.erase(std::unique(data.begin(), data.end()), data.end());
+    int demand = 0;
+    for (uint32_t net : data)
+        demand += std::find(driven.begin(), driven.end(), net) == driven.end();
+    const int base = input.input_limit;
+    auto cap = [&](uint32_t bits) { return (bits == 0 || int(bits) >= base) ? base : int(bits); };
+    observed = demand;
+    limit = carry ? cap((input.input_model >> 16) & 0xffu) : cap((input.input_model >> 8) & 0xffu);
+}
+
 bool input_shape_valid(const NpnrLabFactsV2 &input)
 {
-    if (input.net_count > NPNR_LAB_V2_MAX_NETS || input.reserved || input.is_mlab > 1)
+    if (input.net_count > NPNR_LAB_V2_MAX_NETS || (input.input_model & 0xffu) > NPNR_LAB_INPUT_MODEL_NETS ||
+        (input.input_model >> 24) || input.is_mlab > 1)
         return false;
     for (const auto &alm : input.alm) {
         if (alm.reserved)
@@ -313,6 +355,14 @@ bool check_mlab(const NpnrLabFactsV2 &input, NpnrLabAssessmentV2 &result)
 
 } // namespace
 
+uint32_t lab_input_model_word(const Arch &arch)
+{
+    if (!arch.args.lab_input_nets)
+        return 0;
+    auto byte = [](int cap) { return uint32_t(cap > 0 && cap < 256 ? cap : 0); };
+    return NPNR_LAB_INPUT_MODEL_NETS | byte(arch.args.lab_net_cap) << 8 | byte(arch.args.lab_net_cap_carry) << 16;
+}
+
 int resolved_lab_input_limit()
 {
     static const int limit =
@@ -377,6 +427,7 @@ NpnrLabFactsV2 capture_lab_v2_impl(const Arch &arch, uint32_t lab, NpnrLabQueryV
     input.query = query;
     input.query_alm = query_alm;
     input.input_limit = resolved_lab_input_limit();
+    input.input_model = lab_input_model_word(arch);
     input.is_mlab = arch.labs.at(lab).is_mlab;
     std::array<const NetInfo *, NPNR_LAB_V2_MAX_NETS> nets{};
     auto net_id = [&](const NetInfo *net) {
@@ -486,8 +537,10 @@ NpnrLabAssessmentV2 evaluate_lab_v2_cpp(const NpnrLabFactsV2 &input)
     } else if (!check_alm(input, input.query_alm, result)) {
         return result;
     }
-    if (total_inputs > input.input_limit) {
-        fail(result, NPNR_LAB_V2_LAB_INPUT_LIMIT, UINT32_MAX, UINT32_MAX, total_inputs, input.input_limit);
+    int observed = total_inputs, limit = input.input_limit;
+    lab_net_demand(input, observed, limit); // design 19.10, 20.6: the distinct-net rule, when the facts ask for it
+    if (observed > limit) {
+        fail(result, NPNR_LAB_V2_LAB_INPUT_LIMIT, UINT32_MAX, UINT32_MAX, observed, limit);
         return result;
     }
     if (input.query != NPNR_LAB_QUERY_COMB_BEL) {

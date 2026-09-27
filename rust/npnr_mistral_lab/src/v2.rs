@@ -68,6 +68,80 @@ pub(crate) fn alm_shape_valid(alm: &AlmFactsV2, net_ok: &impl Fn(u32) -> bool) -
         && alm.ff.iter().all(|ff| ff_shape_valid(ff, net_ok))
 }
 
+pub(crate) fn input_model_valid(model: u32) -> bool {
+    model & 0xff <= INPUT_MODEL_NETS && model >> 24 == 0
+}
+
+/// Design 19.10 and 20.6: under the distinct-net model (`LabFactsV2::input_model`), the LAB's distinct external data
+/// nets (LUT inputs and register data and SDATA nets that no LUT of the LAB drives) and the cap that applies, the
+/// carry cap when any LUT of the LAB is a carry cell. `None` under the per-ALM count and for an MLAB, whose inputs
+/// the count keeps. The same rule as `Arch::check_lab_input_count` with `--lab-input-model nets` (C++): a net no cell
+/// drives counts as internal there and external here, where drivers are not facts; verify mode compares the two.
+pub(crate) fn net_demand<'a>(
+    alm: impl Fn(usize) -> AlmView<'a>,
+    limit: i32,
+    model: u32,
+    is_mlab: bool,
+) -> Option<(i32, i32)> {
+    if model & 0xff != INPUT_MODEL_NETS || is_mlab {
+        return None;
+    }
+    let mut data = [0u32; ALMS * (LUTS * 6 + FFS * 2)];
+    let mut data_count = 0;
+    let mut driven = [0u32; ALMS * LUTS];
+    let mut driven_count = 0;
+    let mut carry = false;
+    for index in 0..ALMS {
+        let view = alm(index);
+        for lut in view.lut.iter().filter(|lut| lut.occupied != 0) {
+            carry |= lut.is_carry != 0;
+            if lut.comb_out_net != 0 {
+                driven[driven_count] = lut.comb_out_net;
+                driven_count += 1;
+            }
+            for &net in lut.input_net.iter().take((lut.input_count as usize).min(6)) {
+                if net != 0 {
+                    data[data_count] = net;
+                    data_count += 1;
+                }
+            }
+        }
+        for ff in view.ff.iter().filter(|ff| ff.occupied != 0) {
+            for net in [ff.datain_net, ff.sdata_net] {
+                if net != 0 {
+                    data[data_count] = net;
+                    data_count += 1;
+                }
+            }
+        }
+    }
+    let data = &mut data[..data_count];
+    data.sort_unstable();
+    let driven = &driven[..driven_count];
+    let mut demand = 0;
+    for (i, &net) in data.iter().enumerate() {
+        if (i == 0 || data[i - 1] != net) && !driven.contains(&net) {
+            demand += 1;
+        }
+    }
+    let cap = |bits: u32| {
+        let bits = bits as i32;
+        if bits == 0 || bits >= limit {
+            limit
+        } else {
+            bits
+        }
+    };
+    Some((
+        demand,
+        if carry {
+            cap((model >> 16) & 0xff)
+        } else {
+            cap((model >> 8) & 0xff)
+        },
+    ))
+}
+
 pub(crate) fn query_valid(query: u32, query_alm: u32) -> bool {
     !(query > QUERY_WHOLE_LAB
         || (query != QUERY_WHOLE_LAB && query_alm as usize >= ALMS)
@@ -86,7 +160,10 @@ impl TryFrom<&LabFactsV2> for ValidatedLabSnapshotV2 {
         if !query_valid(input.query, input.query_alm) {
             return Err(LabV2BoundaryError::Query);
         }
-        if input.net_count as usize > MAX_NETS_V2 || input.reserved != 0 || input.is_mlab > 1 {
+        if input.net_count as usize > MAX_NETS_V2
+            || !input_model_valid(input.input_model)
+            || input.is_mlab > 1
+        {
             return Err(LabV2BoundaryError::Shape);
         }
         let net_ok = |net: u32| net <= input.net_count;
@@ -412,14 +489,21 @@ pub(crate) fn evaluate_facts(input: &LabFactsV2) -> LabAssessmentV2 {
     ) {
         return result;
     }
-    if total > input.input_limit {
+    let (observed, limit) = net_demand(
+        |i| AlmView::of(&input.alm[i]),
+        input.input_limit,
+        input.input_model,
+        input.is_mlab != 0,
+    )
+    .unwrap_or((total, input.input_limit));
+    if observed > limit {
         reject(
             &mut result,
             LAB_INPUT_LIMIT,
             u32::MAX,
             u32::MAX,
-            total,
-            input.input_limit,
+            observed,
+            limit,
         );
         return result;
     }

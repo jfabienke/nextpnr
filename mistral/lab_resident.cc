@@ -38,8 +38,8 @@ ResidentLabLegality::ResidentLabLegality(const Arch &arch) : owner_(std::this_th
 {
 #ifndef NO_RUST
     NpnrLabResidentV2 *handle = nullptr;
-    const uint32_t status =
-            npnr_mistral_resident_v2_create(uint32_t(arch.labs.size()), resolved_lab_input_limit(), &handle);
+    const uint32_t status = npnr_mistral_resident_v2_create(uint32_t(arch.labs.size()), resolved_lab_input_limit(),
+                                                            lab_input_model_word(arch), &handle);
     if (status != NPNR_LAB_CALL_OK || handle == nullptr)
         log_error("LAB legality: the resident snapshot session could not be created (status %u).\n", status);
     handle_ = handle;

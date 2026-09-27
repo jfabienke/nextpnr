@@ -571,6 +571,7 @@ pub const RESIDENT_RECOMPUTE_COUNTS: u32 = 1;
 pub unsafe extern "C" fn npnr_mistral_resident_v2_create(
     lab_count: u32,
     input_limit: i32,
+    input_model: u32,
     output: *mut *mut NpnrLabResidentV2,
 ) -> u32 {
     if lab_count == 0 || lab_count > MAX_RESIDENT_LABS {
@@ -583,7 +584,7 @@ pub unsafe extern "C" fn npnr_mistral_resident_v2_create(
         return CALL_MISALIGNED;
     }
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        ResidentLabs::new(lab_count as usize, input_limit).map(|labs| {
+        ResidentLabs::new_with_model(lab_count as usize, input_limit, input_model).map(|labs| {
             Box::into_raw(Box::new(NpnrLabResidentV2 {
                 labs,
                 poisoned: false,

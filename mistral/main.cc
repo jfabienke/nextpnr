@@ -272,9 +272,6 @@ std::unique_ptr<Context> MistralCommandHandler::createContext(dict<std::string, 
         if (model != "count" && model != "nets")
             log_error("--lab-input-model must be count or nets, not '%s'\n", model.c_str());
         chipArgs.lab_input_nets = model == "nets";
-        // Design 19.10, phase A: the C++ rules only; the Rust evaluator still counts per ALM.
-        if (chipArgs.lab_input_nets && chipArgs.lab_legality != LabLegalityMode::Legacy)
-            log_error("--lab-input-model nets needs --lab-legality legacy until the Rust rules have it.\n");
     }
     if (vm.count("lab-net-cap"))
         chipArgs.lab_net_cap = vm["lab-net-cap"].as<int>();

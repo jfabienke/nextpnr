@@ -151,7 +151,7 @@ bool write_lab_v2_replay(std::ostream &out, const NpnrLabFactsV2 &input, const N
                                                 {"input_limit", double(input.input_limit)},
                                                 {"is_mlab", double(input.is_mlab)},
                                                 {"net_count", double(input.net_count)},
-                                                {"reserved", double(input.reserved)},
+                                                {"input_model", double(input.input_model)},
                                                 {"alm", std::move(alms)}}},
                          {"expected", Json::object{{"abi_version", double(expected.abi_version)},
                                                    {"struct_size", double(expected.struct_size)},
@@ -192,8 +192,8 @@ bool read_lab_v2_replay(const std::string &text, NpnrLabFactsV2 &input, NpnrLabA
         !read_u64(fields["snapshot_epoch"], decoded.snapshot_epoch) || !read_u32(fields["query"], decoded.query) ||
         !read_u32(fields["query_alm"], decoded.query_alm) || !read_i32(fields["input_limit"], decoded.input_limit) ||
         !read_u32(fields["is_mlab"], decoded.is_mlab) || !read_u32(fields["net_count"], decoded.net_count) ||
-        !read_u32(fields["reserved"], decoded.reserved) || !fields["alm"].is_array() ||
-        fields["alm"].array_items().size() != NPNR_LAB_V2_ALMS)
+        !read_u32(fields["input_model"].is_null() ? fields["reserved"] : fields["input_model"], decoded.input_model) ||
+        !fields["alm"].is_array() || fields["alm"].array_items().size() != NPNR_LAB_V2_ALMS)
         return false;
     for (unsigned a = 0; a < NPNR_LAB_V2_ALMS; ++a) {
         const auto &source = fields["alm"][a];

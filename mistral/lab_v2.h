@@ -27,6 +27,8 @@ struct LabLegalityStats
 };
 
 int resolved_lab_input_limit();
+// NpnrLabFactsV2::input_model from the arch's arguments (design 19.10, 20.6): 0 under the per-ALM count.
+uint32_t lab_input_model_word(const Arch &arch);
 NpnrLabFactsV2 capture_lab_v2(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,
                               uint64_t request_id = 0, uint64_t epoch = 0);
 NpnrLabFactsV2 capture_lab_v2_overlay(const Arch &arch, uint32_t lab, NpnrLabQueryV2 query, uint32_t query_alm,

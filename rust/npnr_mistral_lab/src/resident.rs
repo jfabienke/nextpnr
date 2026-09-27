@@ -43,8 +43,8 @@
 use crate::model::{ControlLabSnapshot, ControlSignal, NetId};
 use crate::rules::{ControlAssessment, evaluate as evaluate_controls};
 use crate::v2::{
-    AlmView, Discard, check_alm, check_mlab, evaluate_facts, ff_shape_valid, lut_shape_valid,
-    query_valid, recompute_inputs, reject,
+    AlmView, Discard, check_alm, check_mlab, evaluate_facts, ff_shape_valid, input_model_valid,
+    lut_shape_valid, net_demand, query_valid, recompute_inputs, reject,
 };
 use crate::v2_wire::*;
 use crate::wire::{CONTROL_COUNT, FF_COUNT, GLOBAL, INVERTED, LEGAL, MAX_NETS};
@@ -291,6 +291,7 @@ struct ResidentLab {
 pub struct ResidentLabs {
     labs: Vec<ResidentLab>,
     input_limit: i32,
+    input_model: u32,
 }
 
 /// The control verdict fields as the wire result reports them.
@@ -324,11 +325,21 @@ fn control_verdict(snapshot: &ControlLabSnapshot) -> ControlVerdict {
 impl ResidentLabs {
     /// `None` when the storage cannot be reserved.
     pub fn new(lab_count: usize, input_limit: i32) -> Option<Self> {
+        Self::new_with_model(lab_count, input_limit, 0)
+    }
+
+    /// As `new`, with the LAB input rule of `LabFactsV2::input_model` (design 19.10, 20.6); `None` also for an
+    /// invalid model.
+    pub fn new_with_model(lab_count: usize, input_limit: i32, input_model: u32) -> Option<Self> {
+        if !input_model_valid(input_model) {
+            return None;
+        }
         let mut labs = Vec::new();
         labs.try_reserve_exact(lab_count).ok()?;
         let empty = ResidentLab {
             facts: LabFactsV2 {
                 input_limit,
+                input_model,
                 ..LabFactsV2::default()
             },
             occupied: 0,
@@ -338,7 +349,11 @@ impl ResidentLabs {
             initialised: false,
         };
         labs.resize(lab_count, empty);
-        Some(Self { labs, input_limit })
+        Some(Self {
+            labs,
+            input_limit,
+            input_model,
+        })
     }
 
     pub fn lab_count(&self) -> usize {
@@ -352,9 +367,11 @@ impl ResidentLabs {
     /// Empties the LAB and records whether it is an MLAB.
     pub fn reset(&mut self, lab: usize, is_mlab: bool) -> Result<(), ResidentError> {
         let limit = self.input_limit;
+        let model = self.input_model;
         let lab = self.labs.get_mut(lab).ok_or(ResidentError::Lab)?;
         lab.facts = LabFactsV2 {
             input_limit: limit,
+            input_model: model,
             is_mlab: u32::from(is_mlab),
             ..LabFactsV2::default()
         };
@@ -575,7 +592,16 @@ impl ResidentLabs {
                     - lab.alm_inputs[alm];
             }
         }
-        total <= limit
+        let facts_model = facts.input_model;
+        match net_demand(
+            |i| Self::view_with(facts, trials, with, i),
+            limit,
+            facts_model,
+            facts.is_mlab != 0,
+        ) {
+            Some((demand, cap)) => demand <= cap,
+            None => total <= limit,
+        }
     }
 
     /// `verdict`'s third predicate: whether the LAB's control sets are legal with the trials'
@@ -711,7 +737,16 @@ impl ResidentLabs {
                 total += recompute_inputs(&Self::view(facts, in_view, alm)) - lab.alm_inputs[alm];
             }
         }
-        if total > limit {
+        let over = match net_demand(
+            |i| Self::view(facts, in_view, i),
+            limit,
+            facts.input_model,
+            facts.is_mlab != 0,
+        ) {
+            Some((demand, cap)) => demand > cap,
+            None => total > limit,
+        };
+        if over {
             return Ok(false);
         }
         if !any_register {
@@ -895,14 +930,21 @@ impl ResidentLabs {
         } else if !check(query_alm as usize, &mut result) {
             return done(&result);
         }
-        if total > limit {
+        let (observed, cap) = net_demand(
+            |i| Self::view(facts, trials, i),
+            limit,
+            facts.input_model,
+            facts.is_mlab != 0,
+        )
+        .unwrap_or((total, limit));
+        if observed > cap {
             reject(
                 &mut result,
                 LAB_INPUT_LIMIT,
                 u32::MAX,
                 u32::MAX,
-                total,
-                limit,
+                observed,
+                cap,
             );
             return done(&result);
         }
@@ -1128,12 +1170,24 @@ mod tests {
     /// changes, trial rows, and legal and illegal control sets.
     #[test]
     fn incremental_verdicts_equal_the_capture_path_over_random_patch_sequences() {
+        incremental_sequences(0);
+    }
+
+    /// The same oracle under the distinct-net LAB input rule (design 19.10, 20.6), with caps low enough that the
+    /// random LABs cross them both ways (30 without a carry cell, 36 with one).
+    #[test]
+    fn incremental_verdicts_equal_the_capture_path_under_the_distinct_net_rule() {
+        incremental_sequences(INPUT_MODEL_NETS | 30 << 8 | 36 << 16);
+    }
+
+    fn incremental_sequences(model: u32) {
         let keys: Vec<u32> = (0..12).map(|i| 7_919 * (i + 3) + 1).collect();
         let mut rng = Lcg(20_260_919);
-        let mut resident = ResidentLabs::new(3, 42).unwrap();
+        let mut resident = ResidentLabs::new_with_model(3, 42, model).unwrap();
         let mut shadow: Vec<LabFactsV2> = (0..3)
             .map(|lab| LabFactsV2 {
                 input_limit: 42,
+                input_model: model,
                 is_mlab: u32::from(lab == 2),
                 ..LabFactsV2::default()
             })

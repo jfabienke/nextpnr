@@ -266,7 +266,7 @@ fn frozen_batch_owns_validated_inputs_and_supports_concurrent_ranges() {
 fn frozen_batch_rejects_malformed_inputs_and_enforces_worker_limit() {
     let _serial = FROZEN_BATCH_TEST_LOCK.lock().unwrap();
     let malformed = LabFactsV2 {
-        reserved: 1,
+        input_model: 2, // no such model: the header is invalid
         ..Default::default()
     };
     let mut batch = null_mut();
@@ -387,15 +387,15 @@ fn frozen_batch_aggregate_retention_is_bounded() {
 fn resident_handle_tracks_patches_and_rejects_bad_envelopes() {
     let mut handle: *mut NpnrLabResidentV2 = null_mut();
     assert_eq!(
-        unsafe { npnr_mistral_resident_v2_create(0, 42, &mut handle) },
+        unsafe { npnr_mistral_resident_v2_create(0, 42, 0, &mut handle) },
         CALL_BAD_COUNT
     );
     assert_eq!(
-        unsafe { npnr_mistral_resident_v2_create(2, 42, null_mut()) },
+        unsafe { npnr_mistral_resident_v2_create(2, 42, 0, null_mut()) },
         CALL_NULL
     );
     assert_eq!(
-        unsafe { npnr_mistral_resident_v2_create(2, 42, &mut handle) },
+        unsafe { npnr_mistral_resident_v2_create(2, 42, 0, &mut handle) },
         CALL_OK
     );
     assert!(!handle.is_null());
@@ -576,7 +576,7 @@ fn resident_handle_tracks_patches_and_rejects_bad_envelopes() {
 fn resident_scan_names_the_first_legal_bel_and_rejects_bad_envelopes() {
     let mut handle: *mut NpnrLabResidentV2 = std::ptr::null_mut();
     assert_eq!(
-        unsafe { npnr_mistral_resident_v2_create(1, 42, &mut handle) },
+        unsafe { npnr_mistral_resident_v2_create(1, 42, 0, &mut handle) },
         CALL_OK
     );
     assert_eq!(
@@ -759,7 +759,7 @@ fn resident_scan_names_the_first_legal_bel_and_rejects_bad_envelopes() {
 fn resident_edits_answer_a_cluster_candidate_and_reject_bad_envelopes() {
     let mut handle: *mut NpnrLabResidentV2 = std::ptr::null_mut();
     assert_eq!(
-        unsafe { npnr_mistral_resident_v2_create(1, 42, &mut handle) },
+        unsafe { npnr_mistral_resident_v2_create(1, 42, 0, &mut handle) },
         CALL_OK
     );
     assert_eq!(

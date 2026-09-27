@@ -7,6 +7,8 @@ pub const ABI_VERSION_V2: u32 = 3;
 /// `LabFfV2::flags`: the register may take the second register bel of the ALM half whose LUT drives it (design
 /// 20.3, a pack-time cluster child of that LUT).
 pub const FF_SECOND_REGISTER: u32 = 1;
+/// `LabFactsV2::input_model`, bits 0-7: the LAB input limit counts distinct external data nets.
+pub const INPUT_MODEL_NETS: u32 = 1;
 pub const ALMS: usize = 10;
 pub const LUTS: usize = 2;
 pub const FFS: usize = 4;
@@ -85,7 +87,10 @@ pub struct LabFactsV2 {
     pub input_limit: i32,
     pub is_mlab: u32,
     pub net_count: u32,
-    pub reserved: u32,
+    /// The LAB input rule (design 19.10, 20.6): bits 0-7 the model (0 the per-ALM count, `INPUT_MODEL_NETS` the
+    /// LAB's distinct external data nets), bits 8-15 the cap of a LAB without a carry cell, bits 16-23 the cap of a
+    /// LAB with one (a cap of 0, or at or above `input_limit`, is `input_limit`).
+    pub input_model: u32,
     pub alm: [AlmFactsV2; ALMS],
 }
 
@@ -197,7 +202,7 @@ impl Default for LabFactsV2 {
             input_limit: 42,
             is_mlab: 0,
             net_count: 0,
-            reserved: 0,
+            input_model: 0,
             alm: [AlmFactsV2::default(); ALMS],
         }
     }

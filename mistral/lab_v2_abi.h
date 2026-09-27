@@ -71,6 +71,7 @@ typedef struct NpnrLabLutV2
 // NpnrLabFfV2.flags: the register may take the second register bel of the ALM half whose LUT drives it
 // (design 20.3: a pack-time cluster child of that LUT, under --alm-both-registers).
 #define NPNR_LAB_FF_SECOND_REGISTER 1u
+#define NPNR_LAB_INPUT_MODEL_NETS 1u
 
 typedef struct NpnrLabFfV2
 {
@@ -100,7 +101,9 @@ typedef struct NpnrLabFactsV2
     int32_t input_limit;
     uint32_t is_mlab;
     uint32_t net_count;
-    uint32_t reserved;
+    // The LAB input rule (design 19.10, 20.6): bits 0-7 the model (0 per-ALM count, NPNR_LAB_INPUT_MODEL_NETS distinct
+    // external data nets), 8-15 the cap of a LAB without a carry cell, 16-23 with one (0: input_limit).
+    uint32_t input_model;
     NpnrAlmFactsV2 alm[NPNR_LAB_V2_ALMS];
 } NpnrLabFactsV2;
 
@@ -192,7 +195,9 @@ typedef struct NpnrLabVerdictV2
     int32_t recomputed_input_count[NPNR_LAB_V2_ALMS];
 } NpnrLabVerdictV2;
 
-uint32_t npnr_mistral_resident_v2_create(uint32_t lab_count, int32_t input_limit, NpnrLabResidentV2 **output);
+// input_model: NpnrLabFactsV2::input_model (design 19.10, 20.6).
+uint32_t npnr_mistral_resident_v2_create(uint32_t lab_count, int32_t input_limit, uint32_t input_model,
+                                         NpnrLabResidentV2 **output);
 uint32_t npnr_mistral_resident_v2_reset(NpnrLabResidentV2 *handle, uint32_t lab, uint32_t is_mlab);
 /* A malformed patch or query is reported in the result (status MALFORMED) with
  * the LAB untouched; a LAB that was never reset returns NPNR_LAB_CALL_BAD_SNAPSHOT. */

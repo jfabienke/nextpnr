@@ -181,7 +181,7 @@ TEST(LabControlFfi, RustOwnedFrozenBatchHasRaiiLifetimeAndConcurrentReaders)
     EXPECT_EQ(status, NPNR_LAB_CALL_OK);
     EXPECT_TRUE(replacement);
     auto malformed = retained_input;
-    malformed.reserved = 1;
+    malformed.input_model = 2; // no such input model: the header is invalid
     replacement.reset();
     replacement = RustFrozenLabBatchV2::create({malformed}, 0x4c4142, status);
     EXPECT_EQ(status, NPNR_LAB_CALL_BAD_SNAPSHOT);
